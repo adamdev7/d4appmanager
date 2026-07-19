@@ -44,6 +44,16 @@ async def update_tracking_settings(
     return _service.update_settings(db, user, store_id, body.model_dump(exclude_unset=True))
 
 
+@router.post("/stores/{store_id}/sync")
+async def sync_shopify_orders(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    """Pull recent orders from the connected Shopify store into tracking."""
+    return await _service.sync_from_shopify(db, user, store_id)
+
+
 @router.post("/stores/{store_id}/test-carrier", response_model=CarrierTestResponse)
 async def test_carrier_api(
     store_id: str,

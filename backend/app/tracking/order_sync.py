@@ -1,4 +1,4 @@
-"""Persist order tracking from Shopify webhooks."""
+"""Persist order tracking from Shopify webhooks and Admin API sync."""
 
 from __future__ import annotations
 
@@ -10,7 +10,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import OrderTracking
+from app.core.crypto import decrypt_value
+from app.db.models import OrderTracking, Store, StoreStatus
+from app.integrations.shopify.client import ShopifyClient
 from app.tracking.payload_parser import (
     map_shipment_status_to_tracking_status,
     normalize_email,
@@ -34,6 +36,9 @@ _TRACKING_TOPICS = frozenset(
         "fulfillments/update",
     }
 )
+
+# How many recent Shopify orders to pull on a manual / auto sync.
+_DEFAULT_SYNC_LIMIT = 100
 
 
 class OrderTrackingSyncService:
@@ -81,6 +86,93 @@ class OrderTrackingSyncService:
             shopify_order=shopify_order,
         )
 
+    def upsert_from_shopify_order(self, store_id: str, order: dict[str, Any]) -> OrderTracking | None:
+        """Upsert a full Shopify Admin order object into order_tracking."""
+        email = recipient_email(order)
+        order_number = order_number_from_payload(order)
+        if not order_number or not email:
+            return None
+
+        tracking_number, carrier = tracking_from_payload(order)
+        shipment_status = shipment_status_from_payload(order)
+        status = map_shipment_status_to_tracking_status(shipment_status, bool(tracking_number))
+
+        return self._upsert(
+            store_id=store_id,
+            shopify_order_id=str(order.get("id") or ""),
+            order_number=order_number,
+            customer_email=email,
+            tracking_number=tracking_number,
+            carrier=carrier,
+            status=status,
+            shipment_status=shipment_status,
+            shopify_order=order,
+        )
+
+    async def sync_store_orders(
+        self,
+        store: Store,
+        *,
+        limit: int = _DEFAULT_SYNC_LIMIT,
+    ) -> dict[str, int]:
+        """
+        Pull recent orders from the connected Shopify store and upsert them.
+        Only syncs Shopify Admin orders for this store — no other sources.
+        """
+        if store.status != StoreStatus.CONNECTED.value:
+            raise ValueError("Store is not connected to Shopify")
+        if not store.access_token_encrypted:
+            raise ValueError("Shopify access token is missing — reconnect the store")
+
+        try:
+            token = decrypt_value(store.access_token_encrypted)
+        except ValueError as exc:
+            raise ValueError("Could not read Shopify credentials — reconnect the store") from exc
+
+        client = ShopifyClient(store.shop_domain, token)
+        try:
+            orders = await client.list_orders(limit=limit, status="any")
+        except Exception:
+            logger.exception("Shopify order list failed for store %s", store.id)
+            raise ValueError("Could not fetch orders from Shopify. Try again in a moment.") from None
+
+        created = 0
+        updated = 0
+        skipped = 0
+
+        for order in orders:
+            email = recipient_email(order)
+            order_number = order_number_from_payload(order)
+            if not order_number or not email:
+                skipped += 1
+                continue
+
+            normalized_number = normalize_order_number(order_number)
+            normalized_email = normalize_email(email)
+            existed = self._db.scalar(
+                select(OrderTracking).where(
+                    OrderTracking.store_id == store.id,
+                    OrderTracking.order_number_normalized == normalized_number,
+                    OrderTracking.customer_email == normalized_email,
+                )
+            )
+            row = self.upsert_from_shopify_order(store.id, order)
+            if not row:
+                skipped += 1
+                continue
+            if existed:
+                updated += 1
+            else:
+                created += 1
+
+        self._db.commit()
+        return {
+            "fetched": len(orders),
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+        }
+
     def _upsert(
         self,
         *,
@@ -108,7 +200,15 @@ class OrderTrackingSyncService:
         now = datetime.now(UTC)
         events = self._load_timeline(row.timeline_json if row else "[]")
 
-        if shipment_status or tracking_number:
+        tracking_changed = bool(
+            tracking_number and (not row or (row.tracking_number or "") != tracking_number)
+        )
+        status_changed = bool(not row or (row.status or "") != status)
+        should_log = bool(shipment_status or tracking_number) and (
+            not row or tracking_changed or status_changed
+        )
+
+        if should_log:
             desc_parts = []
             if tracking_number:
                 desc_parts.append(f"Tracking: {tracking_number}")
@@ -135,7 +235,8 @@ class OrderTrackingSyncService:
                 row.carrier = carrier
             row.status = status
             row.timeline_json = json.dumps(events)
-            row.last_updated_at = now
+            if should_log or shopify_order:
+                row.last_updated_at = now
         else:
             row = OrderTracking(
                 store_id=store_id,

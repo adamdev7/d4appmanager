@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { KeyRound, PlugZap } from "lucide-react";
+import { ChevronDown, ChevronUp, KeyRound, PlugZap } from "lucide-react";
 import { api, type TrackingSettings } from "@/lib/api";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -14,10 +14,26 @@ type Props = {
 };
 
 const CARRIER_MODES = [
-  { value: "auto", label: "Auto (recommended)", hint: "YunExpress when carrier/name matches keywords, else 17TRACK" },
-  { value: "17track", label: "17TRACK only", hint: "Always use 17TRACK when a key is set" },
-  { value: "yunexpress", label: "YunExpress only", hint: "Always use YunExpress when a key is set" },
-  { value: "shopify_only", label: "Shopify only", hint: "No carrier APIs — status from Shopify webhooks only" },
+  {
+    value: "auto",
+    label: "Automatic (recommended)",
+    hint: "Uses YunExpress when the carrier name matches, otherwise 17TRACK.",
+  },
+  {
+    value: "17track",
+    label: "17TRACK only",
+    hint: "Always check 17TRACK when a key is saved.",
+  },
+  {
+    value: "yunexpress",
+    label: "YunExpress only",
+    hint: "Always check YunExpress when a key is saved.",
+  },
+  {
+    value: "shopify_only",
+    label: "Shopify status only",
+    hint: "Only show status from Shopify — no extra carrier lookups.",
+  },
 ];
 
 export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
@@ -33,6 +49,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
   const [error, setError] = useState("");
   const [testTrack, setTestTrack] = useState("");
   const [testing, setTesting] = useState<string | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     if (!settings) return;
@@ -62,7 +79,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
       await api.tracking.updateSettings(storeId, payload);
       setTrack17Key("");
       setYunKey("");
-      setMessage("Settings saved.");
+      setMessage("Saved. Live shipment updates will use these settings.");
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save settings");
@@ -76,7 +93,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
     setError("");
     try {
       await api.tracking.updateSettings(storeId, { [field]: "" });
-      setMessage("API key removed.");
+      setMessage("Connection removed.");
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not remove key");
@@ -111,11 +128,11 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <KeyRound className="h-5 w-5 text-content-muted" />
-          Carrier API settings
+          Live shipment updates
         </CardTitle>
         <CardDescription>
-          Add your own 17TRACK and YunExpress keys per store. Keys are encrypted in the database.
-          When a supplier adds tracking in Shopify, we can fetch live updates automatically.
+          Optional. When a tracking number appears on a Shopify order, we can fetch live status from
+          your shipping provider so customers see clearer updates.
         </CardDescription>
       </CardHeader>
 
@@ -123,12 +140,12 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
         <Switch
           checked={autoEnrich}
           onChange={setAutoEnrich}
-          label="Auto-enrich when tracking is added"
-          description="Call carrier APIs right after Shopify fulfillment webhooks (recommended)."
+          label="Update status automatically"
+          description="When tracking is added in Shopify, pull the latest shipment status for the customer."
         />
 
         <div className="space-y-2">
-          <label className="block text-sm font-medium text-content">Carrier priority</label>
+          <label className="block text-sm font-medium text-content">Which provider to use</label>
           <select
             value={carrierMode}
             onChange={(e) => setCarrierMode(e.target.value)}
@@ -147,87 +164,106 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
 
         <div className="rounded-xl border border-border p-4 space-y-4">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-medium text-content text-sm">17TRACK</p>
+            <div>
+              <p className="font-medium text-content text-sm">17TRACK</p>
+              <p className="text-xs text-content-muted mt-0.5">Works with most international carriers</p>
+            </div>
             {settings?.track17_configured ? (
               <Badge variant="success">Connected {settings.track17_key_masked}</Badge>
             ) : (
-              <Badge variant="muted">Not configured</Badge>
+              <Badge variant="muted">Not connected</Badge>
             )}
           </div>
           <Input
-            label="API key (17token)"
+            label="API key"
             type="password"
-            placeholder={settings?.track17_configured ? "Enter new key to replace" : "Paste API key"}
+            placeholder={settings?.track17_configured ? "Enter a new key to replace" : "Paste your 17TRACK key"}
             value={track17Key}
             onChange={(e) => setTrack17Key(e.target.value)}
-            hint="Get your key from 17track.net → API. Leave blank to keep existing key."
+            hint="From 17track.net → API. Leave blank to keep your current key."
           />
           {settings?.uses_server_track17_fallback && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              Server fallback key from .env is active until you save a store key.
+              A shared server key is in use until you save your own.
             </p>
           )}
           {settings?.track17_configured && (
             <Button type="button" variant="outline" size="sm" onClick={() => clearKey("track17_api_key")}>
-              Remove 17TRACK key
+              Disconnect 17TRACK
             </Button>
           )}
         </div>
 
         <div className="rounded-xl border border-border p-4 space-y-4">
           <div className="flex items-center justify-between gap-2">
-            <p className="font-medium text-content text-sm">YunExpress</p>
+            <div>
+              <p className="font-medium text-content text-sm">YunExpress</p>
+              <p className="text-xs text-content-muted mt-0.5">Best when you ship with YunExpress</p>
+            </div>
             {settings?.yunexpress_configured ? (
               <Badge variant="success">Connected {settings.yunexpress_key_masked}</Badge>
             ) : (
-              <Badge variant="muted">Not configured</Badge>
+              <Badge variant="muted">Not connected</Badge>
             )}
           </div>
           <Input
             label="API key"
             type="password"
-            placeholder={settings?.yunexpress_configured ? "Enter new key to replace" : "Paste API key"}
+            placeholder={settings?.yunexpress_configured ? "Enter a new key to replace" : "Paste your YunExpress key"}
             value={yunKey}
             onChange={(e) => setYunKey(e.target.value)}
           />
-          <Input
-            label="API base URL"
-            value={yunUrl}
-            onChange={(e) => setYunUrl(e.target.value)}
-            hint="Default: https://api.yunexpress.com — change if your account uses a regional endpoint."
-          />
-          <Input
-            label="Customer code (optional)"
-            value={yunCode}
-            onChange={(e) => setYunCode(e.target.value)}
-            hint="Some YunExpress accounts require a customer / merchant code."
-          />
-          <Input
-            label="Auto-detect keywords"
-            value={yunKeywords}
-            onChange={(e) => setYunKeywords(e.target.value)}
-            hint="Comma-separated. In Auto mode, YunExpress is used when carrier or tracking contains these."
-          />
           {settings?.uses_server_yunexpress_fallback && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              Server fallback key from .env is active until you save a store key.
+              A shared server key is in use until you save your own.
             </p>
           )}
           {settings?.yunexpress_configured && (
             <Button type="button" variant="outline" size="sm" onClick={() => clearKey("yunexpress_api_key")}>
-              Remove YunExpress key
+              Disconnect YunExpress
             </Button>
+          )}
+
+          <button
+            type="button"
+            className="flex w-full items-center justify-between text-sm text-content-muted hover:text-content"
+            onClick={() => setAdvancedOpen((v) => !v)}
+          >
+            <span>Advanced YunExpress options</span>
+            {advancedOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </button>
+          {advancedOpen && (
+            <div className="space-y-4 pt-1">
+              <Input
+                label="API website"
+                value={yunUrl}
+                onChange={(e) => setYunUrl(e.target.value)}
+                hint="Usually leave as the default unless YunExpress gave you a different link."
+              />
+              <Input
+                label="Customer code (optional)"
+                value={yunCode}
+                onChange={(e) => setYunCode(e.target.value)}
+                hint="Only needed if your YunExpress account requires it."
+              />
+              <Input
+                label="Auto-detect words"
+                value={yunKeywords}
+                onChange={(e) => setYunKeywords(e.target.value)}
+                hint="In Automatic mode, use YunExpress when the carrier name contains these words."
+              />
+            </div>
           )}
         </div>
 
         <div className="rounded-xl border border-dashed border-border p-4 space-y-3">
           <p className="text-sm font-medium text-content flex items-center gap-2">
             <PlugZap className="h-4 w-4" />
-            Test API connection
+            Test connection
           </p>
           <Input
             label="Sample tracking number (optional)"
-            placeholder="Use a real YunExpress / 17TRACK number for best results"
+            placeholder="Paste a real tracking number to verify"
             value={testTrack}
             onChange={(e) => setTestTrack(e.target.value)}
           />
@@ -265,7 +301,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
         )}
 
         <Button onClick={save} isLoading={saving}>
-          Save tracking settings
+          Save settings
         </Button>
       </div>
     </Card>

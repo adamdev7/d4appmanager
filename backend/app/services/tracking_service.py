@@ -4,12 +4,13 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.crypto import encrypt_value
-from app.db.models import OrderTracking, Store, User
+from app.db.models import OrderTracking, Store, StoreStatus, User
 from app.tracking.credentials import (
     get_or_create_tracking_settings,
     mask_api_key_hint,
     resolve_carrier_config,
 )
+from app.tracking.order_sync import OrderTrackingSyncService
 
 
 class TrackingService:
@@ -111,12 +112,18 @@ class TrackingService:
             )
             or 0
         )
+        status_rows = db.execute(
+            select(OrderTracking.status, func.count())
+            .where(OrderTracking.store_id == store_id)
+            .group_by(OrderTracking.status)
+        ).all()
+        status_counts = {str(status or "pending"): int(count) for status, count in status_rows}
 
         rows = db.scalars(
             select(OrderTracking)
             .where(OrderTracking.store_id == store_id)
             .order_by(OrderTracking.last_updated_at.desc().nullslast(), OrderTracking.updated_at.desc())
-            .limit(25)
+            .limit(50)
         ).all()
 
         base = settings.app_url.rstrip("/")
@@ -136,9 +143,44 @@ class TrackingService:
             "stats": {
                 "orders_synced": total,
                 "with_tracking": with_tracking,
+                "pending": status_counts.get("pending", 0),
+                "in_transit": status_counts.get("in_transit", 0),
+                "delivered": status_counts.get("delivered", 0),
             },
+            "shopify_connected": store.status == StoreStatus.CONNECTED.value,
             "recent_orders": [self._serialize_order(row) for row in rows],
         }
+
+    async def sync_from_shopify(self, db: Session, user: User, store_id: str) -> dict:
+        """Pull recent orders from the connected Shopify store into tracking."""
+        store = self._ensure_store(db, user, store_id)
+        try:
+            result = await OrderTrackingSyncService(db).sync_store_orders(store)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        overview = self.get_overview(db, user, store_id)
+        return {
+            "ok": True,
+            "message": self._sync_message(result),
+            "sync": result,
+            "overview": overview,
+        }
+
+    @staticmethod
+    def _sync_message(result: dict) -> str:
+        created = int(result.get("created") or 0)
+        updated = int(result.get("updated") or 0)
+        fetched = int(result.get("fetched") or 0)
+        if fetched == 0:
+            return "No orders found in Shopify yet."
+        parts = []
+        if created:
+            parts.append(f"{created} new")
+        if updated:
+            parts.append(f"{updated} updated")
+        if not parts:
+            return f"Checked {fetched} Shopify orders — everything is up to date."
+        return f"Synced {', '.join(parts)} from Shopify ({fetched} checked)."
 
     @staticmethod
     def _masked_hint(hint: str | None, configured: bool) -> str | None:

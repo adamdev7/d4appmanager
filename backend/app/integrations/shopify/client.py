@@ -73,6 +73,31 @@ class ShopifyClient:
             resp.raise_for_status()
             return resp.json()["webhook"]
 
+    async def list_orders(
+        self,
+        *,
+        limit: int = 50,
+        status: str = "any",
+        since_id: str | None = None,
+    ) -> list[dict]:
+        """Fetch recent orders from this Shopify store (Admin REST)."""
+        if not self.access_token:
+            raise ValueError("No access token")
+        params: dict[str, str | int] = {
+            "status": status,
+            "limit": min(max(limit, 1), 250),
+        }
+        if since_id:
+            params["since_id"] = since_id
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.get(
+                f"{self.admin_api_base}/orders.json",
+                params=params,
+                headers={"X-Shopify-Access-Token": self.access_token},
+            )
+            resp.raise_for_status()
+            return list(resp.json().get("orders") or [])
+
     @staticmethod
     def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:
         if not settings.shopify_client_secret:

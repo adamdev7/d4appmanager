@@ -70,7 +70,14 @@ export type TrackingOverview = {
     auto_enrich: boolean;
     mode: string;
   };
-  stats: { orders_synced: number; with_tracking: number };
+  stats: {
+    orders_synced: number;
+    with_tracking: number;
+    pending?: number;
+    in_transit?: number;
+    delivered?: number;
+  };
+  shopify_connected?: boolean;
   recent_orders: Array<{
     id: string;
     order_number: string;
@@ -80,6 +87,18 @@ export type TrackingOverview = {
     status: string;
     last_updated_at: string | null;
   }>;
+};
+
+export type TrackingSyncResult = {
+  ok: boolean;
+  message: string;
+  sync: {
+    fetched: number;
+    created: number;
+    updated: number;
+    skipped: number;
+  };
+  overview: TrackingOverview;
 };
 
 export type TrackOrderResult = {
@@ -398,6 +417,8 @@ export const api = {
   tracking: {
     overview: (storeId: string) =>
       request<TrackingOverview>(`/tracking/stores/${storeId}/overview`),
+    sync: (storeId: string) =>
+      request<TrackingSyncResult>(`/tracking/stores/${storeId}/sync`, { method: "POST" }),
     getSettings: (storeId: string) =>
       request<TrackingSettings>(`/tracking/stores/${storeId}/settings`),
     updateSettings: (storeId: string, data: object) =>
