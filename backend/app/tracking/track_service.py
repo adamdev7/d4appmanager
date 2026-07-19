@@ -23,7 +23,6 @@ from app.tracking.payload_parser import (
     normalize_order_number,
     order_number_variants,
     recipient_email,
-    tracking_from_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,30 +218,7 @@ class TrackOrderService:
         for order in orders:
             if normalize_email(recipient_email(order)) != normalized_email:
                 continue
-            tracking_number, carrier = tracking_from_payload(order)
-            shipment_status = ""
-            for fulfillment in order.get("fulfillments") or []:
-                shipment_status = (fulfillment.get("shipment_status") or "").lower()
-                if shipment_status:
-                    break
-
-            from app.tracking.payload_parser import (
-                map_shipment_status_to_tracking_status,
-                order_number_from_payload,
-            )
-
-            status = map_shipment_status_to_tracking_status(shipment_status, bool(tracking_number))
-            self._sync._upsert(
-                store_id=store.id,
-                shopify_order_id=str(order.get("id") or ""),
-                order_number=order_number_from_payload(order),
-                customer_email=normalized_email,
-                tracking_number=tracking_number,
-                carrier=carrier,
-                status=status,
-                shipment_status=shipment_status,
-                shopify_order=order,
-            )
+            self._sync.upsert_from_shopify_order(store.id, order)
             self._db.commit()
             return self._find_row(
                 store.id,

@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { TrackingSettingsPanel } from "@/components/tracking/TrackingSettingsPanel";
+import { TrackingOrderRow } from "@/components/tracking/TrackingOrderRow";
 
 type Tab = "orders" | "settings";
 type StatusFilter = "all" | "pending" | "in_transit" | "delivered";
@@ -462,7 +463,8 @@ export function TrackingPage() {
               <div>
                 <h3 className="text-base font-semibold text-content">Synced orders</h3>
                 <p className="text-sm text-content-muted mt-0.5">
-                  From your Shopify store only — updates when orders are created or shipped.
+                  From your Shopify store — click an order to see products, tracking numbers, and
+                  shipper updates.
                 </p>
               </div>
               <div className="flex flex-col sm:flex-row gap-3">
@@ -525,35 +527,13 @@ export function TrackingPage() {
                 No orders match your search or filter.
               </p>
             ) : (
-              <ul className="divide-y divide-border">
+              <ul>
                 {filteredOrders.map((order) => (
-                  <li
+                  <TrackingOrderRow
                     key={order.id}
-                    className="px-6 py-4 flex flex-wrap items-start justify-between gap-3 hover:bg-surface-muted/50 transition-colors"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-medium text-content text-sm">{order.order_number}</p>
-                      <p className="text-sm text-content-muted mt-0.5 truncate">
-                        {order.customer_email}
-                      </p>
-                      {order.tracking_number ? (
-                        <p className="text-xs text-content-subtle mt-1.5 font-mono">
-                          {order.tracking_number}
-                          {order.carrier ? ` · ${order.carrier}` : ""}
-                        </p>
-                      ) : (
-                        <p className="text-xs text-content-subtle mt-1.5">No tracking number yet</p>
-                      )}
-                    </div>
-                    <div className="text-right shrink-0">
-                      <Badge variant={statusBadgeVariant(order.status)}>
-                        {statusLabel(order.status)}
-                      </Badge>
-                      <p className="text-xs text-content-subtle mt-1.5">
-                        {formatTime(order.last_updated_at)}
-                      </p>
-                    </div>
-                  </li>
+                    order={order}
+                    shopDomain={overview?.shop_domain}
+                  />
                 ))}
               </ul>
             )}

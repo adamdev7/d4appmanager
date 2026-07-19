@@ -299,6 +299,20 @@ def _migrate_order_tracking_summary_columns() -> None:
                 conn.execute(
                     text("ALTER TABLE order_tracking ADD COLUMN line_items_json TEXT DEFAULT '[]' NOT NULL")
                 )
+            if "fulfillments_json" not in cols:
+                conn.execute(
+                    text("ALTER TABLE order_tracking ADD COLUMN fulfillments_json TEXT DEFAULT '[]' NOT NULL")
+                )
+            if "shopify_financial_status" not in cols:
+                conn.execute(
+                    text("ALTER TABLE order_tracking ADD COLUMN shopify_financial_status VARCHAR(32)")
+                )
+            if "shopify_fulfillment_status" not in cols:
+                conn.execute(
+                    text("ALTER TABLE order_tracking ADD COLUMN shopify_fulfillment_status VARCHAR(32)")
+                )
+            if "customer_name" not in cols:
+                conn.execute(text("ALTER TABLE order_tracking ADD COLUMN customer_name VARCHAR(255)"))
         elif dialect == "postgresql":
             conn.execute(
                 text("ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS order_placed_at TIMESTAMPTZ")
@@ -315,6 +329,24 @@ def _migrate_order_tracking_summary_columns() -> None:
                 text(
                     "ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS line_items_json TEXT DEFAULT '[]' NOT NULL"
                 )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS fulfillments_json TEXT DEFAULT '[]' NOT NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS shopify_financial_status VARCHAR(32)"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS shopify_fulfillment_status VARCHAR(32)"
+                )
+            )
+            conn.execute(
+                text("ALTER TABLE order_tracking ADD COLUMN IF NOT EXISTS customer_name VARCHAR(255)")
             )
 
 

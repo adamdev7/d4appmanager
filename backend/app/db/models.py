@@ -177,6 +177,10 @@ class OrderTracking(Base):
     order_total_display: Mapped[str | None] = mapped_column(String(32), nullable=True)
     order_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     line_items_json: Mapped[str] = mapped_column(Text, default="[]")
+    fulfillments_json: Mapped[str] = mapped_column(Text, default="[]")
+    shopify_financial_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    shopify_fulfillment_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

@@ -2,6 +2,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+import json
+
 from app.config import settings
 from app.core.crypto import encrypt_value
 from app.db.models import OrderTracking, Store, StoreStatus, User
@@ -192,12 +194,34 @@ class TrackingService:
 
     @staticmethod
     def _serialize_order(row: OrderTracking) -> dict:
+        line_items = TrackingService._load_json_list(row.line_items_json)
+        fulfillments = TrackingService._load_json_list(row.fulfillments_json)
+        timeline = TrackingService._load_json_list(row.timeline_json)
         return {
             "id": row.id,
             "order_number": row.order_number_display,
             "customer_email": row.customer_email,
+            "customer_name": row.customer_name,
             "tracking_number": row.tracking_number,
             "carrier": row.carrier,
             "status": row.status,
+            "shopify_financial_status": row.shopify_financial_status,
+            "shopify_fulfillment_status": row.shopify_fulfillment_status,
+            "order_total": row.order_total_display,
+            "currency": row.order_currency,
+            "order_placed_at": row.order_placed_at.isoformat() if row.order_placed_at else None,
+            "line_items": line_items,
+            "fulfillments": fulfillments,
+            "timeline": timeline[-12:],
             "last_updated_at": row.last_updated_at.isoformat() if row.last_updated_at else None,
         }
+
+    @staticmethod
+    def _load_json_list(raw: str | None) -> list:
+        try:
+            data = json.loads(raw or "[]")
+            if isinstance(data, list):
+                return data
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return []

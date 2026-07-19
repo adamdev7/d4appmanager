@@ -57,6 +57,41 @@ export type TrackingSettings = {
   uses_server_yunexpress_fallback: boolean;
 };
 
+export type TrackingOrder = {
+  id: string;
+  order_number: string;
+  customer_email: string;
+  customer_name?: string | null;
+  tracking_number: string | null;
+  carrier: string | null;
+  status: string;
+  shopify_financial_status?: string | null;
+  shopify_fulfillment_status?: string | null;
+  order_total?: string | null;
+  currency?: string | null;
+  order_placed_at?: string | null;
+  line_items?: Array<{
+    title: string;
+    variant?: string;
+    quantity: number;
+    image_url?: string;
+    price?: string;
+  }>;
+  fulfillments?: Array<{
+    id: string;
+    status?: string;
+    shipment_status?: string;
+    tracking_number?: string;
+    carrier?: string;
+    tracking_url?: string;
+    created_at?: string | null;
+    updated_at?: string | null;
+    items?: string[];
+  }>;
+  timeline?: Array<{ status: string; description: string; at: string }>;
+  last_updated_at: string | null;
+};
+
 export type TrackingOverview = {
   store_id: string;
   store_name: string;
@@ -78,15 +113,7 @@ export type TrackingOverview = {
     delivered?: number;
   };
   shopify_connected?: boolean;
-  recent_orders: Array<{
-    id: string;
-    order_number: string;
-    customer_email: string;
-    tracking_number: string | null;
-    carrier: string | null;
-    status: string;
-    last_updated_at: string | null;
-  }>;
+  recent_orders: TrackingOrder[];
 };
 
 export type TrackingSyncResult = {

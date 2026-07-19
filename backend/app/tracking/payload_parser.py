@@ -35,17 +35,156 @@ def recipient_email(payload: dict[str, Any]) -> str:
 
 
 def order_number_from_payload(payload: dict[str, Any]) -> str:
-    name = payload.get("name") or payload.get("order_number")
-    if name is not None:
+    name = payload.get("name")
+    if name is not None and str(name).strip():
         return str(name).strip()
-    order_id = payload.get("order_id")
-    if order_id is not None:
-        return str(order_id)
-    return str(payload.get("id") or "").strip()
+    # Fulfillment webhooks have order_id but not a customer-facing order name.
+    if payload.get("order_id") is not None:
+        return ""
+    order_number = payload.get("order_number")
+    if order_number is not None:
+        return str(order_number).strip()
+    return ""
+
+
+def customer_name_from_payload(payload: dict[str, Any]) -> str:
+    customer = payload.get("customer") or {}
+    if isinstance(customer, dict):
+        first = str(customer.get("first_name") or "").strip()
+        last = str(customer.get("last_name") or "").strip()
+        full = f"{first} {last}".strip()
+        if full:
+            return full
+    shipping = payload.get("shipping_address") or {}
+    if isinstance(shipping, dict):
+        name = str(shipping.get("name") or "").strip()
+        if name:
+            return name
+        first = str(shipping.get("first_name") or "").strip()
+        last = str(shipping.get("last_name") or "").strip()
+        full = f"{first} {last}".strip()
+        if full:
+            return full
+    return ""
+
+
+def shopify_financial_status(payload: dict[str, Any]) -> str:
+    return str(payload.get("financial_status") or "").strip().lower()
+
+
+def shopify_fulfillment_status(payload: dict[str, Any]) -> str:
+    raw = payload.get("fulfillment_status")
+    if raw is None or raw == "":
+        # Fulfillment webhook payloads use "status" (success, cancelled, …)
+        if payload.get("tracking_number") is not None or payload.get("order_id") is not None:
+            return ""
+        return "unfulfilled"
+    return str(raw).strip().lower()
+
+
+def _normalize_fulfillment(raw: dict[str, Any]) -> dict[str, Any] | None:
+    fulfillment_id = str(raw.get("id") or "").strip()
+    tracking_number = ""
+    if raw.get("tracking_number"):
+        tracking_number = str(raw["tracking_number"]).strip()
+    elif isinstance(raw.get("tracking_numbers"), list) and raw["tracking_numbers"]:
+        tracking_number = str(raw["tracking_numbers"][0]).strip()
+
+    carrier = str(raw.get("tracking_company") or "").strip()
+    shipment_status = str(raw.get("shipment_status") or "").strip().lower()
+    tracking_url = str(raw.get("tracking_url") or "").strip()
+    if not tracking_url and isinstance(raw.get("tracking_urls"), list) and raw["tracking_urls"]:
+        tracking_url = str(raw["tracking_urls"][0]).strip()
+
+    status = str(raw.get("status") or "").strip().lower()
+    created_at = str(raw.get("created_at") or "").strip() or None
+    updated_at = str(raw.get("updated_at") or "").strip() or None
+
+    item_titles: list[str] = []
+    for item in raw.get("line_items") or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("name") or "").strip()
+        qty = int(item.get("quantity") or 1)
+        if title:
+            item_titles.append(f"{title} × {qty}" if qty > 1 else title)
+
+    if not fulfillment_id and not tracking_number and not status:
+        return None
+
+    return {
+        "id": fulfillment_id or tracking_number or created_at or "fulfillment",
+        "status": status or "success",
+        "shipment_status": shipment_status,
+        "tracking_number": tracking_number,
+        "carrier": carrier,
+        "tracking_url": tracking_url,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "items": item_titles,
+    }
+
+
+def fulfillments_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract Shopify fulfillments (order payload or single fulfillment webhook)."""
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    raw_list = payload.get("fulfillments")
+    if isinstance(raw_list, list):
+        for raw in raw_list:
+            if not isinstance(raw, dict):
+                continue
+            normalized = _normalize_fulfillment(raw)
+            if not normalized:
+                continue
+            key = str(normalized["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(normalized)
+        return results
+
+    # fulfillments/create or fulfillments/update webhook body
+    is_fulfillment_event = payload.get("order_id") is not None and payload.get("name") is None
+    if is_fulfillment_event:
+        normalized = _normalize_fulfillment(payload)
+        if normalized:
+            results.append(normalized)
+
+    return results
+
+
+def merge_fulfillments(
+    existing: list[dict[str, Any]],
+    incoming: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_id: dict[str, dict[str, Any]] = {}
+    for item in existing:
+        key = str(item.get("id") or item.get("tracking_number") or "")
+        if key:
+            by_id[key] = item
+    for item in incoming:
+        key = str(item.get("id") or item.get("tracking_number") or "")
+        if not key:
+            continue
+        prev = by_id.get(key) or {}
+        merged = dict(prev)
+        for k, v in item.items():
+            if v not in (None, "", []):
+                merged[k] = v
+        by_id[key] = merged
+    return list(by_id.values())
 
 
 def tracking_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
-    """Return (tracking_number, carrier)."""
+    """Return (tracking_number, carrier) — prefers latest fulfillment with tracking."""
+    fulfillments = fulfillments_from_payload(payload)
+    for fulfillment in reversed(fulfillments):
+        number = str(fulfillment.get("tracking_number") or "").strip()
+        if number:
+            return number, str(fulfillment.get("carrier") or "").strip()
+
     number = ""
     if payload.get("tracking_number"):
         number = str(payload["tracking_number"]).strip()
@@ -53,14 +192,6 @@ def tracking_from_payload(payload: dict[str, Any]) -> tuple[str, str]:
         number = str(payload["tracking_numbers"][0]).strip()
 
     carrier = str(payload.get("tracking_company") or payload.get("carrier") or "").strip()
-
-    if not number:
-        for fulfillment in payload.get("fulfillments") or []:
-            if fulfillment.get("tracking_number"):
-                number = str(fulfillment["tracking_number"]).strip()
-                carrier = carrier or str(fulfillment.get("tracking_company") or "").strip()
-                break
-
     return number, carrier
 
 
@@ -68,20 +199,27 @@ def shipment_status_from_payload(payload: dict[str, Any]) -> str:
     status = (payload.get("shipment_status") or "").strip().lower()
     if status:
         return status
-    for fulfillment in payload.get("fulfillments") or []:
-        fs = (fulfillment.get("shipment_status") or "").strip().lower()
+    for fulfillment in fulfillments_from_payload(payload):
+        fs = str(fulfillment.get("shipment_status") or "").strip().lower()
         if fs:
             return fs
     return ""
 
 
-def map_shipment_status_to_tracking_status(shipment_status: str, has_tracking: bool) -> str:
+def map_shipment_status_to_tracking_status(
+    shipment_status: str,
+    has_tracking: bool,
+    *,
+    shopify_fulfillment_status: str = "",
+) -> str:
     if shipment_status == "delivered":
         return "delivered"
     if shipment_status in ("in_transit", "out_for_delivery", "confirmed"):
         return "in_transit"
     if has_tracking:
         return "in_transit"
+    if shopify_fulfillment_status in ("fulfilled", "partial"):
+        return "in_transit" if has_tracking else "pending"
     return "pending"
 
 

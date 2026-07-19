@@ -1,7 +1,9 @@
 from app.integrations.tracking.carrier_api import _map_17track_main_status
 from app.tracking.payload_parser import (
+    fulfillments_from_payload,
     map_shipment_status_to_tracking_status,
     normalize_order_number,
+    order_number_from_payload,
     order_number_variants,
     order_summary_from_payload,
     recipient_email,
@@ -20,6 +22,25 @@ def test_order_number_variants():
     assert set(order_number_variants("1001")) == {"1001", "#1001"}
 
 
+def test_order_number_from_shopify_order():
+    assert order_number_from_payload({"name": "#1001", "order_number": 1001}) == "#1001"
+
+
+def test_order_number_from_fulfillment_webhook_is_empty():
+    assert (
+        order_number_from_payload(
+            {
+                "id": 999,
+                "order_id": 555,
+                "tracking_number": "YT123",
+                "tracking_company": "YunExpress",
+                "status": "success",
+            }
+        )
+        == ""
+    )
+
+
 def test_tracking_from_fulfillment_payload():
     number, carrier = tracking_from_payload(
         {
@@ -30,6 +51,47 @@ def test_tracking_from_fulfillment_payload():
     )
     assert number == "YT123"
     assert carrier == "YunExpress"
+
+
+def test_fulfillments_from_order_payload():
+    fulfillments = fulfillments_from_payload(
+        {
+            "name": "#1001",
+            "fulfillments": [
+                {
+                    "id": 1,
+                    "status": "success",
+                    "tracking_number": "YT999",
+                    "tracking_company": "YunExpress",
+                    "shipment_status": "in_transit",
+                    "updated_at": "2026-07-19T10:00:00Z",
+                    "line_items": [{"title": "Ring", "quantity": 1}],
+                }
+            ],
+        }
+    )
+    assert len(fulfillments) == 1
+    assert fulfillments[0]["tracking_number"] == "YT999"
+    assert fulfillments[0]["carrier"] == "YunExpress"
+    assert fulfillments[0]["items"] == ["Ring"]
+
+
+def test_fulfillments_from_fulfillment_webhook():
+    fulfillments = fulfillments_from_payload(
+        {
+            "id": 88,
+            "order_id": 555,
+            "status": "success",
+            "tracking_number": "YT888",
+            "tracking_company": "YunExpress",
+            "shipment_status": "in_transit",
+            "tracking_url": "https://example.com/YT888",
+            "line_items": [{"title": "Necklace", "quantity": 2}],
+        }
+    )
+    assert len(fulfillments) == 1
+    assert fulfillments[0]["tracking_number"] == "YT888"
+    assert fulfillments[0]["tracking_url"] == "https://example.com/YT888"
 
 
 def test_recipient_email_nested_customer():
