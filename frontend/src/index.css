@@ -35,7 +35,7 @@
   }
 
   body {
-    @apply bg-surface-muted text-content font-sans;
+    @apply bg-surface-muted text-content font-sans overflow-x-hidden;
   }
 
   * {

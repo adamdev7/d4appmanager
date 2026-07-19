@@ -1,4 +1,4 @@
-import { Bell, Moon, Sun, Search, LogOut, User } from "lucide-react";
+import { Bell, Moon, Sun, Search, LogOut, User, Menu, X } from "lucide-react";
 import { useTheme } from "@/context/ThemeContext";
 import { useAuth } from "@/context/AuthContext";
 import { useNavigate } from "react-router-dom";
@@ -7,7 +7,13 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/cn";
 
-export function TopNavbar({ title }: { title?: string }) {
+type TopNavbarProps = {
+  title?: string;
+  mobileNavOpen?: boolean;
+  onMobileNavToggle?: () => void;
+};
+
+export function TopNavbar({ title, mobileNavOpen, onMobileNavToggle }: TopNavbarProps) {
   const { resolved, toggle } = useTheme();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -28,7 +34,17 @@ export function TopNavbar({ title }: { title?: string }) {
   };
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b border-border glass px-6">
+    <header className="sticky top-0 z-30 flex h-14 items-center gap-2 sm:gap-4 border-b border-border glass px-3 sm:px-6">
+      <button
+        type="button"
+        onClick={onMobileNavToggle}
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted hover:bg-surface-muted hover:text-content transition-colors lg:hidden"
+        aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"}
+        aria-expanded={mobileNavOpen}
+      >
+        {mobileNavOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+      </button>
+
       {title && (
         <h1 className="text-lg font-semibold text-content hidden sm:block">{title}</h1>
       )}
@@ -44,8 +60,8 @@ export function TopNavbar({ title }: { title?: string }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 ml-auto">
-        <div className="lg:hidden">
+      <div className="flex items-center gap-1.5 sm:gap-2 ml-auto min-w-0">
+        <div className="lg:hidden min-w-0">
           <StoreSwitcher compact />
         </div>
 
@@ -83,7 +99,7 @@ export function TopNavbar({ title }: { title?: string }) {
                 initial={{ opacity: 0, y: -4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
-                className="absolute right-0 top-full mt-2 w-56 rounded-xl border border-border bg-surface shadow-elevated py-1"
+                className="absolute right-0 top-full mt-2 w-56 max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-surface shadow-elevated py-1"
               >
                 <div className="px-3 py-2 border-b border-border">
                   <p className="text-sm font-medium text-content truncate">{user?.full_name}</p>

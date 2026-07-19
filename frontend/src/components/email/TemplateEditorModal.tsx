@@ -71,13 +71,13 @@ export function TemplateEditorModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/50 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-labelledby="template-editor-title"
     >
-      <div className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-border bg-surface shadow-xl">
-        <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-4">
+      <div className="w-full max-w-2xl max-h-[95vh] sm:max-h-[90vh] flex flex-col rounded-t-2xl sm:rounded-2xl border border-border bg-surface shadow-xl">
+        <div className="flex items-start justify-between gap-4 border-b border-border px-4 sm:px-6 py-4">
           <div>
             <h2 id="template-editor-title" className="text-lg font-semibold text-content">
               Customize email
@@ -94,7 +94,7 @@ export function TemplateEditorModal({
           </button>
         </div>
 
-        <div className="flex gap-1 px-6 pt-3 border-b border-border">
+        <div className="flex gap-1 px-4 sm:px-6 pt-3 border-b border-border">
           <button
             type="button"
             onClick={() => setTab("edit")}
@@ -121,7 +121,7 @@ export function TemplateEditorModal({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-5 space-y-5">
           {tab === "edit" ? (
             <>
               <Input
@@ -201,7 +201,7 @@ export function TemplateEditorModal({
           {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-border px-6 py-4">
+        <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 border-t border-border px-4 sm:px-6 py-4">
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>

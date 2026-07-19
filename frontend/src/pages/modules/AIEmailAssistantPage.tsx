@@ -17,6 +17,7 @@ import {
   Bot,
   Building2,
   CheckCircle2,
+  ArrowLeft,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api } from "@/lib/api";
@@ -178,7 +179,7 @@ export function AIEmailAssistantPage() {
   const [actionId, setActionId] = useState<string | null>(null);
   const [settingsSaved, setSettingsSaved] = useState(false);
 
-  const selected = inbox.find((e) => e.id === selectedId) ?? inbox[0] ?? null;
+  const selected = selectedId ? inbox.find((e) => e.id === selectedId) ?? null : null;
 
   const loadAccounts = useCallback(async () => {
     const data = await api.gmail.accounts(activeStore?.id);
@@ -484,7 +485,7 @@ export function AIEmailAssistantPage() {
             </div>
           )}
         </div>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex flex-wrap gap-2 shrink-0">
           <Button variant="outline" onClick={loadAll} disabled={loading}>
             <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
             Refresh
@@ -579,14 +580,20 @@ export function AIEmailAssistantPage() {
 
       {tab === "inbox" && (
         <div className="grid gap-4 lg:grid-cols-5">
-          <Card className="lg:col-span-2 p-0 overflow-hidden" padding="none">
+          <Card
+            className={cn(
+              "lg:col-span-2 p-0 overflow-hidden",
+              selected && "hidden lg:block"
+            )}
+            padding="none"
+          >
             <div className="border-b border-border px-4 py-3 flex items-center justify-between">
               <span className="text-sm font-medium text-content">
                 Inbox
                 <span className="text-content-muted font-normal ml-1">({inbox.length})</span>
               </span>
             </div>
-            <ul className="max-h-[520px] overflow-y-auto divide-y divide-border">
+            <ul className="max-h-[min(520px,70vh)] overflow-y-auto divide-y divide-border">
               {inbox.length === 0 && (
                 <li className="px-4 py-10 text-sm text-content-muted text-center space-y-3">
                   <p>No emails yet.</p>
@@ -626,9 +633,20 @@ export function AIEmailAssistantPage() {
             </ul>
           </Card>
 
-          <Card className="lg:col-span-3" padding="none">
+          <Card
+            className={cn("lg:col-span-3", !selected && "hidden lg:block")}
+            padding="none"
+          >
             {selected ? (
-              <div className="space-y-4 p-5">
+              <div className="space-y-4 p-4 sm:p-5">
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(null)}
+                  className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content lg:hidden"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  Back to inbox
+                </button>
                 <div>
                   <h2 className="font-semibold text-content text-lg leading-snug">
                     {selected.subject || "(no subject)"}
@@ -1149,7 +1167,30 @@ export function AIEmailAssistantPage() {
               Recent AI drafts and sent replies.
             </CardDescription>
           </div>
-          <div className="overflow-x-auto">
+          {/* Mobile: card list */}
+          <ul className="divide-y divide-border md:hidden">
+            {logs.length === 0 && (
+              <li className="px-4 py-10 text-center text-sm text-content-muted">
+                No activity yet — sync your inbox and generate a reply to see it here.
+              </li>
+            )}
+            {logs.map((log) => (
+              <li key={log.id} className="px-4 py-3 space-y-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-sm font-medium text-content truncate">{log.subject || "(no subject)"}</p>
+                  <Badge variant={statusBadge(log.status)}>{statusLabel(log.status)}</Badge>
+                </div>
+                <p className="text-xs text-content-muted truncate">{log.sender_email}</p>
+                <p className="text-xs text-content-subtle">{formatTime(log.created_at)}</p>
+                {log.body_preview && (
+                  <p className="text-xs text-content-muted line-clamp-2">{log.body_preview}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+
+          {/* Desktop / tablet: table */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-content-muted">

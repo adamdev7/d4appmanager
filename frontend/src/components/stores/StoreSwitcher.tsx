@@ -55,7 +55,10 @@ export function StoreSwitcher({ compact }: { compact?: boolean }) {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -4, scale: 0.98 }}
             transition={{ duration: 0.15 }}
-            className="absolute left-0 top-full z-50 mt-2 w-72 rounded-xl border border-border bg-surface shadow-elevated overflow-hidden"
+            className={cn(
+              "absolute top-full z-50 mt-2 w-72 max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-surface shadow-elevated overflow-hidden",
+              compact ? "right-0" : "left-0"
+            )}
           >
             <div className="p-2 border-b border-border">
               <p className="px-2 py-1 text-xs font-medium text-content-subtle uppercase tracking-wider">

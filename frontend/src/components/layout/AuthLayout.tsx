@@ -53,7 +53,9 @@ export function AuthLayout({
             <h1 className="text-2xl font-bold tracking-tight text-content">{title}</h1>
             {subtitle && <p className="mt-2 text-content-muted">{subtitle}</p>}
           </div>
-          <div className="rounded-2xl border border-border bg-surface p-8 shadow-card">{children}</div>
+          <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 shadow-card">
+            {children}
+          </div>
         </motion.div>
       </div>
     </div>

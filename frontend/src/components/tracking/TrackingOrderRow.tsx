@@ -91,7 +91,7 @@ export function TrackingOrderRow({ order, shopDomain }: Props) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full px-6 py-4 flex flex-wrap items-start justify-between gap-3 text-left hover:bg-surface-muted/50 transition-colors"
+        className="w-full px-4 sm:px-6 py-4 flex flex-wrap items-start justify-between gap-3 text-left hover:bg-surface-muted/50 transition-colors"
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -127,7 +127,7 @@ export function TrackingOrderRow({ order, shopDomain }: Props) {
       </button>
 
       {open && (
-        <div className="px-6 pb-5 space-y-5 bg-surface-muted/30 border-t border-border">
+        <div className="px-4 sm:px-6 pb-5 space-y-5 bg-surface-muted/30 border-t border-border">
           <div className="grid sm:grid-cols-3 gap-3 pt-4 text-sm">
             <Detail label="Shopify shipping" value={fulfillment} />
             <Detail label="Payment" value={payment || "—"} />
