@@ -1,0 +1,744 @@
+import logging
+from datetime import UTC, datetime
+
+from fastapi import HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.ai_email_assistant.ai_service import AIService
+from app.ai_email_assistant.automation_control import stop_autopilot
+from app.ai_email_assistant.duplicate_guard import (
+    ALREADY_REPLIED_REASON,
+    mark_thread_siblings_handled,
+    thread_has_answered_in_db,
+)
+from app.ai_email_assistant.email_filter import config_from_settings, evaluate_email_filter
+from app.ai_email_assistant.thread_context import format_thread_conversation
+from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_exception
+from app.ai_email_assistant.prompt_builder import BusinessContext
+from app.config import settings
+from app.core.openai_credentials import (
+    clear_user_openai_api_key,
+    openai_key_status,
+    resolve_openai_api_key,
+    set_user_openai_api_key,
+)
+from app.db.models import (
+    AIEmailAssistantSettings,
+    AIEmailReply,
+    AIReplyStatus,
+    GmailAccount,
+    GmailAccountStatus,
+    InboxEmail,
+    InboxEmailStatus,
+    User,
+)
+from app.integrations.gmail.inbox_client import GmailInboxClient
+from app.models.ai_email_assistant import (
+    AIEmailAssistantSettingsResponse,
+    AIEmailAssistantSettingsUpdate,
+    AIReplyLogEntry,
+    AIReplyResponse,
+    InboxEmailResponse,
+    OpenAIKeyStatusResponse,
+    SetOpenAIKeyBody,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class AIEmailAssistantService:
+    def resolve_gmail_account_id(
+        self, db: Session, user: User, settings_row: AIEmailAssistantSettings
+    ) -> str | None:
+        if settings_row.gmail_account_id:
+            acc = db.get(GmailAccount, settings_row.gmail_account_id)
+            if acc and acc.owner_id == user.id and acc.status == GmailAccountStatus.CONNECTED.value:
+                return acc.id
+        acc = db.scalar(
+            select(GmailAccount)
+            .where(
+                GmailAccount.owner_id == user.id,
+                GmailAccount.status == GmailAccountStatus.CONNECTED.value,
+                GmailAccount.is_default_sender.is_(True),
+            )
+            .limit(1)
+        )
+        if acc:
+            return acc.id
+        acc = db.scalar(
+            select(GmailAccount)
+            .where(
+                GmailAccount.owner_id == user.id,
+                GmailAccount.status == GmailAccountStatus.CONNECTED.value,
+            )
+            .limit(1)
+        )
+        return acc.id if acc else None
+
+    def _settings_query(self, user_id: str, store_id: str | None):
+        q = select(AIEmailAssistantSettings).where(AIEmailAssistantSettings.user_id == user_id)
+        if store_id is None:
+            return q.where(AIEmailAssistantSettings.store_id.is_(None))
+        return q.where(AIEmailAssistantSettings.store_id == store_id)
+
+    def get_or_create_settings(
+        self, db: Session, user: User, store_id: str | None = None
+    ) -> AIEmailAssistantSettings:
+        row = db.scalar(self._settings_query(user.id, store_id))
+        if not row:
+            row = AIEmailAssistantSettings(user_id=user.id, store_id=store_id)
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+        return row
+
+    def _ai_service(self, user: User, settings_row: AIEmailAssistantSettings) -> AIService:
+        api_key = resolve_openai_api_key(user)
+        if not api_key:
+            raise OpenAIServiceError(
+                user_message="Add your OpenAI API key in AI Email Assistant settings before using AI features.",
+                stop_autopilot=True,
+            )
+        return AIService(model=settings_row.openai_model, api_key=api_key)
+
+    @staticmethod
+    def _http_status_for_ai_error(exc: OpenAIServiceError) -> int:
+        if exc.status_code in (401, 402, 403, 429):
+            return exc.status_code
+        if exc.status_code and exc.status_code >= 500:
+            return status.HTTP_502_BAD_GATEWAY
+        return status.HTTP_400_BAD_REQUEST
+
+    def get_openai_key_status(self, user: User) -> OpenAIKeyStatusResponse:
+        data = openai_key_status(user)
+        return OpenAIKeyStatusResponse(**data)
+
+    def save_openai_key(self, db: Session, user: User, body: SetOpenAIKeyBody) -> OpenAIKeyStatusResponse:
+        try:
+            set_user_openai_api_key(db, user, body.api_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return self.get_openai_key_status(user)
+
+    def delete_openai_key(self, db: Session, user: User) -> OpenAIKeyStatusResponse:
+        clear_user_openai_api_key(db, user)
+        return self.get_openai_key_status(user)
+
+    def get_settings_response(
+        self, db: Session, user: User, store_id: str | None = None
+    ) -> AIEmailAssistantSettingsResponse:
+        row = self.get_or_create_settings(db, user, store_id)
+        key_info = openai_key_status(user)
+        return AIEmailAssistantSettingsResponse(
+            id=row.id,
+            business_name=row.business_name,
+            business_type=row.business_type,
+            tone_of_voice=row.tone_of_voice,
+            rules=row.rules,
+            policies=row.policies,
+            faq=row.faq,
+            auto_send_enabled=row.auto_send_enabled,
+            gmail_account_id=row.gmail_account_id,
+            openai_model=row.openai_model,
+            email_filter_enabled=row.email_filter_enabled,
+            filter_automated_emails=row.filter_automated_emails,
+            filter_non_business_emails=row.filter_non_business_emails,
+            filter_custom_rules=row.filter_custom_rules,
+            automation_enabled=row.automation_enabled,
+            automation_interval_minutes=row.automation_interval_minutes,
+            automation_max_emails_per_run=row.automation_max_emails_per_run,
+            automation_last_run_at=(
+                row.automation_last_run_at.isoformat() if row.automation_last_run_at else None
+            ),
+            automation_last_error=row.automation_last_error,
+            one_reply_per_thread=row.one_reply_per_thread,
+            sync_only_customer_unread=row.sync_only_customer_unread,
+            verify_gmail_thread_before_reply=row.verify_gmail_thread_before_reply,
+            use_thread_context=row.use_thread_context,
+            default_model=settings.openai_model,
+            **key_info,
+        )
+
+    def update_settings(
+        self,
+        db: Session,
+        user: User,
+        data: AIEmailAssistantSettingsUpdate,
+        store_id: str | None = None,
+    ) -> AIEmailAssistantSettingsResponse:
+        if data.gmail_account_id:
+            acc = db.get(GmailAccount, data.gmail_account_id)
+            if not acc or acc.owner_id != user.id:
+                raise HTTPException(status_code=400, detail="Invalid Gmail account")
+
+        row = self.get_or_create_settings(db, user, store_id)
+        row.business_name = data.business_name
+        row.business_type = data.business_type
+        row.tone_of_voice = data.tone_of_voice
+        row.rules = data.rules
+        row.policies = data.policies
+        row.faq = data.faq
+        row.auto_send_enabled = data.auto_send_enabled
+        row.gmail_account_id = data.gmail_account_id
+        row.openai_model = data.openai_model
+        row.email_filter_enabled = data.email_filter_enabled
+        row.filter_automated_emails = data.filter_automated_emails
+        row.filter_non_business_emails = data.filter_non_business_emails
+        row.filter_custom_rules = data.filter_custom_rules
+        row.automation_enabled = data.automation_enabled
+        row.automation_interval_minutes = data.automation_interval_minutes
+        row.automation_max_emails_per_run = data.automation_max_emails_per_run
+        row.one_reply_per_thread = data.one_reply_per_thread
+        row.sync_only_customer_unread = data.sync_only_customer_unread
+        row.verify_gmail_thread_before_reply = data.verify_gmail_thread_before_reply
+        row.use_thread_context = data.use_thread_context
+        db.commit()
+        return self.get_settings_response(db, user, store_id)
+
+    async def _fetch_thread_context(
+        self,
+        db: Session,
+        settings_row: AIEmailAssistantSettings,
+        account: GmailAccount,
+        thread_id: str,
+    ) -> str | None:
+        if not settings_row.use_thread_context:
+            return None
+        client = GmailInboxClient(db)
+        messages = await client.get_thread_conversation(account, thread_id)
+        if not messages:
+            return None
+        return format_thread_conversation(messages)
+
+    async def _duplicate_skip_reason(
+        self,
+        db: Session,
+        settings_row: AIEmailAssistantSettings,
+        account: GmailAccount,
+        email: InboxEmail,
+    ) -> str | None:
+        if not settings_row.one_reply_per_thread and not settings_row.verify_gmail_thread_before_reply:
+            return None
+
+        if settings_row.one_reply_per_thread and thread_has_answered_in_db(
+            db,
+            gmail_account_id=email.gmail_account_id,
+            thread_id=email.thread_id,
+            exclude_inbox_id=email.id,
+        ):
+            return ALREADY_REPLIED_REASON
+
+        if settings_row.verify_gmail_thread_before_reply:
+            client = GmailInboxClient(db)
+            if await client.we_sent_last_in_thread(account, email.thread_id):
+                return (
+                    "The latest message in this thread is already from your business — "
+                    "skipping to avoid sending duplicate replies."
+                )
+        return None
+
+    def _skip_email_as_duplicate(self, db: Session, email: InboxEmail, reason: str) -> None:
+        email.status = InboxEmailStatus.SKIPPED.value
+        email.skip_reason = reason
+        email.processed_at = datetime.now(UTC)
+        db.commit()
+
+    async def _skip_if_no_longer_unread_in_gmail(
+        self,
+        db: Session,
+        account: GmailAccount,
+        email: InboxEmail,
+    ) -> bool:
+        """Skip processing if the customer already read this message in Gmail."""
+        client = GmailInboxClient(db)
+        if await client.is_message_unread(account, email.gmail_message_id):
+            return False
+        email.status = InboxEmailStatus.PROCESSED.value
+        email.skip_reason = "Already marked as read in Gmail — no reply needed."
+        email.processed_at = datetime.now(UTC)
+        db.commit()
+        return True
+
+    def _business_context(self, settings_row: AIEmailAssistantSettings) -> BusinessContext:
+        return BusinessContext(
+            business_name=settings_row.business_name,
+            business_type=settings_row.business_type,
+            tone_of_voice=settings_row.tone_of_voice,
+            rules=settings_row.rules,
+            policies=settings_row.policies,
+            faq=settings_row.faq,
+        )
+
+    def _serialize_reply(self, reply: AIEmailReply, intent: str | None = None) -> AIReplyResponse:
+        effective = reply.edited_body or reply.generated_body
+        return AIReplyResponse(
+            id=reply.id,
+            inbox_email_id=reply.inbox_email_id,
+            generated_body=reply.generated_body,
+            edited_body=reply.edited_body,
+            effective_body=effective,
+            status=reply.status,
+            model_used=reply.model_used,
+            detected_intent=intent,
+            error_message=reply.error_message,
+            created_at=reply.created_at.isoformat(),
+            sent_at=reply.sent_at.isoformat() if reply.sent_at else None,
+        )
+
+    def _serialize_inbox(self, email: InboxEmail) -> InboxEmailResponse:
+        latest = None
+        if email.replies:
+            draft_or_sent = sorted(email.replies, key=lambda r: r.created_at, reverse=True)[0]
+            latest = self._serialize_reply(draft_or_sent, email.detected_intent)
+        return InboxEmailResponse(
+            id=email.id,
+            gmail_message_id=email.gmail_message_id,
+            thread_id=email.thread_id,
+            sender=email.sender,
+            sender_email=email.sender_email,
+            subject=email.subject,
+            body_text=email.body_text,
+            detected_intent=email.detected_intent,
+            skip_reason=email.skip_reason,
+            filter_category=email.filter_category,
+            status=email.status,
+            received_at=email.received_at.isoformat(),
+            latest_reply=latest,
+        )
+
+    async def _apply_email_filter(
+        self,
+        db: Session,
+        user: User,
+        email: InboxEmail,
+        settings_row: AIEmailAssistantSettings,
+    ) -> None:
+        config = config_from_settings(settings_row)
+        if not config.enabled:
+            return
+
+        ai = None
+        if config.filter_non_business or config.custom_rules.strip():
+            api_key = resolve_openai_api_key(user)
+            if api_key:
+                ai = AIService(model=settings_row.openai_model, api_key=api_key)
+
+        thread_context: str | None = None
+        account = db.get(GmailAccount, email.gmail_account_id)
+        if account:
+            thread_context = await self._fetch_thread_context(
+                db, settings_row, account, email.thread_id
+            )
+
+        result = await evaluate_email_filter(
+            config,
+            sender=email.sender,
+            sender_email=email.sender_email,
+            subject=email.subject,
+            body=email.body_text,
+            thread_context=thread_context,
+            ai=ai,
+        )
+        if not result.should_reply:
+            email.status = InboxEmailStatus.SKIPPED.value
+            email.skip_reason = result.reason or "Filtered — does not need a reply"
+            email.filter_category = result.category
+            email.processed_at = datetime.now(UTC)
+            db.commit()
+
+    def list_inbox(
+        self, db: Session, user: User, *, store_id: str | None = None, limit: int = 50
+    ) -> list[InboxEmailResponse]:
+        q = (
+            select(InboxEmail)
+            .where(InboxEmail.user_id == user.id)
+            .order_by(InboxEmail.received_at.desc())
+            .limit(limit)
+        )
+        if store_id:
+            q = q.where(InboxEmail.store_id == store_id)
+        emails = db.scalars(q).all()
+        return [self._serialize_inbox(e) for e in emails]
+
+    async def sync_inbox(
+        self,
+        db: Session,
+        user: User,
+        *,
+        gmail_account_id: str,
+        store_id: str | None = None,
+        max_results: int = 15,
+    ) -> list[InboxEmailResponse]:
+        account = db.get(GmailAccount, gmail_account_id)
+        if not account or account.owner_id != user.id:
+            raise HTTPException(status_code=404, detail="Gmail account not found")
+        if account.status != GmailAccountStatus.CONNECTED.value:
+            raise HTTPException(status_code=400, detail="Gmail account is not connected")
+
+        settings_row = self.get_or_create_settings(db, user, store_id)
+        client = GmailInboxClient(db)
+        summaries = await client.list_unread_messages(
+            account,
+            max_results=max_results,
+            only_customer_messages=settings_row.sync_only_customer_unread,
+        )
+        synced: list[InboxEmail] = []
+
+        for item in summaries:
+            msg_id = item["id"]
+            exists = db.scalar(
+                select(InboxEmail).where(
+                    InboxEmail.gmail_account_id == account.id,
+                    InboxEmail.gmail_message_id == msg_id,
+                )
+            )
+            if exists:
+                continue
+
+            detail = await client.get_message(account, msg_id)
+            if not detail:
+                continue
+
+            if settings_row.one_reply_per_thread and thread_has_answered_in_db(
+                db,
+                gmail_account_id=account.id,
+                thread_id=detail.thread_id,
+            ):
+                continue
+
+            if settings_row.verify_gmail_thread_before_reply:
+                if await client.we_sent_last_in_thread(account, detail.thread_id):
+                    continue
+
+            sender_email = client.parse_sender_email(detail.sender)
+            row = InboxEmail(
+                user_id=user.id,
+                store_id=store_id,
+                gmail_account_id=account.id,
+                gmail_message_id=detail.message_id,
+                thread_id=detail.thread_id,
+                sender=detail.sender,
+                sender_email=sender_email,
+                subject=detail.subject,
+                body_text=detail.body_text,
+                status=InboxEmailStatus.NEW.value,
+            )
+            db.add(row)
+            db.flush()
+            synced.append(row)
+
+        for row in synced:
+            await self._apply_email_filter(db, user, row, settings_row)
+
+        db.commit()
+        for row in synced:
+            db.refresh(row)
+
+        await self.process_pending_replies(
+            db, user, settings_row, store_id=store_id, limit=max_results
+        )
+
+        all_recent = self.list_inbox(db, user, store_id=store_id, limit=max_results)
+        return all_recent
+
+    async def process_pending_replies(
+        self,
+        db: Session,
+        user: User,
+        settings_row: AIEmailAssistantSettings,
+        *,
+        store_id: str | None = None,
+        limit: int = 10,
+    ) -> int:
+        """Generate (and optionally send) replies for inbox emails still awaiting a response."""
+        if not resolve_openai_api_key(user):
+            return 0
+
+        q = (
+            select(InboxEmail)
+            .where(
+                InboxEmail.user_id == user.id,
+                InboxEmail.status == InboxEmailStatus.NEW.value,
+            )
+            .order_by(InboxEmail.received_at.asc())
+            .limit(limit)
+        )
+        if store_id is None:
+            q = q.where(InboxEmail.store_id.is_(None))
+        else:
+            q = q.where(InboxEmail.store_id == store_id)
+
+        pending = db.scalars(q).all()
+        processed = 0
+        seen_threads: set[str] = set()
+
+        for email in pending:
+            if email.replies:
+                continue
+
+            email_account = db.get(GmailAccount, email.gmail_account_id)
+            if email_account:
+                if await self._skip_if_no_longer_unread_in_gmail(db, email_account, email):
+                    continue
+
+            if settings_row.one_reply_per_thread:
+                if email.thread_id in seen_threads:
+                    self._skip_email_as_duplicate(db, email, ALREADY_REPLIED_REASON)
+                    continue
+                if thread_has_answered_in_db(
+                    db,
+                    gmail_account_id=email.gmail_account_id,
+                    thread_id=email.thread_id,
+                    exclude_inbox_id=email.id,
+                ):
+                    self._skip_email_as_duplicate(db, email, ALREADY_REPLIED_REASON)
+                    continue
+                seen_threads.add(email.thread_id)
+
+            if email_account and settings_row.verify_gmail_thread_before_reply:
+                dup = await self._duplicate_skip_reason(db, settings_row, email_account, email)
+                if dup:
+                    self._skip_email_as_duplicate(db, email, dup)
+                    continue
+
+            try:
+                await self.generate_and_maybe_send(db, user, email.id, store_id=store_id)
+                processed += 1
+            except OpenAIServiceError as exc:
+                if exc.stop_autopilot and settings_row.automation_enabled:
+                    stop_autopilot(db, settings_row, exc.user_message)
+                raise
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+                logger.warning("Skipped inbox %s: %s", email.id, detail)
+                if exc.status_code in (401, 402, 403, 429, 502, 503):
+                    if settings_row.automation_enabled:
+                        stop_autopilot(db, settings_row, detail)
+                    raise OpenAIServiceError(
+                        user_message=detail,
+                        stop_autopilot=True,
+                        status_code=exc.status_code,
+                    ) from exc
+            except Exception as exc:
+                parsed = openai_error_from_exception(exc)
+                if parsed.stop_autopilot:
+                    if settings_row.automation_enabled:
+                        stop_autopilot(db, settings_row, parsed.user_message)
+                    raise parsed from exc
+                logger.exception("Failed to process inbox %s: %s", email.id, exc)
+        return processed
+
+    async def run_automation_now(
+        self, db: Session, user: User, store_id: str | None = None
+    ) -> dict:
+        """Manual trigger: sync unread + process replies immediately."""
+        from app.ai_email_assistant.automation_worker import run_automation_for_settings
+
+        settings_row = self.get_or_create_settings(db, user, store_id)
+        if not resolve_openai_api_key(user):
+            raise HTTPException(
+                status_code=400,
+                detail="Configure your OpenAI API key before running autopilot.",
+            )
+
+        if not settings_row.gmail_account_id:
+            gid = self.resolve_gmail_account_id(db, user, settings_row)
+            if gid:
+                settings_row.gmail_account_id = gid
+                db.commit()
+
+        if not self.resolve_gmail_account_id(db, user, settings_row):
+            raise HTTPException(status_code=400, detail="Connect Gmail before running autopilot.")
+
+        return await run_automation_for_settings(settings_row.id, force=True)
+
+    async def generate_and_maybe_send(
+        self,
+        db: Session,
+        user: User,
+        inbox_email_id: str,
+        *,
+        store_id: str | None = None,
+    ) -> AIReplyResponse:
+        email = db.get(InboxEmail, inbox_email_id)
+        if not email or email.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        settings_row = self.get_or_create_settings(db, user, store_id or email.store_id)
+
+        if email.status == InboxEmailStatus.SKIPPED.value:
+            raise HTTPException(
+                status_code=400,
+                detail=email.skip_reason or "This email was filtered and does not need a reply.",
+            )
+
+        account = db.get(GmailAccount, email.gmail_account_id)
+        if account:
+            if await self._skip_if_no_longer_unread_in_gmail(db, account, email):
+                raise HTTPException(
+                    status_code=400,
+                    detail=email.skip_reason or "This email is no longer unread in Gmail.",
+                )
+            dup = await self._duplicate_skip_reason(db, settings_row, account, email)
+            if dup:
+                self._skip_email_as_duplicate(db, email, dup)
+                raise HTTPException(status_code=400, detail=dup)
+
+        await self._apply_email_filter(db, user, email, settings_row)
+        db.refresh(email)
+        if email.status == InboxEmailStatus.SKIPPED.value:
+            raise HTTPException(
+                status_code=400,
+                detail=email.skip_reason or "This email was filtered and does not need a reply.",
+            )
+
+        thread_context = None
+        if account:
+            thread_context = await self._fetch_thread_context(
+                db, settings_row, account, email.thread_id
+            )
+
+        try:
+            ai = self._ai_service(user, settings_row)
+            result = await ai.generate_reply(
+                sender=email.sender,
+                subject=email.subject,
+                email_body=email.body_text,
+                context=self._business_context(settings_row),
+                thread_context=thread_context,
+                model_override=settings_row.openai_model,
+            )
+        except OpenAIServiceError as exc:
+            raise HTTPException(
+                status_code=self._http_status_for_ai_error(exc),
+                detail=exc.user_message,
+            ) from exc
+
+        email.detected_intent = result.intent
+        email.status = InboxEmailStatus.DRAFT_PENDING.value
+
+        reply = AIEmailReply(
+            inbox_email_id=email.id,
+            user_id=user.id,
+            generated_body=result.body,
+            status=AIReplyStatus.DRAFT.value,
+            model_used=result.model,
+            prompt_snapshot=result.prompt_snapshot,
+        )
+        db.add(reply)
+        db.commit()
+        db.refresh(reply)
+
+        if settings_row.auto_send_enabled:
+            return await self.approve_and_send(db, user, reply.id)
+
+        return self._serialize_reply(reply, email.detected_intent)
+
+    async def approve_and_send(self, db: Session, user: User, reply_id: str) -> AIReplyResponse:
+        reply = db.get(AIEmailReply, reply_id)
+        if not reply or reply.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Reply not found")
+        if reply.status == AIReplyStatus.SENT.value:
+            return self._serialize_reply(reply, reply.inbox_email.detected_intent)
+
+        email = reply.inbox_email
+        account = db.get(GmailAccount, email.gmail_account_id)
+        if not account:
+            raise HTTPException(status_code=400, detail="Gmail account missing")
+
+        body = reply.edited_body or reply.generated_body
+        client = GmailInboxClient(db)
+        send_result = await client.send_thread_reply(
+            account,
+            to=email.sender_email,
+            subject=email.subject,
+            body_text=body,
+            thread_id=email.thread_id,
+            in_reply_to_message_id=email.gmail_message_id,
+        )
+
+        if not send_result:
+            reply.status = AIReplyStatus.FAILED.value
+            reply.error_message = "Failed to send via Gmail API"
+            db.commit()
+            raise HTTPException(status_code=502, detail="Failed to send reply via Gmail")
+
+        reply.status = AIReplyStatus.SENT.value
+        reply.sent_at = datetime.now(UTC)
+        reply.gmail_sent_message_id = send_result.get("id")
+        reply.error_message = None
+        email.status = InboxEmailStatus.REPLIED.value
+        email.processed_at = datetime.now(UTC)
+        db.commit()
+
+        settings_row = self.get_or_create_settings(db, user, email.store_id)
+        mark_thread_siblings_handled(
+            db,
+            gmail_account_id=email.gmail_account_id,
+            thread_id=email.thread_id,
+            keep_inbox_id=email.id,
+        )
+        await client.mark_thread_as_read(account, email.thread_id)
+
+        return self._serialize_reply(reply, email.detected_intent)
+
+    def reject_reply(self, db: Session, user: User, reply_id: str) -> AIReplyResponse:
+        reply = db.get(AIEmailReply, reply_id)
+        if not reply or reply.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Reply not found")
+        reply.status = AIReplyStatus.REJECTED.value
+        reply.inbox_email.status = InboxEmailStatus.PROCESSED.value
+        db.commit()
+        return self._serialize_reply(reply, reply.inbox_email.detected_intent)
+
+    def update_draft(self, db: Session, user: User, reply_id: str, body: str) -> AIReplyResponse:
+        reply = db.get(AIEmailReply, reply_id)
+        if not reply or reply.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Reply not found")
+        if reply.status != AIReplyStatus.DRAFT.value:
+            raise HTTPException(status_code=400, detail="Only draft replies can be edited")
+        reply.edited_body = body
+        db.commit()
+        return self._serialize_reply(reply, reply.inbox_email.detected_intent)
+
+    def unskip_email(self, db: Session, user: User, inbox_email_id: str) -> InboxEmailResponse:
+        """Allow the user to reply to an email that was filtered."""
+        email = db.get(InboxEmail, inbox_email_id)
+        if not email or email.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Email not found")
+        if email.status != InboxEmailStatus.SKIPPED.value:
+            raise HTTPException(status_code=400, detail="Only filtered emails can be marked for reply")
+        email.status = InboxEmailStatus.NEW.value
+        email.skip_reason = None
+        email.filter_category = None
+        email.processed_at = None
+        db.commit()
+        db.refresh(email)
+        return self._serialize_inbox(email)
+
+    def list_reply_logs(self, db: Session, user: User, *, limit: int = 50) -> list[AIReplyLogEntry]:
+        replies = db.scalars(
+            select(AIEmailReply)
+            .where(AIEmailReply.user_id == user.id)
+            .order_by(AIEmailReply.created_at.desc())
+            .limit(limit)
+        ).all()
+        entries: list[AIReplyLogEntry] = []
+        for r in replies:
+            inbox = r.inbox_email
+            body = r.edited_body or r.generated_body
+            entries.append(
+                AIReplyLogEntry(
+                    id=r.id,
+                    inbox_email_id=r.inbox_email_id,
+                    subject=inbox.subject,
+                    sender_email=inbox.sender_email,
+                    status=r.status,
+                    model_used=r.model_used,
+                    body_preview=body[:200],
+                    created_at=r.created_at.isoformat(),
+                    sent_at=r.sent_at.isoformat() if r.sent_at else None,
+                )
+            )
+        return entries
