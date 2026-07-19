@@ -100,8 +100,9 @@ async def evaluate_email_filter(
                 category="automated",
             )
 
-    needs_ai = config.filter_non_business or bool(config.custom_rules.strip())
-    if needs_ai and ai and (config.filter_non_business or config.custom_rules.strip()):
+    # Always use AI when available so it can read full thread history and decide whether
+    # the issue was already answered (reply vs ignore / leave as read).
+    if ai:
         try:
             return await ai.classify_should_reply(
                 sender=sender,

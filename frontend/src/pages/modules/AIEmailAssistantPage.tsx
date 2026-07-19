@@ -15,6 +15,8 @@ import {
   Ban,
   KeyRound,
   Bot,
+  Building2,
+  CheckCircle2,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api } from "@/lib/api";
@@ -26,7 +28,7 @@ import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 import type { GmailAccount } from "@/types";
 
-type Tab = "inbox" | "settings" | "logs";
+type Tab = "inbox" | "business" | "settings" | "logs";
 
 type InboxItem = {
   id: string;
@@ -90,8 +92,9 @@ type LogEntry = {
 
 const TABS: { id: Tab; label: string; icon: typeof Mail }[] = [
   { id: "inbox", label: "Inbox", icon: Mail },
-  { id: "settings", label: "Business context", icon: Settings2 },
-  { id: "logs", label: "AI audit log", icon: ScrollText },
+  { id: "business", label: "Business", icon: Building2 },
+  { id: "settings", label: "Settings", icon: Settings2 },
+  { id: "logs", label: "Activity", icon: ScrollText },
 ];
 
 function intentLabel(intent: string | null) {
@@ -126,6 +129,21 @@ function statusBadge(status: string) {
   return map[status] ?? "default";
 }
 
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    new: "Needs reply",
+    draft_pending: "Draft ready",
+    draft: "Draft",
+    replied: "Replied",
+    sent: "Sent",
+    skipped: "No reply",
+    failed: "Failed",
+    rejected: "Rejected",
+    processed: "Done",
+  };
+  return labels[status] ?? status;
+}
+
 function filterCategoryLabel(category: string | null) {
   if (!category) return null;
   const labels: Record<string, string> = {
@@ -136,6 +154,7 @@ function filterCategoryLabel(category: string | null) {
     other: "Filtered",
     customer: "Customer",
     acknowledgment: "Thank-you",
+    already_resolved: "Already answered",
   };
   return labels[category] ?? category;
 }
@@ -157,6 +176,7 @@ export function AIEmailAssistantPage() {
   const [savingOpenaiKey, setSavingOpenaiKey] = useState(false);
   const [runningAutomation, setRunningAutomation] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
+  const [settingsSaved, setSettingsSaved] = useState(false);
 
   const selected = inbox.find((e) => e.id === selectedId) ?? inbox[0] ?? null;
 
@@ -215,6 +235,7 @@ export function AIEmailAssistantPage() {
     const accId = settings?.gmail_account_id ?? connectedAccount?.id;
     if (!accId) {
       setError("Connect Gmail in Settings first.");
+      setTab("settings");
       return;
     }
     setSyncing(true);
@@ -353,6 +374,8 @@ export function AIEmailAssistantPage() {
   const saveSettings = async () => {
     if (!settings) return;
     setSavingSettings(true);
+    setSettingsSaved(false);
+    setError("");
     try {
       await api.aiEmailAssistant.updateSettings(
         {
@@ -380,10 +403,31 @@ export function AIEmailAssistantPage() {
         activeStore?.id
       );
       await loadSettings();
+      setSettingsSaved(true);
+      window.setTimeout(() => setSettingsSaved(false), 2500);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save settings");
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  const runAutomationNow = async () => {
+    setRunningAutomation(true);
+    setError("");
+    try {
+      const result = await api.aiEmailAssistant.runAutomation(activeStore?.id);
+      await Promise.all([loadInbox(), loadSettings(), loadLogs()]);
+      if (result.stopped && result.error) {
+        setError(result.error);
+      } else if (!result.ok && result.error) {
+        setError(result.error);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Autopilot run failed");
+      await loadSettings();
+    } finally {
+      setRunningAutomation(false);
     }
   };
 
@@ -392,21 +436,55 @@ export function AIEmailAssistantPage() {
     "placeholder:text-content-subtle focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
   );
 
+  const selectClass = cn(textareaClass, "h-10 min-h-0");
+
+  const needsSetup =
+    settings && (!settings.openai_configured || !connectedAccount);
+
+  const setupSteps = settings
+    ? [
+        {
+          done: Boolean(connectedAccount),
+          label: "Connect Gmail",
+          action: () => setTab("settings"),
+        },
+        {
+          done: settings.openai_configured,
+          label: "Add OpenAI API key",
+          action: () => setTab("settings"),
+        },
+        {
+          done: Boolean(settings.business_name.trim()),
+          label: "Describe your business",
+          action: () => setTab("business"),
+        },
+      ]
+    : [];
+
   return (
     <div className="space-y-6 max-w-6xl">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-brand-600 dark:text-brand-400">
-            <Sparkles className="h-5 w-5" />
-            <span className="text-sm font-medium">AI Email Assistant</span>
-          </div>
-          <h1 className="text-2xl font-bold text-content mt-1">Gmail auto-reply</h1>
-          <p className="text-content-muted mt-1 max-w-xl">
-            Fetch unread customer emails, generate replies with OpenAI using your business rules,
-            then approve or auto-send through Gmail.
+          <h1 className="text-2xl font-bold text-content tracking-tight">AI Email Assistant</h1>
+          <p className="text-content-muted mt-1 max-w-xl text-sm leading-relaxed">
+            Read customer emails, draft replies in your brand voice, and send through Gmail —
+            manually or on autopilot.
           </p>
+          {settings && (
+            <div className="flex flex-wrap gap-2 mt-3">
+              <Badge variant={settings.automation_enabled ? "success" : "muted"}>
+                {settings.automation_enabled ? "Autopilot on" : "Autopilot off"}
+              </Badge>
+              <Badge variant={settings.openai_configured ? "success" : "warning"}>
+                {settings.openai_configured ? "API key ready" : "API key needed"}
+              </Badge>
+              {connectedAccount && (
+                <Badge variant="default">{connectedAccount.email}</Badge>
+              )}
+            </div>
+          )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 shrink-0">
           <Button variant="outline" onClick={loadAll} disabled={loading}>
             <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
             Refresh
@@ -414,37 +492,50 @@ export function AIEmailAssistantPage() {
           {tab === "inbox" && (
             <Button onClick={syncInbox} disabled={syncing || !connectedAccount}>
               <Mail className="h-4 w-4 mr-2" />
-              {syncing ? "Syncing…" : "Sync unread"}
+              {syncing ? "Syncing…" : "Check inbox"}
             </Button>
           )}
         </div>
       </div>
 
-      {settings && !settings.openai_configured && (
-        <Card className="border-amber-500/40 bg-amber-500/5">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <AlertCircle className="h-4 w-4 text-amber-600" />
-              OpenAI API key required
-            </CardTitle>
+      {needsSetup && (
+        <Card className="border-amber-500/30 bg-amber-500/5">
+          <CardHeader className="mb-3">
+            <CardTitle className="text-base">Finish setup</CardTitle>
             <CardDescription>
-              Add your own API key under{" "}
-              <button
-                type="button"
-                className="text-brand-600 hover:underline font-medium"
-                onClick={() => setTab("settings")}
-              >
-                Business context
-              </button>
-              . Your key is encrypted on the server and never shown in the browser after saving.
+              Complete these steps once, then you can sync and reply from the Inbox.
             </CardDescription>
           </CardHeader>
+          <ul className="px-5 pb-5 space-y-2">
+            {setupSteps.map((step) => (
+              <li key={step.label}>
+                <button
+                  type="button"
+                  onClick={step.action}
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-surface transition-colors"
+                >
+                  {step.done ? (
+                    <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                  ) : (
+                    <span className="h-4 w-4 rounded-full border-2 border-amber-500/60 shrink-0" />
+                  )}
+                  <span
+                    className={cn(
+                      step.done ? "text-content-muted line-through" : "text-content font-medium"
+                    )}
+                  >
+                    {step.label}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
         </Card>
       )}
 
       {settings?.automation_last_error && !settings.automation_enabled && (
         <Card className="border-red-500/40 bg-red-500/10">
-          <CardHeader className="pb-2">
+          <CardHeader className="pb-2 mb-2">
             <CardTitle className="text-base flex items-center gap-2 text-red-700 dark:text-red-400">
               <AlertCircle className="h-4 w-4 shrink-0" />
               Autopilot stopped
@@ -453,56 +544,11 @@ export function AIEmailAssistantPage() {
               {settings.automation_last_error}
             </CardDescription>
           </CardHeader>
-          <div className="px-6 pb-4">
+          <div className="px-5 pb-4">
             <Button variant="outline" onClick={() => setTab("settings")}>
-              Fix in Business context
+              Open Settings
             </Button>
           </div>
-        </Card>
-      )}
-
-      {settings?.automation_enabled && (
-        <Card className="border-brand-500/30 bg-brand-500/5">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Bot className="h-4 w-4 text-brand-600" />
-              Autopilot is on
-            </CardTitle>
-            <CardDescription>
-              Checking unread Gmail every {settings.automation_interval_minutes} minutes
-              {settings.automation_last_run_at && (
-                <>
-                  {" "}
-                  · Last run {formatTime(settings.automation_last_run_at)}
-                </>
-              )}
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      )}
-
-      {settings?.openai_uses_server_fallback && (
-        <Card className="border-border">
-          <CardHeader className="pb-2">
-            <CardDescription className="text-xs">
-              Using a shared server API key (development). Save your own key in Business context for
-              production.
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      )}
-
-      {!connectedAccount && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Connect Gmail</CardTitle>
-            <CardDescription>
-              OAuth is required to read inbox and send replies.{" "}
-              <Link to="/settings/gmail" className="text-brand-600 hover:underline">
-                Connect in Gmail settings →
-              </Link>
-            </CardDescription>
-          </CardHeader>
         </Card>
       )}
 
@@ -512,14 +558,14 @@ export function AIEmailAssistantPage() {
         </p>
       )}
 
-      <div className="flex gap-1 border-b border-border">
+      <div className="flex gap-1 border-b border-border overflow-x-auto">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
             onClick={() => setTab(id)}
             className={cn(
-              "flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors",
+              "flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap",
               tab === id
                 ? "border-brand-500 text-brand-700 dark:text-brand-400"
                 : "border-transparent text-content-muted hover:text-content"
@@ -533,14 +579,22 @@ export function AIEmailAssistantPage() {
 
       {tab === "inbox" && (
         <div className="grid gap-4 lg:grid-cols-5">
-          <Card className="lg:col-span-2 p-0 overflow-hidden">
-            <div className="border-b border-border px-4 py-3 text-sm font-medium text-content">
-              Inbox ({inbox.length})
+          <Card className="lg:col-span-2 p-0 overflow-hidden" padding="none">
+            <div className="border-b border-border px-4 py-3 flex items-center justify-between">
+              <span className="text-sm font-medium text-content">
+                Inbox
+                <span className="text-content-muted font-normal ml-1">({inbox.length})</span>
+              </span>
             </div>
-            <ul className="max-h-[480px] overflow-y-auto divide-y divide-border">
+            <ul className="max-h-[520px] overflow-y-auto divide-y divide-border">
               {inbox.length === 0 && (
-                <li className="px-4 py-8 text-sm text-content-muted text-center">
-                  No emails synced. Click &quot;Sync unread&quot; to fetch from Gmail.
+                <li className="px-4 py-10 text-sm text-content-muted text-center space-y-3">
+                  <p>No emails yet.</p>
+                  <p className="text-xs">
+                    {connectedAccount
+                      ? 'Click "Check inbox" to pull unread customer emails from Gmail.'
+                      : "Connect Gmail in Settings to get started."}
+                  </p>
                 </li>
               )}
               {inbox.map((item) => (
@@ -553,14 +607,13 @@ export function AIEmailAssistantPage() {
                       selected?.id === item.id && "bg-brand-500/10"
                     )}
                   >
-                    <p className="text-sm font-medium text-content truncate">{item.subject}</p>
-                    <p className="text-xs text-content-muted truncate">{item.sender_email}</p>
-                    <div className="flex gap-2 mt-1">
-                      <Badge variant={statusBadge(item.status)}>{item.status}</Badge>
-                      {item.status === "skipped" && (
-                        <Badge variant="muted">No reply</Badge>
-                      )}
-                      {item.filter_category && (
+                    <p className="text-sm font-medium text-content truncate">{item.subject || "(no subject)"}</p>
+                    <p className="text-xs text-content-muted truncate mt-0.5">{item.sender_email}</p>
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      <Badge variant={statusBadge(item.status)}>
+                        {statusLabel(item.status === "draft_pending" && item.latest_reply?.status === "draft" ? "draft" : item.status)}
+                      </Badge>
+                      {item.filter_category && item.status === "skipped" && (
                         <Badge variant="muted">{filterCategoryLabel(item.filter_category)}</Badge>
                       )}
                       {item.detected_intent && item.status !== "skipped" && (
@@ -573,32 +626,30 @@ export function AIEmailAssistantPage() {
             </ul>
           </Card>
 
-          <Card className="lg:col-span-3">
+          <Card className="lg:col-span-3" padding="none">
             {selected ? (
-              <div className="space-y-4 p-4">
+              <div className="space-y-4 p-5">
                 <div>
-                  <h2 className="font-semibold text-content">{selected.subject}</h2>
+                  <h2 className="font-semibold text-content text-lg leading-snug">
+                    {selected.subject || "(no subject)"}
+                  </h2>
                   <p className="text-sm text-content-muted mt-1">
                     {selected.sender} · {formatTime(selected.received_at)}
                   </p>
                 </div>
-                <div className="rounded-lg bg-surface-muted p-3 text-sm text-content whitespace-pre-wrap max-h-40 overflow-y-auto">
-                  {selected.body_text}
+                <div className="rounded-lg bg-surface-muted p-4 text-sm text-content whitespace-pre-wrap max-h-44 overflow-y-auto leading-relaxed">
+                  {selected.body_text || "No message body."}
                 </div>
 
                 {selected.status === "skipped" && (
-                  <div className="rounded-lg border border-border bg-surface-muted/80 p-4 space-y-3">
+                  <div className="rounded-lg border border-border bg-surface-muted/60 p-4 space-y-3">
                     <div className="flex items-start gap-2">
                       <Ban className="h-4 w-4 text-content-muted shrink-0 mt-0.5" />
                       <div>
-                        <p className="text-sm font-medium text-content">Filtered — will not get a reply</p>
+                        <p className="text-sm font-medium text-content">No reply needed</p>
                         <p className="text-sm text-content-muted mt-1">
                           {selected.skip_reason ||
-                            "This email was excluded by your reply filter settings."}
-                        </p>
-                        <p className="text-xs text-content-subtle mt-2">
-                          App Manager will not draft or auto-send a response. You can still reply
-                          manually if this was a mistake.
+                            "This email was left as read — the AI decided a reply was not needed."}
                         </p>
                       </div>
                     </div>
@@ -618,22 +669,22 @@ export function AIEmailAssistantPage() {
                     disabled={!settings?.openai_configured || actionId === selected.id}
                   >
                     <Sparkles className="h-4 w-4 mr-2" />
-                    Generate AI reply
+                    {actionId === selected.id ? "Writing…" : "Write AI reply"}
                   </Button>
                 )}
 
                 {selected.latest_reply?.status === "draft" && (
                   <div className="space-y-3">
-                    <label className="text-sm font-medium text-content">AI draft</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium text-content">Draft reply</label>
+                      <span className="text-xs text-content-subtle">{selected.latest_reply.model_used}</span>
+                    </div>
                     <textarea
                       className={textareaClass}
                       rows={8}
                       value={draftEdit}
                       onChange={(e) => setDraftEdit(e.target.value)}
                     />
-                    <p className="text-xs text-content-subtle">
-                      Model: {selected.latest_reply.model_used}
-                    </p>
                     <div className="flex flex-wrap gap-2">
                       <Button
                         variant="outline"
@@ -647,7 +698,7 @@ export function AIEmailAssistantPage() {
                         disabled={actionId === selected.latest_reply.id}
                       >
                         <Send className="h-4 w-4 mr-2" />
-                        Approve & send
+                        Send
                       </Button>
                       <Button
                         variant="outline"
@@ -655,14 +706,14 @@ export function AIEmailAssistantPage() {
                         disabled={actionId === selected.latest_reply.id}
                       >
                         <X className="h-4 w-4 mr-2" />
-                        Reject
+                        Discard
                       </Button>
                     </div>
                   </div>
                 )}
 
                 {selected.latest_reply?.status === "sent" && (
-                  <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400">
+                  <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400 rounded-lg bg-green-500/10 px-3 py-2">
                     <Check className="h-4 w-4" />
                     Reply sent via Gmail
                   </div>
@@ -672,43 +723,151 @@ export function AIEmailAssistantPage() {
                   selected.latest_reply.status !== "draft" &&
                   selected.latest_reply.status !== "sent" && (
                     <p className="text-sm text-content-muted">
-                      Reply status: {selected.latest_reply.status}
+                      Status: {statusLabel(selected.latest_reply.status)}
                     </p>
                   )}
               </div>
             ) : (
-              <div className="p-8 text-center text-content-muted text-sm">
-                Select an email or sync your inbox
+              <div className="p-12 text-center text-content-muted text-sm">
+                Select an email from the list, or check your inbox to get started.
               </div>
             )}
           </Card>
         </div>
       )}
 
+      {tab === "business" && settings && (
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl space-y-5">
+          <div>
+            <h2 className="text-lg font-semibold text-content">Your business</h2>
+            <p className="text-sm text-content-muted mt-1 leading-relaxed">
+              Tell the AI how your store sounds and what customers usually ask. Keep this short —
+              API keys and autopilot live under Settings.
+            </p>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Basics</CardTitle>
+              <CardDescription>Used on every reply so customers recognize your brand.</CardDescription>
+            </CardHeader>
+            <div className="space-y-4">
+              <Input
+                label="Business name"
+                placeholder="e.g. Northwind Outfitters"
+                value={settings.business_name}
+                onChange={(e) => setSettings({ ...settings, business_name: e.target.value })}
+              />
+              <Input
+                label="What you sell"
+                hint="e.g. online clothing store, electronics, handmade gifts"
+                value={settings.business_type}
+                onChange={(e) => setSettings({ ...settings, business_type: e.target.value })}
+              />
+              <Input
+                label="Tone of voice"
+                hint="e.g. friendly and helpful, short and professional"
+                value={settings.tone_of_voice}
+                onChange={(e) => setSettings({ ...settings, tone_of_voice: e.target.value })}
+              />
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>How to reply</CardTitle>
+              <CardDescription>Guidelines the AI must follow in every message.</CardDescription>
+            </CardHeader>
+            <div className="space-y-1.5">
+              <label className="block text-sm font-medium text-content">Rules</label>
+              <textarea
+                className={textareaClass}
+                rows={4}
+                placeholder={"Always be polite.\nNever promise a refund without checking the order first.\nSign off with the store name."}
+                value={settings.rules}
+                onChange={(e) => setSettings({ ...settings, rules: e.target.value })}
+              />
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Policies & FAQ</CardTitle>
+              <CardDescription>
+                Shipping, returns, and common answers — the AI uses these instead of guessing.
+              </CardDescription>
+            </CardHeader>
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="block text-sm font-medium text-content">Key policies</label>
+                <textarea
+                  className={textareaClass}
+                  rows={4}
+                  placeholder={"Shipping: 3–5 business days.\nReturns within 14 days of delivery.\nFree shipping over $50."}
+                  value={settings.policies}
+                  onChange={(e) => setSettings({ ...settings, policies: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="block text-sm font-medium text-content">Common questions</label>
+                <textarea
+                  className={textareaClass}
+                  rows={4}
+                  placeholder={"Q: How do I track my order?\nA: Use the tracking link in your shipping email.\n\nQ: Can I change my address?\nA: Reply with the new address before we ship."}
+                  value={settings.faq}
+                  onChange={(e) => setSettings({ ...settings, faq: e.target.value })}
+                />
+              </div>
+            </div>
+          </Card>
+
+          <div className="flex items-center gap-3 sticky bottom-4">
+            <Button onClick={saveSettings} disabled={savingSettings}>
+              {savingSettings ? "Saving…" : "Save business info"}
+            </Button>
+            {settingsSaved && (
+              <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                <Check className="h-4 w-4" /> Saved
+              </span>
+            )}
+          </div>
+        </motion.div>
+      )}
+
       {tab === "settings" && settings && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 max-w-2xl">
-          <Card className="border-brand-500/20">
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl space-y-5">
+          <div>
+            <h2 className="text-lg font-semibold text-content">Settings</h2>
+            <p className="text-sm text-content-muted mt-1 leading-relaxed">
+              Connect accounts, turn on autopilot, and choose which emails get a reply.
+            </p>
+          </div>
+
+          <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <KeyRound className="h-4 w-4 text-brand-600 dark:text-brand-400" />
-                Your OpenAI API key
+                OpenAI API key
               </CardTitle>
               <CardDescription>
-                Each account uses its own key. We store it encrypted (same security as Gmail tokens).
-                It is only sent to OpenAI from the server when generating replies — never exposed in
-                the app or API responses.
+                Required for drafting replies. Stored encrypted — billed by OpenAI on your account.
               </CardDescription>
             </CardHeader>
-            <div className="px-6 pb-6 space-y-4">
+            <div className="space-y-4">
               {settings.openai_key_is_user_owned && settings.openai_key_masked && (
                 <div className="flex items-center justify-between rounded-lg bg-surface-muted px-3 py-2 text-sm">
                   <span className="text-content-muted">Saved key</span>
                   <span className="font-mono text-content">{settings.openai_key_masked}</span>
                 </div>
               )}
+              {settings.openai_uses_server_fallback && !settings.openai_key_is_user_owned && (
+                <p className="text-xs text-content-muted rounded-lg bg-surface-muted px-3 py-2">
+                  Using a temporary shared key for development. Add your own key for production.
+                </p>
+              )}
               <div className="space-y-1.5">
                 <label htmlFor="openai-api-key" className="block text-sm font-medium text-content">
-                  {settings.openai_key_is_user_owned ? "Replace API key" : "API key"}
+                  {settings.openai_key_is_user_owned ? "Replace key" : "API key"}
                 </label>
                 <input
                   id="openai-api-key"
@@ -724,7 +883,7 @@ export function AIEmailAssistantPage() {
                   )}
                 />
                 <p className="text-xs text-content-subtle">
-                  Create a key at{" "}
+                  Get a key at{" "}
                   <a
                     href="https://platform.openai.com/api-keys"
                     target="_blank"
@@ -733,7 +892,6 @@ export function AIEmailAssistantPage() {
                   >
                     platform.openai.com/api-keys
                   </a>
-                  . You are billed directly by OpenAI.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -741,299 +899,37 @@ export function AIEmailAssistantPage() {
                   {savingOpenaiKey ? "Saving…" : settings.openai_key_is_user_owned ? "Update key" : "Save key"}
                 </Button>
                 {settings.openai_key_is_user_owned && (
-                  <Button
-                    variant="outline"
-                    onClick={removeOpenaiKey}
-                    disabled={savingOpenaiKey}
-                  >
-                    Remove key
+                  <Button variant="outline" onClick={removeOpenaiKey} disabled={savingOpenaiKey}>
+                    Remove
                   </Button>
                 )}
               </div>
             </div>
           </Card>
 
-          <Card className="border-brand-500/20">
+          <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Bot className="h-4 w-4 text-brand-600 dark:text-brand-400" />
-                Autopilot
+                <Mail className="h-4 w-4 text-brand-600 dark:text-brand-400" />
+                Gmail account
               </CardTitle>
               <CardDescription>
-                Runs in the background while the App Manager backend is running. Fetches unread
-                emails, applies your filters, generates replies, and sends them if auto-send is on.
+                Inbox sync and sending use this connected account.
               </CardDescription>
             </CardHeader>
-            <div className="px-6 pb-6 space-y-4">
-              <Switch
-                checked={settings.automation_enabled}
-                onChange={(v) => setSettings({ ...settings, automation_enabled: v })}
-                label="Enable autopilot"
-                description="Automatically check Gmail and respond on a schedule"
-              />
-              {settings.automation_enabled && (
-                <div className="grid gap-4 sm:grid-cols-2 pl-1 border-l-2 border-brand-500/30 ml-1">
-                  <div className="space-y-1.5">
-                    <label className="block text-sm font-medium text-content">
-                      Check every (minutes)
-                    </label>
-                    <select
-                      className={textareaClass + " h-10 min-h-0"}
-                      value={settings.automation_interval_minutes}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          automation_interval_minutes: Number(e.target.value),
-                        })
-                      }
-                    >
-                      {[5, 10, 15, 30, 60, 120].map((m) => (
-                        <option key={m} value={m}>
-                          {m} minutes
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <Input
-                    label="Max emails per run"
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={String(settings.automation_max_emails_per_run)}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        automation_max_emails_per_run: Math.min(
-                          50,
-                          Math.max(1, parseInt(e.target.value, 10) || 10)
-                        ),
-                      })
-                    }
-                    hint="Unread messages processed each cycle"
-                  />
-                </div>
-              )}
-              {settings.automation_last_run_at && (
-                <p className="text-xs text-content-muted">
-                  Last autopilot run: {formatTime(settings.automation_last_run_at)}
+            <div className="space-y-3">
+              {accounts.filter((a) => a.status === "connected").length === 0 ? (
+                <p className="text-sm text-content-muted">
+                  No Gmail connected yet.{" "}
+                  <Link to="/settings/gmail" className="text-brand-600 hover:underline font-medium">
+                    Connect Gmail →
+                  </Link>
                 </p>
-              )}
-              {settings.automation_last_error && settings.automation_enabled && (
-                <p className="text-xs text-amber-600 dark:text-amber-400">
-                  {settings.automation_last_error}
-                </p>
-              )}
-              {settings.automation_last_error && !settings.automation_enabled && (
-                <p className="text-sm text-red-600 dark:text-red-400 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2">
-                  {settings.automation_last_error}
-                </p>
-              )}
-              <Button
-                variant="outline"
-                disabled={runningAutomation || !settings.openai_configured || !connectedAccount}
-                onClick={async () => {
-                  setRunningAutomation(true);
-                  setError("");
-                  try {
-                    const result = await api.aiEmailAssistant.runAutomation(activeStore?.id);
-                    await Promise.all([loadInbox(), loadSettings(), loadLogs()]);
-                    if (result.stopped && result.error) {
-                      setError(result.error);
-                    } else if (!result.ok && result.error) {
-                      setError(result.error);
-                    } else {
-                      setError("");
-                    }
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : "Autopilot run failed");
-                    await loadSettings();
-                  } finally {
-                    setRunningAutomation(false);
-                  }
-                }}
-              >
-                <RefreshCw
-                  className={cn("h-4 w-4 mr-2", runningAutomation && "animate-spin")}
-                />
-                {runningAutomation ? "Running…" : "Run now"}
-              </Button>
-            </div>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Reply mode</CardTitle>
-              <CardDescription>
-                With autopilot on: AI still drafts every customer email. Turn on auto-send to post
-                replies to Gmail without your approval.
-              </CardDescription>
-            </CardHeader>
-            <div className="px-6 pb-6 flex items-center justify-between">
-              <div>
-                <p className="font-medium text-content text-sm">Auto-send replies</p>
-                <p className="text-xs text-content-muted">Send without manual approval</p>
-              </div>
-              <Switch
-                checked={settings.auto_send_enabled}
-                onChange={(v) => setSettings({ ...settings, auto_send_enabled: v })}
-              />
-            </div>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Duplicate reply prevention</CardTitle>
-              <CardDescription>
-                Stops sending multiple identical replies when Gmail has several unread messages in
-                the same conversation. Enabled by default — recommended.
-              </CardDescription>
-            </CardHeader>
-            <div className="px-6 pb-6 space-y-4">
-              <Switch
-                checked={settings.one_reply_per_thread}
-                onChange={(v) => setSettings({ ...settings, one_reply_per_thread: v })}
-                label="One reply per conversation"
-                description="Only the first unread message in a thread gets a reply; others are skipped."
-              />
-              <Switch
-                checked={settings.sync_only_customer_unread}
-                onChange={(v) => setSettings({ ...settings, sync_only_customer_unread: v })}
-                label="Only unread customer emails"
-                description="Ignore unread messages sent from your own shop address."
-              />
-              <Switch
-                checked={settings.verify_gmail_thread_before_reply}
-                onChange={(v) => setSettings({ ...settings, verify_gmail_thread_before_reply: v })}
-                label="Check Gmail before replying"
-                description="Skip if your business already sent the latest message in the thread."
-              />
-            </div>
-          </Card>
-
-          <Card className="border-brand-500/20">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Filter className="h-4 w-4 text-brand-600 dark:text-brand-400" />
-                Which emails get a reply?
-              </CardTitle>
-              <CardDescription>
-                Not every inbox message needs an answer. Turn on the reply filter to skip
-                automated mail, newsletters, and non-business messages so App Manager only drafts
-                replies for real customer emails.
-              </CardDescription>
-            </CardHeader>
-            <div className="px-6 pb-6 space-y-5">
-              <Switch
-                checked={settings.email_filter_enabled}
-                onChange={(v) => setSettings({ ...settings, email_filter_enabled: v })}
-                label="Smart reply filter"
-                description="When on, filtered emails are marked “No reply” and never receive AI drafts or auto-send."
-              />
-
-              {settings.email_filter_enabled && (
-                <div className="space-y-4 pl-1 border-l-2 border-brand-500/30 ml-1">
-                  <Switch
-                    checked={settings.filter_automated_emails}
-                    onChange={(v) => setSettings({ ...settings, filter_automated_emails: v })}
-                    label="Skip automated & system emails"
-                    description="No-reply addresses, delivery notifications, password resets, out-of-office, platform alerts."
-                  />
-                  <Switch
-                    checked={settings.filter_non_business_emails}
-                    onChange={(v) => setSettings({ ...settings, filter_non_business_emails: v })}
-                    label="Skip non-business emails"
-                    description="Personal mail, spam, or messages unrelated to your store (uses AI classification on sync)."
-                  />
-                  <div className="space-y-1.5">
-                    <label className="block text-sm font-medium text-content">
-                      Custom emails to ignore
-                    </label>
-                    <p className="text-xs text-content-muted mb-1">
-                      Optional. One rule per line — e.g. “Ignore supplier invoices”, “Skip job
-                      applications”.
-                    </p>
-                    <textarea
-                      className={textareaClass}
-                      rows={3}
-                      placeholder={"Ignore emails about wholesale partnerships\nDo not reply to influencer outreach"}
-                      value={settings.filter_custom_rules}
-                      onChange={(e) =>
-                        setSettings({ ...settings, filter_custom_rules: e.target.value })
-                      }
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Business context</CardTitle>
-              <CardDescription>
-                Injected into every AI prompt so replies match your brand and policies. The assistant
-                also reads the full Gmail thread (not just the latest line) for better context.
-              </CardDescription>
-            </CardHeader>
-            <div className="px-6 pb-6 space-y-4">
-              <Switch
-                checked={settings.use_thread_context}
-                onChange={(v) => setSettings({ ...settings, use_thread_context: v })}
-                label="Use full conversation thread"
-                description="Recommended. Helps with short messages like “thank you” after an order or support issue."
-              />
-              <Input
-                label="Business name"
-                value={settings.business_name}
-                onChange={(e) => setSettings({ ...settings, business_name: e.target.value })}
-              />
-              <Input
-                label="Business type"
-                hint="e.g. e-commerce, SaaS, services"
-                value={settings.business_type}
-                onChange={(e) => setSettings({ ...settings, business_type: e.target.value })}
-              />
-              <Input
-                label="Tone of voice"
-                hint="e.g. formal, friendly, luxury, brief"
-                value={settings.tone_of_voice}
-                onChange={(e) => setSettings({ ...settings, tone_of_voice: e.target.value })}
-              />
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium text-content">Rules</label>
-                <textarea
-                  className={textareaClass}
-                  rows={3}
-                  placeholder="Always be polite. Never promise refunds without manager approval."
-                  value={settings.rules}
-                  onChange={(e) => setSettings({ ...settings, rules: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium text-content">Key policies</label>
-                <textarea
-                  className={textareaClass}
-                  rows={4}
-                  placeholder="Shipping: 3–5 business days. Refunds within 14 days..."
-                  value={settings.policies}
-                  onChange={(e) => setSettings({ ...settings, policies: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="block text-sm font-medium text-content">FAQ knowledge base</label>
-                <textarea
-                  className={textareaClass}
-                  rows={4}
-                  placeholder="Q: How do I track my order? A: ..."
-                  value={settings.faq}
-                  onChange={(e) => setSettings({ ...settings, faq: e.target.value })}
-                />
-              </div>
-              {accounts.length > 0 && (
+              ) : (
                 <div className="space-y-1.5">
-                  <label className="block text-sm font-medium text-content">Gmail account</label>
+                  <label className="block text-sm font-medium text-content">Send from</label>
                   <select
-                    className={textareaClass + " h-10 min-h-0"}
+                    className={selectClass}
                     value={settings.gmail_account_id ?? ""}
                     onChange={(e) =>
                       setSettings({
@@ -1053,58 +949,236 @@ export function AIEmailAssistantPage() {
                   </select>
                 </div>
               )}
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Bot className="h-4 w-4 text-brand-600 dark:text-brand-400" />
+                Autopilot
+              </CardTitle>
+              <CardDescription>
+                Automatically check Gmail on a schedule. Drafts replies — or sends them if auto-send
+                is on.
+              </CardDescription>
+            </CardHeader>
+            <div className="space-y-4">
+              <Switch
+                checked={settings.automation_enabled}
+                onChange={(v) => setSettings({ ...settings, automation_enabled: v })}
+                label="Enable autopilot"
+                description="Runs while the App Manager backend is online"
+              />
+              {settings.automation_enabled && (
+                <div className="grid gap-4 sm:grid-cols-2 pl-1 border-l-2 border-brand-500/30 ml-1">
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-medium text-content">Check every</label>
+                    <select
+                      className={selectClass}
+                      value={settings.automation_interval_minutes}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          automation_interval_minutes: Number(e.target.value),
+                        })
+                      }
+                    >
+                      {[5, 10, 15, 30, 60, 120].map((m) => (
+                        <option key={m} value={m}>
+                          {m} minutes
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Input
+                    label="Emails per check"
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={String(settings.automation_max_emails_per_run)}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        automation_max_emails_per_run: Math.min(
+                          50,
+                          Math.max(1, parseInt(e.target.value, 10) || 10)
+                        ),
+                      })
+                    }
+                    hint="Max unread emails each cycle"
+                  />
+                </div>
+              )}
+              <Switch
+                checked={settings.auto_send_enabled}
+                onChange={(v) => setSettings({ ...settings, auto_send_enabled: v })}
+                label="Auto-send replies"
+                description="Send without waiting for your approval (use carefully)"
+              />
+              {settings.automation_last_run_at && (
+                <p className="text-xs text-content-muted">
+                  Last run: {formatTime(settings.automation_last_run_at)}
+                </p>
+              )}
+              <Button
+                variant="outline"
+                disabled={runningAutomation || !settings.openai_configured || !connectedAccount}
+                onClick={runAutomationNow}
+              >
+                <RefreshCw className={cn("h-4 w-4 mr-2", runningAutomation && "animate-spin")} />
+                {runningAutomation ? "Running…" : "Run once now"}
+              </Button>
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Filter className="h-4 w-4 text-brand-600 dark:text-brand-400" />
+                Which emails get a reply?
+              </CardTitle>
+              <CardDescription>
+                The AI reads the full conversation. Already-answered issues are left as read with no
+                reply.
+              </CardDescription>
+            </CardHeader>
+            <div className="space-y-4">
+              <Switch
+                checked={settings.email_filter_enabled}
+                onChange={(v) => setSettings({ ...settings, email_filter_enabled: v })}
+                label="Smart reply filter"
+                description="Skip newsletters, automated mail, and messages that don’t need a reply"
+              />
+              {settings.email_filter_enabled && (
+                <div className="space-y-4 pl-1 border-l-2 border-brand-500/30 ml-1">
+                  <Switch
+                    checked={settings.filter_automated_emails}
+                    onChange={(v) => setSettings({ ...settings, filter_automated_emails: v })}
+                    label="Skip automated emails"
+                    description="No-reply, delivery notices, password resets, platform alerts"
+                  />
+                  <Switch
+                    checked={settings.filter_non_business_emails}
+                    onChange={(v) => setSettings({ ...settings, filter_non_business_emails: v })}
+                    label="Skip non-business emails"
+                    description="Personal or unrelated messages"
+                  />
+                  <div className="space-y-1.5">
+                    <label className="block text-sm font-medium text-content">
+                      Extra rules (optional)
+                    </label>
+                    <textarea
+                      className={textareaClass}
+                      rows={3}
+                      placeholder={"Ignore wholesale inquiries\nDo not reply to influencer outreach"}
+                      value={settings.filter_custom_rules}
+                      onChange={(e) =>
+                        setSettings({ ...settings, filter_custom_rules: e.target.value })
+                      }
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Conversation checks</CardTitle>
+              <CardDescription>
+                Recommended defaults — leave these on unless you have a specific reason to change
+                them.
+              </CardDescription>
+            </CardHeader>
+            <div className="space-y-4">
+              <Switch
+                checked={settings.use_thread_context}
+                onChange={(v) => setSettings({ ...settings, use_thread_context: v })}
+                label="Read full email history"
+                description="AI sees the whole thread, not just the latest message"
+              />
+              <Switch
+                checked={settings.one_reply_per_thread}
+                onChange={(v) => setSettings({ ...settings, one_reply_per_thread: v })}
+                label="One reply per conversation per run"
+                description="Avoids double replies when several unread messages are in the same thread"
+              />
+              <Switch
+                checked={settings.sync_only_customer_unread}
+                onChange={(v) => setSettings({ ...settings, sync_only_customer_unread: v })}
+                label="Only customer emails"
+                description="Ignore unread messages from your own address"
+              />
+              <Switch
+                checked={settings.verify_gmail_thread_before_reply}
+                onChange={(v) => setSettings({ ...settings, verify_gmail_thread_before_reply: v })}
+                label="Skip if we already sent last"
+                description="If your latest message is already in the thread, don’t reply again"
+              />
               <Input
-                label="OpenAI model (optional override)"
-                hint={`Server default: ${settings.default_model}`}
+                label="AI model (optional)"
+                hint={`Default: ${settings.default_model}`}
+                placeholder={settings.default_model}
                 value={settings.openai_model ?? ""}
                 onChange={(e) =>
                   setSettings({ ...settings, openai_model: e.target.value || null })
                 }
               />
-              <Button onClick={saveSettings} disabled={savingSettings}>
-                {savingSettings ? "Saving…" : "Save settings"}
-              </Button>
             </div>
           </Card>
+
+          <div className="flex items-center gap-3 sticky bottom-4">
+            <Button onClick={saveSettings} disabled={savingSettings}>
+              {savingSettings ? "Saving…" : "Save settings"}
+            </Button>
+            {settingsSaved && (
+              <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                <Check className="h-4 w-4" /> Saved
+              </span>
+            )}
+          </div>
         </motion.div>
       )}
 
       {tab === "logs" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>AI audit log</CardTitle>
-            <CardDescription>All generated replies for debugging and compliance.</CardDescription>
-          </CardHeader>
+        <Card padding="none">
+          <div className="p-5 border-b border-border">
+            <CardTitle>Activity</CardTitle>
+            <CardDescription className="mt-1">
+              Recent AI drafts and sent replies.
+            </CardDescription>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-content-muted">
-                  <th className="px-4 py-2 font-medium">When</th>
-                  <th className="px-4 py-2 font-medium">To</th>
-                  <th className="px-4 py-2 font-medium">Subject</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium">Model</th>
-                  <th className="px-4 py-2 font-medium">Preview</th>
+                  <th className="px-4 py-2.5 font-medium">When</th>
+                  <th className="px-4 py-2.5 font-medium">Customer</th>
+                  <th className="px-4 py-2.5 font-medium">Subject</th>
+                  <th className="px-4 py-2.5 font-medium">Status</th>
+                  <th className="px-4 py-2.5 font-medium">Preview</th>
                 </tr>
               </thead>
               <tbody>
                 {logs.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-content-muted">
-                      No AI replies yet
+                    <td colSpan={5} className="px-4 py-10 text-center text-content-muted">
+                      No activity yet — sync your inbox and generate a reply to see it here.
                     </td>
                   </tr>
                 )}
                 {logs.map((log) => (
                   <tr key={log.id} className="border-b border-border/50">
-                    <td className="px-4 py-2 whitespace-nowrap">{formatTime(log.created_at)}</td>
-                    <td className="px-4 py-2">{log.sender_email}</td>
-                    <td className="px-4 py-2 max-w-[160px] truncate">{log.subject}</td>
-                    <td className="px-4 py-2">
-                      <Badge variant={statusBadge(log.status)}>{log.status}</Badge>
+                    <td className="px-4 py-2.5 whitespace-nowrap text-content-muted">
+                      {formatTime(log.created_at)}
                     </td>
-                    <td className="px-4 py-2 text-xs">{log.model_used}</td>
-                    <td className="px-4 py-2 max-w-xs truncate text-content-muted">
+                    <td className="px-4 py-2.5">{log.sender_email}</td>
+                    <td className="px-4 py-2.5 max-w-[180px] truncate">{log.subject}</td>
+                    <td className="px-4 py-2.5">
+                      <Badge variant={statusBadge(log.status)}>{statusLabel(log.status)}</Badge>
+                    </td>
+                    <td className="px-4 py-2.5 max-w-xs truncate text-content-muted">
                       {log.body_preview}
                     </td>
                   </tr>

@@ -93,7 +93,9 @@ class AIService:
         custom_block = custom_skip_rules.strip() or "None specified."
         system_message = f"""You classify incoming emails for a {business_type or "business"} named "{business_name or "the business"}".
 
-You receive the FULL email thread when available, plus the latest message. Always use thread context — a lone "thank you" or "ok" is still part of an active customer conversation if the thread shows prior order/support discussion.
+You receive the FULL email conversation (oldest → newest) when available, plus the latest message.
+Read the entire history before deciding. Identify what the customer asked, whether the business already
+answered that issue, and whether the latest message raises anything new.
 
 Decide whether the business should send a customer support reply to the LATEST message.
 
@@ -101,20 +103,26 @@ Do NOT reply (should_reply: false) for:
 - Automated/system messages, no-reply senders, delivery receipts, security codes, password resets
 - Newsletters, marketing blasts, platform notifications (Shopify, PayPal, social media, etc.)
 - Spam or mail clearly unrelated to this business
-- Closing thank-you messages where no response is needed AND the thread is already fully resolved (category: acknowledgment) — only if a polite one-line reply would add no value
+- Threads where the business already answered the customer's issue and the latest message does not
+  ask a new question, report a new problem, escalate, or request more help (category: already_resolved).
+  Examples: "ok thanks", "got it", "perfect", "thank you" after your reply already covered their request
+- Closing thank-you messages where no response is needed AND the thread is already fully resolved
+  (category: acknowledgment) — only if a polite one-line reply would add no value
 
 DO reply (should_reply: true) for:
-- Questions or requests about orders, shipping, refunds, products, cancellations, complaints
-- Customer thank-you messages when a brief acknowledgment is appropriate (category: acknowledgment) — NOT "personal"
-- Follow-ups in an ongoing support thread (category: customer)
+- First-contact questions or requests about orders, shipping, refunds, products, cancellations, complaints
+- Follow-ups that raise a NEW question, say the previous answer did not help, report a new problem,
+  or ask for more action — even if the business already replied earlier in the thread (category: customer)
+- Customer thank-you messages when a brief acknowledgment is still appropriate (category: acknowledgment)
 
-NEVER use category "personal" for customers who bought from or contacted this business. Use "customer" or "acknowledgment".
+NEVER use category "personal" for customers who bought from or contacted this business.
+Use "customer", "acknowledgment", or "already_resolved".
 
 Additional rules from the business owner (always respect these):
 {custom_block}
 
 Respond with JSON only, no markdown:
-{{"should_reply": true or false, "reason": "short plain-English explanation for the user", "category": "customer|acknowledgment|automated|newsletter|spam|other"}}"""
+{{"should_reply": true or false, "reason": "short plain-English explanation for the user", "category": "customer|acknowledgment|already_resolved|automated|newsletter|spam|other"}}"""
 
         thread_block = ""
         if thread_context and thread_context.strip():

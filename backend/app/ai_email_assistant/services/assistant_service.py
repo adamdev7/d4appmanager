@@ -10,7 +10,6 @@ from app.ai_email_assistant.automation_control import stop_autopilot
 from app.ai_email_assistant.duplicate_guard import (
     ALREADY_REPLIED_REASON,
     mark_thread_siblings_handled,
-    thread_has_answered_in_db,
 )
 from app.ai_email_assistant.email_filter import config_from_settings, evaluate_email_filter
 from app.ai_email_assistant.thread_context import format_thread_conversation
@@ -202,8 +201,10 @@ class AIEmailAssistantService:
         settings_row: AIEmailAssistantSettings,
         account: GmailAccount,
         thread_id: str,
+        *,
+        force: bool = False,
     ) -> str | None:
-        if not settings_row.use_thread_context:
+        if not force and not settings_row.use_thread_context:
             return None
         client = GmailInboxClient(db)
         messages = await client.get_thread_conversation(account, thread_id)
@@ -218,31 +219,47 @@ class AIEmailAssistantService:
         account: GmailAccount,
         email: InboxEmail,
     ) -> str | None:
-        if not settings_row.one_reply_per_thread and not settings_row.verify_gmail_thread_before_reply:
+        """Hard skip only when Gmail shows we already sent the latest message.
+
+        Whether a prior reply already resolved the customer's issue is decided by the AI
+        after reading full thread history — not by blindly skipping the whole conversation.
+        """
+        if not settings_row.verify_gmail_thread_before_reply:
             return None
 
-        if settings_row.one_reply_per_thread and thread_has_answered_in_db(
-            db,
-            gmail_account_id=email.gmail_account_id,
-            thread_id=email.thread_id,
-            exclude_inbox_id=email.id,
-        ):
-            return ALREADY_REPLIED_REASON
-
-        if settings_row.verify_gmail_thread_before_reply:
-            client = GmailInboxClient(db)
-            if await client.we_sent_last_in_thread(account, email.thread_id):
-                return (
-                    "The latest message in this thread is already from your business — "
-                    "skipping to avoid sending duplicate replies."
-                )
+        client = GmailInboxClient(db)
+        if await client.we_sent_last_in_thread(account, email.thread_id):
+            return (
+                "The latest message in this thread is already from your business — "
+                "skipping to avoid sending duplicate replies."
+            )
         return None
 
-    def _skip_email_as_duplicate(self, db: Session, email: InboxEmail, reason: str) -> None:
+    async def _mark_email_read_in_gmail(
+        self, db: Session, email: InboxEmail, account: GmailAccount | None = None
+    ) -> None:
+        """Leave the message as read in Gmail so autopilot does not pick it up again."""
+        acct = account or db.get(GmailAccount, email.gmail_account_id)
+        if not acct:
+            return
+        client = GmailInboxClient(db)
+        await client.mark_as_read(acct, email.gmail_message_id)
+
+    async def _skip_email_as_duplicate(
+        self,
+        db: Session,
+        email: InboxEmail,
+        reason: str,
+        *,
+        account: GmailAccount | None = None,
+        mark_read: bool = True,
+    ) -> None:
         email.status = InboxEmailStatus.SKIPPED.value
         email.skip_reason = reason
         email.processed_at = datetime.now(UTC)
         db.commit()
+        if mark_read:
+            await self._mark_email_read_in_gmail(db, email, account)
 
     async def _skip_if_no_longer_unread_in_gmail(
         self,
@@ -250,7 +267,7 @@ class AIEmailAssistantService:
         account: GmailAccount,
         email: InboxEmail,
     ) -> bool:
-        """Skip processing if the customer already read this message in Gmail."""
+        """Skip processing if the message is already read in Gmail."""
         client = GmailInboxClient(db)
         if await client.is_message_unread(account, email.gmail_message_id):
             return False
@@ -314,38 +331,52 @@ class AIEmailAssistantService:
         email: InboxEmail,
         settings_row: AIEmailAssistantSettings,
     ) -> None:
-        config = config_from_settings(settings_row)
-        if not config.enabled:
-            return
-
-        ai = None
-        if config.filter_non_business or config.custom_rules.strip():
-            api_key = resolve_openai_api_key(user)
-            if api_key:
-                ai = AIService(model=settings_row.openai_model, api_key=api_key)
+        """Decide reply vs ignore using full thread history; mark ignored mail as read."""
+        api_key = resolve_openai_api_key(user)
+        ai = AIService(model=settings_row.openai_model, api_key=api_key) if api_key else None
 
         thread_context: str | None = None
         account = db.get(GmailAccount, email.gmail_account_id)
         if account:
             thread_context = await self._fetch_thread_context(
-                db, settings_row, account, email.thread_id
+                db, settings_row, account, email.thread_id, force=True
             )
 
-        result = await evaluate_email_filter(
-            config,
-            sender=email.sender,
-            sender_email=email.sender_email,
-            subject=email.subject,
-            body=email.body_text,
-            thread_context=thread_context,
-            ai=ai,
-        )
+        config = config_from_settings(settings_row)
+
+        # Even with the smart filter toggle off, use AI + full history to decide whether
+        # the issue was already answered (reply vs leave as read).
+        if not config.enabled:
+            if not ai:
+                return
+            result = await ai.classify_should_reply(
+                sender=email.sender,
+                subject=email.subject,
+                email_body=email.body_text,
+                business_name=settings_row.business_name,
+                business_type=settings_row.business_type,
+                custom_skip_rules=settings_row.filter_custom_rules or "",
+                thread_context=thread_context,
+                model_override=settings_row.openai_model,
+            )
+        else:
+            result = await evaluate_email_filter(
+                config,
+                sender=email.sender,
+                sender_email=email.sender_email,
+                subject=email.subject,
+                body=email.body_text,
+                thread_context=thread_context,
+                ai=ai,
+            )
+
         if not result.should_reply:
             email.status = InboxEmailStatus.SKIPPED.value
             email.skip_reason = result.reason or "Filtered — does not need a reply"
             email.filter_category = result.category
             email.processed_at = datetime.now(UTC)
             db.commit()
+            await self._mark_email_read_in_gmail(db, email, account)
 
     def list_inbox(
         self, db: Session, user: User, *, store_id: str | None = None, limit: int = 50
@@ -400,13 +431,8 @@ class AIEmailAssistantService:
             if not detail:
                 continue
 
-            if settings_row.one_reply_per_thread and thread_has_answered_in_db(
-                db,
-                gmail_account_id=account.id,
-                thread_id=detail.thread_id,
-            ):
-                continue
-
+            # Do not hard-skip threads we already answered — a follow-up may raise a new issue.
+            # AI classification (with full history) decides reply vs ignore + mark as read.
             if settings_row.verify_gmail_thread_before_reply:
                 if await client.we_sent_last_in_thread(account, detail.thread_id):
                     continue
@@ -471,7 +497,7 @@ class AIEmailAssistantService:
 
         pending = db.scalars(q).all()
         processed = 0
-        seen_threads: set[str] = set()
+        replied_threads: set[str] = set()
 
         for email in pending:
             if email.replies:
@@ -482,29 +508,28 @@ class AIEmailAssistantService:
                 if await self._skip_if_no_longer_unread_in_gmail(db, email_account, email):
                     continue
 
-            if settings_row.one_reply_per_thread:
-                if email.thread_id in seen_threads:
-                    self._skip_email_as_duplicate(db, email, ALREADY_REPLIED_REASON)
-                    continue
-                if thread_has_answered_in_db(
-                    db,
-                    gmail_account_id=email.gmail_account_id,
-                    thread_id=email.thread_id,
-                    exclude_inbox_id=email.id,
-                ):
-                    self._skip_email_as_duplicate(db, email, ALREADY_REPLIED_REASON)
-                    continue
-                seen_threads.add(email.thread_id)
+            # Same-run guard: after we reply once in this batch, skip other NEW messages
+            # in that thread (AI already handled the conversation). Follow-ups that arrive
+            # later are still synced and classified against full history.
+            if settings_row.one_reply_per_thread and email.thread_id in replied_threads:
+                await self._skip_email_as_duplicate(
+                    db, email, ALREADY_REPLIED_REASON, account=email_account
+                )
+                continue
 
             if email_account and settings_row.verify_gmail_thread_before_reply:
                 dup = await self._duplicate_skip_reason(db, settings_row, email_account, email)
                 if dup:
-                    self._skip_email_as_duplicate(db, email, dup)
+                    await self._skip_email_as_duplicate(
+                        db, email, dup, account=email_account
+                    )
                     continue
 
             try:
                 await self.generate_and_maybe_send(db, user, email.id, store_id=store_id)
                 processed += 1
+                if settings_row.one_reply_per_thread:
+                    replied_threads.add(email.thread_id)
             except OpenAIServiceError as exc:
                 if exc.stop_autopilot and settings_row.automation_enabled:
                     stop_autopilot(db, settings_row, exc.user_message)
@@ -582,7 +607,7 @@ class AIEmailAssistantService:
                 )
             dup = await self._duplicate_skip_reason(db, settings_row, account, email)
             if dup:
-                self._skip_email_as_duplicate(db, email, dup)
+                await self._skip_email_as_duplicate(db, email, dup, account=account)
                 raise HTTPException(status_code=400, detail=dup)
 
         await self._apply_email_filter(db, user, email, settings_row)
@@ -596,7 +621,7 @@ class AIEmailAssistantService:
         thread_context = None
         if account:
             thread_context = await self._fetch_thread_context(
-                db, settings_row, account, email.thread_id
+                db, settings_row, account, email.thread_id, force=True
             )
 
         try:

@@ -49,3 +49,32 @@ def test_classification_json_skip():
     )
     assert result.should_reply is False
     assert result.category == "newsletter"
+
+
+def test_classification_already_resolved():
+    result = parse_classification_json(
+        '{"should_reply": false, "reason": "Already answered their shipping question", "category": "already_resolved"}'
+    )
+    assert result.should_reply is False
+    assert result.category == "already_resolved"
+
+
+def test_build_reply_prompt_includes_thread_history_guidance():
+    ctx = BusinessContext(
+        business_name="Acme Shop",
+        business_type="e-commerce",
+        tone_of_voice="friendly",
+        rules="",
+        policies="",
+        faq="",
+    )
+    prompt = build_reply_prompt(
+        context=ctx,
+        sender="customer@example.com",
+        subject="Re: order",
+        email_body="Thanks!",
+        thread_context="--- Customer ---\nWhere is my order?\n\n--- Your business ---\nIt ships tomorrow.",
+    )
+    assert "full conversation thread" in prompt.system_message.lower() or "already answered" in prompt.system_message.lower()
+    assert "Where is my order?" in prompt.user_message
+    assert "It ships tomorrow." in prompt.user_message
