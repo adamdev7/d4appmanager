@@ -290,16 +290,39 @@ export function AIEmailAssistantPage() {
     setConfirmFullScanOpen(false);
     setSyncing(true);
     setError("");
-    setScanResultMessage("");
+    setScanResultMessage("Starting full inbox check…");
     try {
-      const result = await api.aiEmailAssistant.fullHistoryScan(accId, 100, activeStore?.id);
-      const inboxData = await api.aiEmailAssistant.inbox(activeStore?.id);
-      setInbox(inboxData as InboxItem[]);
-      if ((inboxData as InboxItem[]).length) {
-        setSelectedId((inboxData as InboxItem[])[0].id);
+      await api.aiEmailAssistant.fullHistoryScan(accId, 100, activeStore?.id);
+
+      // Poll status — scan runs in the background to avoid gateway timeouts.
+      const started = Date.now();
+      const maxWaitMs = 30 * 60 * 1000;
+      while (Date.now() - started < maxWaitMs) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const status = await api.aiEmailAssistant.fullHistoryScanStatus(activeStore?.id);
+        if (status.message) {
+          setScanResultMessage(
+            status.status === "running" && status.total
+              ? `${status.message} (${status.progress}/${status.total})`
+              : status.message
+          );
+        }
+        if (status.status === "completed") {
+          if (status.inbox?.length) {
+            setInbox(status.inbox as InboxItem[]);
+            setSelectedId((status.inbox as InboxItem[])[0].id);
+          } else {
+            await loadInbox();
+          }
+          setScanResultMessage(status.message);
+          await Promise.all([loadLogs(), loadStats()]);
+          return;
+        }
+        if (status.status === "failed") {
+          throw new Error(status.message || "Full inbox check failed");
+        }
       }
-      setScanResultMessage(result.message);
-      await Promise.all([loadLogs(), loadStats()]);
+      throw new Error("Full inbox check is still running. Refresh later to see results.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Full inbox check failed");
     } finally {
@@ -580,7 +603,7 @@ export function AIEmailAssistantPage() {
               </li>
               <li>
                 · Uses OpenAI for each conversation — this can take several minutes and use API
-                credits.
+                credits. The scan runs in the background so it won&apos;t time out.
               </li>
             </ul>
             <div className="px-6 pb-5 flex flex-wrap gap-2 justify-end">

@@ -494,6 +494,100 @@ class AIEmailAssistantService:
         all_recent = self.list_inbox(db, user, store_id=store_id, limit=max_results)
         return all_recent
 
+    async def start_full_history_scan(
+        self,
+        db: Session,
+        user: User,
+        *,
+        gmail_account_id: str,
+        store_id: str | None = None,
+        max_threads: int = 100,
+        confirmed: bool = False,
+    ) -> FullHistoryScanResponse:
+        """Validate and kick off a background full-history scan (returns immediately)."""
+        from app.ai_email_assistant.full_scan_worker import start_full_history_scan as enqueue_scan
+
+        if not confirmed:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "You must confirm that Check inbox will scan your full Gmail history "
+                    "from the start of the mailbox."
+                ),
+            )
+
+        account = db.get(GmailAccount, gmail_account_id)
+        if not account or account.owner_id != user.id:
+            raise HTTPException(status_code=404, detail="Gmail account not found")
+        if account.status != GmailAccountStatus.CONNECTED.value:
+            raise HTTPException(status_code=400, detail="Gmail account is not connected")
+        if not resolve_openai_api_key(user):
+            raise HTTPException(
+                status_code=400,
+                detail="Add your OpenAI API key before running a full inbox check.",
+            )
+
+        settings_row = self.get_or_create_settings(db, user, store_id)
+        from app.ai_email_assistant.full_scan_worker import is_scan_running
+
+        if settings_row.full_scan_status == "running" and is_scan_running(settings_row.id):
+            return self.get_full_scan_status(db, user, store_id=store_id)
+
+        settings_row.full_scan_status = "running"
+        settings_row.full_scan_message = "Starting full inbox check…"
+        settings_row.full_scan_progress = 0
+        settings_row.full_scan_total = max_threads
+        settings_row.full_scan_started_at = datetime.now(UTC)
+        settings_row.full_scan_finished_at = None
+        db.commit()
+
+        started = await enqueue_scan(
+            settings_id=settings_row.id,
+            user_id=user.id,
+            gmail_account_id=gmail_account_id,
+            store_id=store_id,
+            max_threads=max_threads,
+        )
+        if not started:
+            return self.get_full_scan_status(db, user, store_id=store_id)
+
+        return FullHistoryScanResponse(
+            status="running",
+            message="Full inbox check started in the background. This can take several minutes.",
+            progress=0,
+            total=max_threads,
+            started_at=settings_row.full_scan_started_at.isoformat(),
+        )
+
+    def get_full_scan_status(
+        self, db: Session, user: User, *, store_id: str | None = None
+    ) -> FullHistoryScanResponse:
+        settings_row = self.get_or_create_settings(db, user, store_id)
+        status = settings_row.full_scan_status or "idle"
+        inbox: list = []
+        if status in ("completed", "failed", "idle"):
+            # Refresh inbox list when the job is done so the UI can update.
+            if status == "completed":
+                inbox = self.list_inbox(db, user, store_id=store_id, limit=50)
+        return FullHistoryScanResponse(
+            status=status,
+            message=settings_row.full_scan_message or "",
+            progress=settings_row.full_scan_progress or 0,
+            total=settings_row.full_scan_total or 0,
+            threads_scanned=settings_row.full_scan_progress or 0,
+            started_at=(
+                settings_row.full_scan_started_at.isoformat()
+                if settings_row.full_scan_started_at
+                else None
+            ),
+            finished_at=(
+                settings_row.full_scan_finished_at.isoformat()
+                if settings_row.full_scan_finished_at
+                else None
+            ),
+            inbox=inbox,
+        )
+
     async def full_history_scan(
         self,
         db: Session,
@@ -503,6 +597,7 @@ class AIEmailAssistantService:
         store_id: str | None = None,
         max_threads: int = 100,
         confirmed: bool = False,
+        progress_cb=None,
     ) -> FullHistoryScanResponse:
         """Scan the entire inbox history, analyze each conversation, answer unanswered clients."""
         if not confirmed:
@@ -527,11 +622,16 @@ class AIEmailAssistantService:
 
         settings_row = self.get_or_create_settings(db, user, store_id)
         client = GmailInboxClient(db)
+        if progress_cb:
+            progress_cb(0, max_threads, "Listing Gmail conversations…")
         threads = await client.list_all_inbox_threads(
             account,
             max_threads=max_threads,
             only_customer_messages=settings_row.sync_only_customer_unread,
         )
+        total = len(threads)
+        if progress_cb:
+            progress_cb(0, total, f"Analyzing {total} conversations…")
 
         imported = 0
         needs_reply = 0
@@ -540,12 +640,16 @@ class AIEmailAssistantService:
         skipped_filtered = 0
         synced_ids: list[str] = []
 
-        for thread_ref in threads:
+        for idx, thread_ref in enumerate(threads, start=1):
             thread_id = thread_ref.get("id")
             if not thread_id:
+                if progress_cb and (idx % 5 == 0 or idx == total):
+                    progress_cb(idx, total, f"Analyzing conversations… ({idx}/{total})")
                 continue
 
             analysis = await client.analyze_thread_history(account, thread_id)
+            if progress_cb and (idx % 5 == 0 or idx == total):
+                progress_cb(idx, total, f"Analyzing conversations… ({idx}/{total})")
             if not analysis:
                 continue
 
@@ -599,7 +703,14 @@ class AIEmailAssistantService:
         db.commit()
 
         # Filter + AI: full thread history decides reply vs skip for each candidate
-        for inbox_id in synced_ids:
+        filter_total = len(synced_ids)
+        if progress_cb:
+            progress_cb(
+                total,
+                total,
+                f"Classifying {filter_total} conversations that may need a reply…",
+            )
+        for f_idx, inbox_id in enumerate(synced_ids, start=1):
             email = db.get(InboxEmail, inbox_id)
             if not email or email.status != InboxEmailStatus.NEW.value:
                 continue
@@ -607,7 +718,15 @@ class AIEmailAssistantService:
             db.refresh(email)
             if email.status == InboxEmailStatus.SKIPPED.value:
                 skipped_filtered += 1
+            if progress_cb and (f_idx % 3 == 0 or f_idx == filter_total):
+                progress_cb(
+                    total,
+                    total,
+                    f"Classifying replies… ({f_idx}/{filter_total})",
+                )
 
+        if progress_cb:
+            progress_cb(total, total, "Drafting and sending replies…")
         processed = await self.process_pending_replies(
             db,
             user,
@@ -617,6 +736,13 @@ class AIEmailAssistantService:
         )
 
         inbox = self.list_inbox(db, user, store_id=store_id, limit=50)
+        message = (
+            f"Scanned {len(threads)} conversations. "
+            f"{never_answered} never answered by your team. "
+            f"{needs_reply} needed a reply (customer wrote last). "
+            f"{skipped_already} already waiting on the customer. "
+            f"{processed} replies drafted or sent."
+        )
         return FullHistoryScanResponse(
             threads_scanned=len(threads),
             imported=imported,
@@ -625,14 +751,11 @@ class AIEmailAssistantService:
             skipped_already_answered=skipped_already,
             skipped_filtered=skipped_filtered,
             processed_replies=processed,
-            message=(
-                f"Scanned {len(threads)} conversations. "
-                f"{never_answered} never answered by your team. "
-                f"{needs_reply} needed a reply (customer wrote last). "
-                f"{skipped_already} already waiting on the customer. "
-                f"{processed} replies drafted or sent."
-            ),
+            message=message,
             inbox=inbox,
+            status="completed",
+            progress=len(threads),
+            total=len(threads),
         )
 
     async def process_pending_replies(

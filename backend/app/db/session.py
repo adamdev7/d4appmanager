@@ -164,6 +164,48 @@ def _migrate_ai_email_assistant_columns() -> None:
                         "ADD COLUMN use_thread_context BOOLEAN DEFAULT 1 NOT NULL"
                     )
                 )
+            if "full_scan_status" not in settings_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ai_email_assistant_settings "
+                        "ADD COLUMN full_scan_status VARCHAR(32) DEFAULT 'idle' NOT NULL"
+                    )
+                )
+            if "full_scan_message" not in settings_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ai_email_assistant_settings "
+                        "ADD COLUMN full_scan_message TEXT DEFAULT '' NOT NULL"
+                    )
+                )
+            if "full_scan_progress" not in settings_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ai_email_assistant_settings "
+                        "ADD COLUMN full_scan_progress INTEGER DEFAULT 0 NOT NULL"
+                    )
+                )
+            if "full_scan_total" not in settings_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ai_email_assistant_settings "
+                        "ADD COLUMN full_scan_total INTEGER DEFAULT 0 NOT NULL"
+                    )
+                )
+            if "full_scan_started_at" not in settings_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ai_email_assistant_settings "
+                        "ADD COLUMN full_scan_started_at DATETIME"
+                    )
+                )
+            if "full_scan_finished_at" not in settings_cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE ai_email_assistant_settings "
+                        "ADD COLUMN full_scan_finished_at DATETIME"
+                    )
+                )
             if "skip_reason" not in inbox_cols and inbox_cols:
                 conn.execute(text("ALTER TABLE inbox_emails ADD COLUMN skip_reason TEXT"))
             if "filter_category" not in inbox_cols and inbox_cols:
@@ -245,6 +287,42 @@ def _migrate_ai_email_assistant_columns() -> None:
                 text(
                     "ALTER TABLE ai_email_assistant_settings "
                     "ADD COLUMN IF NOT EXISTS use_thread_context BOOLEAN DEFAULT TRUE NOT NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE ai_email_assistant_settings "
+                    "ADD COLUMN IF NOT EXISTS full_scan_status VARCHAR(32) DEFAULT 'idle' NOT NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE ai_email_assistant_settings "
+                    "ADD COLUMN IF NOT EXISTS full_scan_message TEXT DEFAULT '' NOT NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE ai_email_assistant_settings "
+                    "ADD COLUMN IF NOT EXISTS full_scan_progress INTEGER DEFAULT 0 NOT NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE ai_email_assistant_settings "
+                    "ADD COLUMN IF NOT EXISTS full_scan_total INTEGER DEFAULT 0 NOT NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE ai_email_assistant_settings "
+                    "ADD COLUMN IF NOT EXISTS full_scan_started_at TIMESTAMPTZ"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE ai_email_assistant_settings "
+                    "ADD COLUMN IF NOT EXISTS full_scan_finished_at TIMESTAMPTZ"
                 )
             )
             if inbox_cols:

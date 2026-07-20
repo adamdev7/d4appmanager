@@ -448,15 +448,20 @@ export const api = {
       }),
     fullHistoryScan: (gmailAccountId: string, maxThreads = 100, storeId?: string) =>
       request<{
-        threads_scanned: number;
-        imported: number;
-        needs_reply: number;
-        never_answered: number;
-        skipped_already_answered: number;
-        skipped_filtered: number;
-        processed_replies: number;
+        status: string;
+        progress: number;
+        total: number;
         message: string;
-        inbox: Array<{
+        threads_scanned?: number;
+        imported?: number;
+        needs_reply?: number;
+        never_answered?: number;
+        skipped_already_answered?: number;
+        skipped_filtered?: number;
+        processed_replies?: number;
+        started_at?: string | null;
+        finished_at?: string | null;
+        inbox?: Array<{
           id: string;
           subject: string;
           status: string;
@@ -469,6 +474,21 @@ export const api = {
           max_threads: maxThreads,
         }),
       }),
+    fullHistoryScanStatus: (storeId?: string) =>
+      request<{
+        status: string;
+        progress: number;
+        total: number;
+        message: string;
+        threads_scanned?: number;
+        started_at?: string | null;
+        finished_at?: string | null;
+        inbox?: Array<{
+          id: string;
+          subject: string;
+          status: string;
+        }>;
+      }>(`/ai-email-assistant/inbox/full-scan/status${storeId ? `?store_id=${storeId}` : ""}`),
     unskipEmail: (inboxEmailId: string) =>
       request(`/ai-email-assistant/inbox/${inboxEmailId}/unskip`, { method: "POST" }),
     generateReply: (inboxEmailId: string, storeId?: string) =>

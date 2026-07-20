@@ -116,7 +116,8 @@ async def full_history_scan(
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
-    return await _service.full_history_scan(
+    """Start a background full-history scan (returns immediately to avoid gateway timeouts)."""
+    return await _service.start_full_history_scan(
         db,
         user,
         gmail_account_id=body.gmail_account_id,
@@ -124,6 +125,15 @@ async def full_history_scan(
         max_threads=body.max_threads,
         confirmed=body.confirmed,
     )
+
+
+@router.get("/inbox/full-scan/status", response_model=FullHistoryScanResponse)
+async def full_history_scan_status(
+    store_id: str | None = Query(default=None),
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.get_full_scan_status(db, user, store_id=store_id)
 
 
 @router.post("/inbox/{inbox_email_id}/unskip")

@@ -344,6 +344,17 @@ class AIEmailAssistantSettings(Base):
     sync_only_customer_unread: Mapped[bool] = mapped_column(Boolean, default=True)
     verify_gmail_thread_before_reply: Mapped[bool] = mapped_column(Boolean, default=True)
     use_thread_context: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Background "Check inbox" / full-history scan (avoids gateway timeouts)
+    full_scan_status: Mapped[str] = mapped_column(String(32), default="idle")
+    full_scan_message: Mapped[str] = mapped_column(Text, default="")
+    full_scan_progress: Mapped[int] = mapped_column(default=0)
+    full_scan_total: Mapped[int] = mapped_column(default=0)
+    full_scan_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    full_scan_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

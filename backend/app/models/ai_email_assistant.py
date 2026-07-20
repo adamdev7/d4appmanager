@@ -112,6 +112,12 @@ class FullHistoryScanResponse(BaseModel):
     processed_replies: int = 0
     message: str = ""
     inbox: list[InboxEmailResponse] = []
+    # Background job fields (scan runs async to avoid gateway timeouts)
+    status: str = "completed"
+    progress: int = 0
+    total: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
 
 
 class AIReplyLogEntry(BaseModel):
