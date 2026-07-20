@@ -276,16 +276,57 @@ export const api = {
         name: string;
         subject: string;
         body_html: string;
+        layout_preset: string;
       }>(`/email-automation/stores/${storeId}/templates/${templateId}`),
     updateTemplate: (
       storeId: string,
       templateId: string,
-      data: { name?: string; subject?: string; body_html?: string }
+      data: {
+        name?: string;
+        subject?: string;
+        body_html?: string;
+        layout_preset?: string;
+      }
     ) =>
       request(`/email-automation/stores/${storeId}/templates/${templateId}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       }),
+    getBranding: (storeId: string) =>
+      request<{ store_id: string; theme_color: string; logo_url: string | null }>(
+        `/email-automation/stores/${storeId}/branding`
+      ),
+    updateBranding: (storeId: string, data: { theme_color?: string }) =>
+      request<{ store_id: string; theme_color: string; logo_url: string | null }>(
+        `/email-automation/stores/${storeId}/branding`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(data),
+        }
+      ),
+    uploadLogo: async (storeId: string, file: File) => {
+      const token = localStorage.getItem("access_token");
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch(`${API_BASE}/email-automation/stores/${storeId}/branding/logo`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: form,
+      });
+      if (!res.ok) {
+        throw new ApiError(await parseError(res), res.status);
+      }
+      return res.json() as Promise<{
+        store_id: string;
+        theme_color: string;
+        logo_url: string | null;
+      }>;
+    },
+    removeLogo: (storeId: string) =>
+      request<{ store_id: string; theme_color: string; logo_url: string | null }>(
+        `/email-automation/stores/${storeId}/branding/logo`,
+        { method: "DELETE" }
+      ),
     sendLogs: (storeId: string) =>
       request<
         Array<{

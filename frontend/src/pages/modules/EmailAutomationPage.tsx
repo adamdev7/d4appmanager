@@ -23,9 +23,11 @@ import { Switch } from "@/components/ui/Switch";
 import { RuleActionsMenu } from "@/components/email/RuleActionsMenu";
 import {
   TemplateEditorModal,
+  type BrandingData,
   type TemplateData,
 } from "@/components/email/TemplateEditorModal";
 import { eventLabel, previewWithSamples } from "@/lib/emailPersonalization";
+import { DEFAULT_THEME_COLOR } from "@/lib/emailLayouts";
 
 type Rule = {
   id: string;
@@ -84,20 +86,29 @@ export function EmailAutomationPage() {
   const [editorInitialTab, setEditorInitialTab] = useState<"edit" | "preview">("edit");
   const [editingTemplate, setEditingTemplate] = useState<TemplateData | null>(null);
   const [editingRuleTitle, setEditingRuleTitle] = useState("");
+  const [branding, setBranding] = useState<BrandingData>({
+    theme_color: DEFAULT_THEME_COLOR,
+    logo_url: null,
+  });
 
   const load = useCallback(async () => {
     if (!activeStore?.id) return;
     setLoading(true);
     setError("");
     try {
-      const [r, l, ev] = await Promise.all([
+      const [r, l, ev, br] = await Promise.all([
         api.emailAutomation.rules(activeStore.id),
         api.emailAutomation.sendLogs(activeStore.id),
         api.emailAutomation.events(),
+        api.emailAutomation.getBranding(activeStore.id),
       ]);
       setRules(r as Rule[]);
       setLogs(l as SendLog[]);
       setEvents(ev as EventMeta[]);
+      setBranding({
+        theme_color: br.theme_color || DEFAULT_THEME_COLOR,
+        logo_url: br.logo_url,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load automation");
     } finally {
@@ -145,6 +156,7 @@ export function EmailAutomationPage() {
         name: t.name,
         subject: t.subject,
         body_html: t.body_html,
+        layout_preset: t.layout_preset || "classic",
       });
       setEditorInitialTab(previewOnly ? "preview" : "edit");
       setEditorOpen(true);
@@ -153,10 +165,41 @@ export function EmailAutomationPage() {
     }
   };
 
-  const saveTemplate = async (data: { name: string; subject: string; body_html: string }) => {
+  const saveTemplate = async (data: {
+    name: string;
+    subject: string;
+    body_html: string;
+    layout_preset: string;
+    theme_color: string;
+  }) => {
     if (!activeStore?.id || !editingTemplate) return;
-    await api.emailAutomation.updateTemplate(activeStore.id, editingTemplate.id, data);
+    await Promise.all([
+      api.emailAutomation.updateTemplate(activeStore.id, editingTemplate.id, {
+        name: data.name,
+        subject: data.subject,
+        body_html: data.body_html,
+        layout_preset: data.layout_preset,
+      }),
+      api.emailAutomation.updateBranding(activeStore.id, { theme_color: data.theme_color }),
+    ]);
+    setBranding((prev) => ({ ...prev, theme_color: data.theme_color }));
     await load();
+  };
+
+  const uploadLogo = async (file: File): Promise<BrandingData> => {
+    if (!activeStore?.id) throw new Error("No store selected");
+    const br = await api.emailAutomation.uploadLogo(activeStore.id, file);
+    const next = { theme_color: br.theme_color, logo_url: br.logo_url };
+    setBranding(next);
+    return next;
+  };
+
+  const removeLogo = async (): Promise<BrandingData> => {
+    if (!activeStore?.id) throw new Error("No store selected");
+    const br = await api.emailAutomation.removeLogo(activeStore.id);
+    const next = { theme_color: br.theme_color, logo_url: br.logo_url };
+    setBranding(next);
+    return next;
   };
 
   const activeCount = rules.filter((r) => r.is_enabled).length;
@@ -383,10 +426,13 @@ export function EmailAutomationPage() {
         open={editorOpen}
         onClose={() => setEditorOpen(false)}
         template={editingTemplate}
+        branding={branding}
         automationTitle={editingRuleTitle}
         storeName={activeStore.name}
         initialTab={editorInitialTab}
         onSave={saveTemplate}
+        onUploadLogo={uploadLogo}
+        onRemoveLogo={removeLogo}
       />
     </div>
   );

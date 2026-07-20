@@ -12,8 +12,11 @@ from app.db.session import init_db
 from app.routes import api_router
 from app.routes import track_order as track_order_routes
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = _BACKEND_ROOT.parent
 _FRONTEND_DIST = _PROJECT_ROOT / "frontend" / "dist"
+_UPLOADS_DIR = _BACKEND_ROOT / "data" / "uploads"
+_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -45,6 +48,9 @@ app.include_router(api_router, prefix=settings.api_prefix)
 # Public storefront alias: GET /api/track-order (same handler as /api/v1/track-order)
 app.include_router(track_order_routes.router, prefix="/api")
 
+# Uploaded assets (email logos, etc.) — public so email clients can load images
+app.mount("/uploads", StaticFiles(directory=_UPLOADS_DIR), name="uploads")
+
 
 @app.get("/health")
 async def health():
@@ -75,7 +81,7 @@ if _FRONTEND_DIST.is_dir():
 
     @app.get("/{path:path}")
     async def spa_fallback(path: str):
-        if path.startswith("api") or path in ("docs", "openapi.json", "redoc", "health"):
+        if path.startswith("api") or path.startswith("uploads") or path in ("docs", "openapi.json", "redoc", "health"):
             raise HTTPException(status_code=404, detail="Not found")
         file_path = _FRONTEND_DIST / path
         if file_path.is_file():

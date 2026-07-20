@@ -83,6 +83,7 @@ def seed_store_automation_defaults(db: Session, store_id: str) -> None:
                 name=template_name,
                 subject=subject,
                 body_html=body,
+                layout_preset="classic",
             )
             db.add(template)
             db.flush()

@@ -350,6 +350,52 @@ def _migrate_order_tracking_summary_columns() -> None:
             )
 
 
+def _migrate_email_branding_columns() -> None:
+    """Add store branding + template layout columns for email automation."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+
+    if "stores" in insp.get_table_names():
+        store_cols = {c["name"] for c in insp.get_columns("stores")}
+        with engine.begin() as conn:
+            if dialect == "sqlite":
+                if "email_theme_color" not in store_cols:
+                    conn.execute(
+                        text("ALTER TABLE stores ADD COLUMN email_theme_color VARCHAR(32) DEFAULT '#0d9488'")
+                    )
+                if "email_logo_path" not in store_cols:
+                    conn.execute(text("ALTER TABLE stores ADD COLUMN email_logo_path VARCHAR(512)"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(
+                        "ALTER TABLE stores ADD COLUMN IF NOT EXISTS "
+                        "email_theme_color VARCHAR(32) DEFAULT '#0d9488'"
+                    )
+                )
+                conn.execute(
+                    text("ALTER TABLE stores ADD COLUMN IF NOT EXISTS email_logo_path VARCHAR(512)")
+                )
+
+    if "email_templates" in insp.get_table_names():
+        tmpl_cols = {c["name"] for c in insp.get_columns("email_templates")}
+        with engine.begin() as conn:
+            if dialect == "sqlite":
+                if "layout_preset" not in tmpl_cols:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE email_templates "
+                            "ADD COLUMN layout_preset VARCHAR(32) DEFAULT 'classic'"
+                        )
+                    )
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(
+                        "ALTER TABLE email_templates "
+                        "ADD COLUMN IF NOT EXISTS layout_preset VARCHAR(32) DEFAULT 'classic'"
+                    )
+                )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -358,3 +404,4 @@ def init_db() -> None:
     _migrate_ai_email_assistant_columns()
     _migrate_user_openai_key_columns()
     _migrate_order_tracking_summary_columns()
+    _migrate_email_branding_columns()

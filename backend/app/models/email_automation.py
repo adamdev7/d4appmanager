@@ -7,12 +7,14 @@ class EmailTemplateCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     subject: str = Field(min_length=1, max_length=512)
     body_html: str = ""
+    layout_preset: str = Field(default="classic", max_length=32)
 
 
 class EmailTemplateUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     subject: str | None = Field(default=None, min_length=1, max_length=512)
     body_html: str | None = None
+    layout_preset: str | None = Field(default=None, max_length=32)
 
 
 class EmailTemplateResponse(BaseModel):
@@ -21,8 +23,19 @@ class EmailTemplateResponse(BaseModel):
     name: str
     subject: str
     body_html: str
+    layout_preset: str = "classic"
     created_at: str
     updated_at: str
+
+
+class EmailBrandingUpdate(BaseModel):
+    theme_color: str | None = Field(default=None, max_length=32)
+
+
+class EmailBrandingResponse(BaseModel):
+    store_id: str
+    theme_color: str
+    logo_url: str | None = None
 
 
 class EmailAutomationRuleCreate(BaseModel):

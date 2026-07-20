@@ -4,8 +4,15 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
+from app.config import settings
 from app.db.models import EmailAutomationRule, EmailSendLog, EmailSendStatus, Store
 from app.email_automation.events import AutomationEventType, derive_automation_events
+from app.email_automation.layout_presets import (
+    DEFAULT_LAYOUT,
+    DEFAULT_THEME_COLOR,
+    absolute_logo_url,
+    render_layout,
+)
 from app.email_automation.sender.base import EmailMessagePayload
 from app.email_automation.sender.service import EmailSenderService
 from app.email_automation.variable_resolver import build_template_context, resolve_template_text
@@ -88,7 +95,17 @@ class EmailTriggerService:
 
         context = build_template_context(payload, store.name)
         subject = resolve_template_text(rule.template.subject, context)
-        body_html = resolve_template_text(rule.template.body_html, context)
+        inner_html = resolve_template_text(rule.template.body_html, context)
+        theme = getattr(store, "email_theme_color", None) or DEFAULT_THEME_COLOR
+        logo = absolute_logo_url(getattr(store, "email_logo_path", None), settings.app_url)
+        layout = getattr(rule.template, "layout_preset", None) or DEFAULT_LAYOUT
+        body_html = render_layout(
+            layout_preset=layout,
+            body_html=inner_html,
+            theme_color=theme,
+            logo_url=logo,
+            store_name=store.name,
+        )
 
         message = EmailMessagePayload(
             to=recipient,
@@ -118,16 +135,14 @@ class EmailTriggerService:
         logger.info(
             "Automation %s for store %s -> %s (%s)",
             event_type.value,
-            store.shop_domain,
+            store.id,
             recipient,
             status,
         )
-
         return {
             "event_type": event_type.value,
             "status": status,
             "recipient": recipient,
-            "provider": send_result.provider,
         }
 
     def _log_send(
