@@ -414,3 +414,46 @@ class AIEmailReply(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     inbox_email: Mapped["InboxEmail"] = relationship(back_populates="replies")
+
+
+class StoreAnalyticsSettings(Base):
+    """Per-store analytics credentials and default cost assumptions."""
+
+    __tablename__ = "store_analytics_settings"
+    __table_args__ = (UniqueConstraint("store_id", name="uq_store_analytics_settings_store"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    meta_access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_access_token_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    meta_ad_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    default_shipping_cost: Mapped[str] = mapped_column(String(16), default="0")
+    transaction_fee_percent: Mapped[str] = mapped_column(String(8), default="2.9")
+    transaction_fee_fixed: Mapped[str] = mapped_column(String(8), default="0.30")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProductCost(Base):
+    """User-entered product cost (COGS) for profit analytics."""
+
+    __tablename__ = "product_costs"
+    __table_args__ = (
+        UniqueConstraint("store_id", "shopify_product_id", "shopify_variant_id", name="uq_product_cost"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    shopify_product_id: Mapped[str] = mapped_column(String(64), index=True)
+    shopify_variant_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_title: Mapped[str] = mapped_column(String(512), default="")
+    variant_title: Mapped[str] = mapped_column(String(255), default="")
+    image_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    shopify_price: Mapped[str] = mapped_column(String(16), default="0")
+    cost_per_unit: Mapped[str] = mapped_column(String(16), default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

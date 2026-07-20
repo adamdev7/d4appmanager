@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import base64
+import re
 import secrets
 from urllib.parse import urlencode
 
@@ -79,6 +80,9 @@ class ShopifyClient:
         limit: int = 50,
         status: str = "any",
         since_id: str | None = None,
+        created_at_min: str | None = None,
+        created_at_max: str | None = None,
+        financial_status: str | None = None,
     ) -> list[dict]:
         """Fetch recent orders from this Shopify store (Admin REST)."""
         if not self.access_token:
@@ -89,6 +93,12 @@ class ShopifyClient:
         }
         if since_id:
             params["since_id"] = since_id
+        if created_at_min:
+            params["created_at_min"] = created_at_min
+        if created_at_max:
+            params["created_at_max"] = created_at_max
+        if financial_status:
+            params["financial_status"] = financial_status
         async with httpx.AsyncClient(timeout=45) as client:
             resp = await client.get(
                 f"{self.admin_api_base}/orders.json",
@@ -97,6 +107,65 @@ class ShopifyClient:
             )
             resp.raise_for_status()
             return list(resp.json().get("orders") or [])
+
+    async def list_all_orders_in_range(
+        self,
+        *,
+        created_at_min: str | None = None,
+        created_at_max: str | None = None,
+        financial_status: str = "any",
+        max_pages: int = 20,
+    ) -> list[dict]:
+        """Paginate through orders in a date range (up to max_pages * 250)."""
+        all_orders: list[dict] = []
+        since_id: str | None = None
+        for _ in range(max_pages):
+            batch = await self.list_orders(
+                limit=250,
+                status="any",
+                since_id=since_id,
+                created_at_min=created_at_min,
+                created_at_max=created_at_max,
+                financial_status=financial_status,
+            )
+            if not batch:
+                break
+            all_orders.extend(batch)
+            since_id = str(batch[-1]["id"])
+            if len(batch) < 250:
+                break
+        return all_orders
+
+    async def list_products(self, *, limit: int = 250) -> list[dict]:
+        """Fetch products with variants from Shopify."""
+        if not self.access_token:
+            raise ValueError("No access token")
+        all_products: list[dict] = []
+        page_info: str | None = None
+        async with httpx.AsyncClient(timeout=45) as client:
+            for _ in range(10):
+                params: dict[str, str | int] = {"limit": min(limit, 250)}
+                if page_info:
+                    params = {"limit": min(limit, 250), "page_info": page_info}
+                resp = await client.get(
+                    f"{self.admin_api_base}/products.json",
+                    params=params,
+                    headers={"X-Shopify-Access-Token": self.access_token},
+                )
+                resp.raise_for_status()
+                batch = list(resp.json().get("products") or [])
+                all_products.extend(batch)
+                link = resp.headers.get("Link", "")
+                if 'rel="next"' not in link:
+                    break
+                next_part = [p for p in link.split(",") if 'rel="next"' in p]
+                if not next_part:
+                    break
+                match = re.search(r"page_info=([^>&]+)", next_part[0])
+                page_info = match.group(1) if match else None
+                if not page_info:
+                    break
+        return all_products
 
     @staticmethod
     def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:

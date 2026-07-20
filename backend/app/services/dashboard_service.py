@@ -372,9 +372,9 @@ class DashboardService:
             AppModule(
                 id="mod-analytics",
                 name="Analytics",
-                description="Revenue, engagement, and automation performance.",
+                description="Shopify + Meta Ads profitability dashboard with ROAS and net profit.",
                 slug="analytics",
-                status="coming_soon",
+                status="active" if has_store else "setup",
                 icon="chart",
             ),
             AppModule(

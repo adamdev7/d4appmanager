@@ -1,4 +1,13 @@
 import type { DashboardOverview } from "@/lib/dashboardTypes";
+import type {
+  AnalyticsDashboard,
+  AnalyticsPeriod,
+  AnalyticsProductsResponse,
+  AnalyticsSettings,
+  AnalyticsProduct,
+} from "@/lib/analyticsTypes";
+
+export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
 
 const API_BASE = "/api/v1";
 
@@ -609,5 +618,28 @@ export const api = {
       }
       return res.json();
     },
+  },
+  analytics: {
+    overview: (storeId: string, period: AnalyticsPeriod = "30d") =>
+      request<AnalyticsDashboard>(`/analytics/stores/${storeId}/overview?period=${period}`),
+    getSettings: (storeId: string) =>
+      request<AnalyticsSettings>(`/analytics/stores/${storeId}/settings`),
+    updateSettings: (storeId: string, data: object) =>
+      request<AnalyticsSettings>(`/analytics/stores/${storeId}/settings`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    testMeta: (storeId: string, data: object) =>
+      request<{ ok: boolean; message: string; account_name: string | null }>(
+        `/analytics/stores/${storeId}/test-meta`,
+        { method: "POST", body: JSON.stringify(data) }
+      ),
+    getProducts: (storeId: string) =>
+      request<AnalyticsProductsResponse>(`/analytics/stores/${storeId}/products`),
+    updateProductCosts: (storeId: string, items: object[]) =>
+      request<{ ok: boolean; updated: number }>(`/analytics/stores/${storeId}/products/costs`, {
+        method: "PUT",
+        body: JSON.stringify({ items }),
+      }),
   },
 };

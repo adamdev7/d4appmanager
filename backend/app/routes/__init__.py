@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.routes import (
     ai_email_assistant,
+    analytics,
     auth,
     dashboard,
     email_automation,
@@ -29,3 +30,4 @@ api_router.include_router(modules.router, prefix="/modules", tags=["modules"])
 api_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 api_router.include_router(track_order.router, tags=["track-order"])
 api_router.include_router(tracking.router, prefix="/tracking", tags=["tracking"])
+api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
