@@ -446,6 +446,29 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ gmail_account_id: gmailAccountId, max_results: maxResults }),
       }),
+    fullHistoryScan: (gmailAccountId: string, maxThreads = 100, storeId?: string) =>
+      request<{
+        threads_scanned: number;
+        imported: number;
+        needs_reply: number;
+        never_answered: number;
+        skipped_already_answered: number;
+        skipped_filtered: number;
+        processed_replies: number;
+        message: string;
+        inbox: Array<{
+          id: string;
+          subject: string;
+          status: string;
+        }>;
+      }>(`/ai-email-assistant/inbox/full-scan${storeId ? `?store_id=${storeId}` : ""}`, {
+        method: "POST",
+        body: JSON.stringify({
+          gmail_account_id: gmailAccountId,
+          confirmed: true,
+          max_threads: maxThreads,
+        }),
+      }),
     unskipEmail: (inboxEmailId: string) =>
       request(`/ai-email-assistant/inbox/${inboxEmailId}/unskip`, { method: "POST" }),
     generateReply: (inboxEmailId: string, storeId?: string) =>
@@ -481,6 +504,53 @@ export const api = {
           sent_at: string | null;
         }>
       >("/ai-email-assistant/logs"),
+    stats: (storeId?: string) =>
+      request<{
+        all_time: {
+          emails_received: number;
+          replies_sent: number;
+          drafts_pending: number;
+          filtered: number;
+          failed: number;
+          awaiting_reply: number;
+        };
+        today: {
+          emails_received: number;
+          replies_sent: number;
+          drafts_pending: number;
+          filtered: number;
+          failed: number;
+          awaiting_reply: number;
+        };
+        last_7_days: {
+          emails_received: number;
+          replies_sent: number;
+          drafts_pending: number;
+          filtered: number;
+          failed: number;
+          awaiting_reply: number;
+        };
+        last_30_days: {
+          emails_received: number;
+          replies_sent: number;
+          drafts_pending: number;
+          filtered: number;
+          failed: number;
+          awaiting_reply: number;
+        };
+        filter_breakdown: Array<{ name: string; count: number }>;
+        intent_breakdown: Array<{ name: string; count: number }>;
+        unique_customers_helped: number;
+        minutes_saved_estimate: number;
+        hours_saved_estimate: number;
+        filter_efficiency_pct: number;
+        reply_rate_pct: number;
+        autopilot_enabled: boolean;
+        auto_send_enabled: boolean;
+        automation_last_run_at: string | null;
+        openai_configured: boolean;
+        gmail_connected: boolean;
+      }>(`/ai-email-assistant/stats${storeId ? `?store_id=${storeId}` : ""}`),
   },
   tracking: {
     overview: (storeId: string) =>

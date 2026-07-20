@@ -2,6 +2,8 @@ import re
 from typing import Any
 
 _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}", re.IGNORECASE)
+# Also resolve broken single-brace placeholders from older templates
+_SINGLE_PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}", re.IGNORECASE)
 
 _VARIABLE_KEYS = (
     "customer_name",
@@ -67,7 +69,15 @@ def resolve_template_text(text: str, context: dict[str, str]) -> str:
         key = match.group(1).lower()
         return context.get(key, "")
 
-    return _PLACEHOLDER_RE.sub(repl, text)
+    resolved = _PLACEHOLDER_RE.sub(repl, text or "")
+
+    def repl_single(match: re.Match[str]) -> str:
+        key = match.group(1).lower()
+        if key in context:
+            return context[key]
+        return match.group(0)
+
+    return _SINGLE_PLACEHOLDER_RE.sub(repl_single, resolved)
 
 
 def list_supported_variables() -> list[str]:

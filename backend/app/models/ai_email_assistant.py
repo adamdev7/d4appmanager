@@ -94,6 +94,26 @@ class SyncInboxRequest(BaseModel):
     max_results: int = Field(default=15, ge=1, le=50)
 
 
+class FullHistoryScanRequest(BaseModel):
+    """Scan the entire Gmail inbox history (requires explicit user confirmation)."""
+
+    gmail_account_id: str
+    confirmed: bool = False
+    max_threads: int = Field(default=100, ge=1, le=200)
+
+
+class FullHistoryScanResponse(BaseModel):
+    threads_scanned: int = 0
+    imported: int = 0
+    needs_reply: int = 0
+    never_answered: int = 0
+    skipped_already_answered: int = 0
+    skipped_filtered: int = 0
+    processed_replies: int = 0
+    message: str = ""
+    inbox: list[InboxEmailResponse] = []
+
+
 class AIReplyLogEntry(BaseModel):
     id: str
     inbox_email_id: str
@@ -104,3 +124,41 @@ class AIReplyLogEntry(BaseModel):
     body_preview: str
     created_at: str
     sent_at: str | None = None
+
+
+class NamedCount(BaseModel):
+    name: str
+    count: int
+
+
+class PeriodStats(BaseModel):
+    emails_received: int = 0
+    replies_sent: int = 0
+    drafts_pending: int = 0
+    filtered: int = 0
+    failed: int = 0
+    awaiting_reply: int = 0
+
+
+class AIEmailAssistantStatsResponse(BaseModel):
+    """Store-owner dashboard metrics for AI Email Assistant."""
+
+    all_time: PeriodStats
+    today: PeriodStats
+    last_7_days: PeriodStats
+    last_30_days: PeriodStats
+
+    filter_breakdown: list[NamedCount] = []
+    intent_breakdown: list[NamedCount] = []
+
+    unique_customers_helped: int = 0
+    minutes_saved_estimate: int = 0
+    hours_saved_estimate: float = 0.0
+    filter_efficiency_pct: float = 0.0
+    reply_rate_pct: float = 0.0
+
+    autopilot_enabled: bool = False
+    auto_send_enabled: bool = False
+    automation_last_run_at: str | None = None
+    openai_configured: bool = False
+    gmail_connected: bool = False

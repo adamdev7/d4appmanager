@@ -4,8 +4,12 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import {
   PERSONALIZATION_FIELDS,
-  insertField,
+  editableMessageToHtml,
+  editableSubjectToStored,
+  htmlToEditableMessage,
+  insertFieldAtCursor,
   previewWithSamples,
+  subjectToEditable,
 } from "@/lib/emailPersonalization";
 import {
   DEFAULT_THEME_COLOR,
@@ -63,7 +67,7 @@ export function TemplateEditorModal({
   const [tab, setTab] = useState<"edit" | "preview">(initialTab);
   const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [message, setMessage] = useState("");
   const [layout, setLayout] = useState<LayoutPresetId>("classic");
   const [themeColor, setThemeColor] = useState(DEFAULT_THEME_COLOR);
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
@@ -71,12 +75,14 @@ export function TemplateEditorModal({
   const [logoBusy, setLogoBusy] = useState(false);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const messageRef = useRef<HTMLTextAreaElement>(null);
+  const subjectRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (template) {
       setName(template.name);
-      setSubject(template.subject);
-      setBody(template.body_html);
+      setSubject(subjectToEditable(template.subject));
+      setMessage(htmlToEditableMessage(template.body_html));
       setLayout((template.layout_preset as LayoutPresetId) || "classic");
       setTab(initialTab);
       setError("");
@@ -90,8 +96,10 @@ export function TemplateEditorModal({
 
   if (!open || !template) return null;
 
-  const previewSubject = previewWithSamples(subject, storeName);
-  const previewInner = previewWithSamples(body, storeName);
+  const storedSubject = editableSubjectToStored(subject);
+  const storedBody = editableMessageToHtml(message);
+  const previewSubject = previewWithSamples(storedSubject, storeName);
+  const previewInner = previewWithSamples(storedBody, storeName);
   const previewHtml = renderEmailLayout({
     layoutPreset: layout,
     bodyHtml: previewInner,
@@ -106,8 +114,8 @@ export function TemplateEditorModal({
     try {
       await onSave({
         name,
-        subject,
-        body_html: body,
+        subject: editableSubjectToStored(subject),
+        body_html: editableMessageToHtml(message),
         layout_preset: layout,
         theme_color: themeColor,
       });
@@ -146,6 +154,32 @@ export function TemplateEditorModal({
     } finally {
       setLogoBusy(false);
     }
+  };
+
+  const insertIntoMessage = (key: string) => {
+    const el = messageRef.current;
+    const start = el?.selectionStart ?? message.length;
+    const end = el?.selectionEnd ?? message.length;
+    const { value, cursor } = insertFieldAtCursor(message, key, start, end);
+    setMessage(value);
+    requestAnimationFrame(() => {
+      if (!messageRef.current) return;
+      messageRef.current.focus();
+      messageRef.current.setSelectionRange(cursor, cursor);
+    });
+  };
+
+  const insertIntoSubject = (key: string) => {
+    const el = subjectRef.current;
+    const start = el?.selectionStart ?? subject.length;
+    const end = el?.selectionEnd ?? subject.length;
+    const { value, cursor } = insertFieldAtCursor(subject, key, start, end);
+    setSubject(value);
+    requestAnimationFrame(() => {
+      if (!subjectRef.current) return;
+      subjectRef.current.focus();
+      subjectRef.current.setSelectionRange(cursor, cursor);
+    });
   };
 
   return (
@@ -278,14 +312,19 @@ export function TemplateEditorModal({
               <div className="space-y-2">
                 <p className="text-sm font-medium text-content">Store logo</p>
                 <p className="text-xs text-content-muted">
-                  Shown in the logo spot on every layout. Leave empty to hide it.
+                  Shown at the bottom of every email at your logo&apos;s natural proportions. Leave
+                  empty to hide it.
                 </p>
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="flex h-16 w-28 items-center justify-center rounded-xl border border-dashed border-border bg-surface-muted/50 overflow-hidden">
+                  <div className="flex h-16 w-36 items-center justify-start rounded-xl border border-dashed border-border bg-surface-muted/50 overflow-hidden px-2">
                     {logoUrl ? (
-                      <img src={logoUrl} alt="Store logo" className="max-h-14 max-w-[6.5rem] object-contain" />
+                      <img
+                        src={logoUrl}
+                        alt="Store logo"
+                        className="max-h-14 max-w-[8rem] w-auto h-auto object-contain object-left"
+                      />
                     ) : (
-                      <span className="text-xs text-content-subtle px-2 text-center">No logo</span>
+                      <span className="text-xs text-content-subtle px-1">No logo</span>
                     )}
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -328,49 +367,74 @@ export function TemplateEditorModal({
                 onChange={(e) => setName(e.target.value)}
                 hint="Internal name so you can recognize this email"
               />
-              <Input
-                label="Email subject"
-                value={subject}
-                onChange={(e) => setSubject(e.target.value)}
-                placeholder="e.g. Your order is on the way"
-              />
+
               <div className="space-y-1.5">
-                <label className="block text-sm font-medium text-content">Message</label>
-                <textarea
-                  value={body}
-                  onChange={(e) => setBody(e.target.value)}
-                  rows={8}
-                  className="flex w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-content placeholder:text-content-subtle focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
-                  placeholder="Write your email message here..."
+                <label className="block text-sm font-medium text-content" htmlFor="email-subject">
+                  Email subject
+                </label>
+                <input
+                  id="email-subject"
+                  ref={subjectRef}
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  placeholder="e.g. Welcome to [Store name]"
+                  className="flex h-10 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-content placeholder:text-content-subtle focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
                 />
-              </div>
-              <div className="rounded-xl bg-surface-muted/80 border border-border p-4">
-                <p className="text-sm font-medium text-content mb-2">Add personalization</p>
-                <p className="text-xs text-content-muted mb-3">
-                  Click a field to insert it where it belongs in your message. Customers will see
-                  their real details automatically.
+                <p className="text-xs text-content-muted">
+                  Use plain wording. Click a field below to personalize — no codes needed.
                 </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-sm font-medium text-content" htmlFor="email-message">
+                  Message
+                </label>
+                <textarea
+                  id="email-message"
+                  ref={messageRef}
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  rows={12}
+                  className="flex w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-content leading-relaxed placeholder:text-content-subtle focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                  placeholder={
+                    "Hi [Customer name],\n\nWrite your email in plain language.\n\nSeparate paragraphs with a blank line."
+                  }
+                />
+                <p className="text-xs text-content-muted">
+                  Write like a normal email. Blank lines create new paragraphs. Personal details
+                  appear as chips like [Customer name].
+                </p>
+              </div>
+
+              <div className="rounded-xl bg-surface-muted/80 border border-border p-4">
+                <p className="text-sm font-medium text-content mb-1">Insert customer details</p>
+                <p className="text-xs text-content-muted mb-3">
+                  Place your cursor where you want the detail, then click a button. Each customer
+                  sees their own info automatically.
+                </p>
+                <p className="text-xs font-medium text-content-muted mb-2">In the message</p>
                 <div className="flex flex-wrap gap-2">
                   {PERSONALIZATION_FIELDS.map((field) => (
                     <button
                       key={field.key}
                       type="button"
-                      onClick={() => setBody(insertField(body, field.key))}
+                      onClick={() => insertIntoMessage(field.key)}
                       className="inline-flex items-center rounded-full border border-border bg-surface px-3 py-1.5 text-xs font-medium text-content hover:border-brand-500/50 hover:bg-brand-500/5 transition-colors"
                     >
                       + {field.label}
                     </button>
                   ))}
                 </div>
-                <div className="flex flex-wrap gap-2 mt-3">
+                <p className="text-xs font-medium text-content-muted mt-4 mb-2">In the subject</p>
+                <div className="flex flex-wrap gap-2">
                   {PERSONALIZATION_FIELDS.map((field) => (
                     <button
                       key={`sub-${field.key}`}
                       type="button"
-                      onClick={() => setSubject(insertField(subject, field.key))}
+                      onClick={() => insertIntoSubject(field.key)}
                       className="inline-flex items-center rounded-full border border-dashed border-border px-2.5 py-1 text-xs text-content-muted hover:text-content hover:border-brand-500/40"
                     >
-                      Subject: {field.label}
+                      + {field.label}
                     </button>
                   ))}
                 </div>
@@ -384,13 +448,18 @@ export function TemplateEditorModal({
                   {previewSubject || "(No subject)"}
                 </p>
               </div>
-              <div
-                className="bg-[#f8fafc] dark:bg-zinc-900"
-                dangerouslySetInnerHTML={{
-                  __html:
-                    previewHtml ||
-                    '<p class="text-content-muted p-4">Your message will appear here.</p>',
-                }}
+              <iframe
+                title="Email preview"
+                className="w-full bg-[#f8fafc] border-0"
+                style={{ minHeight: 420, colorScheme: "light" }}
+                srcDoc={
+                  previewHtml
+                    ? previewHtml.replace(
+                        "<head>",
+                        `<head><base href="${typeof window !== "undefined" ? window.location.origin : ""}/">`
+                      )
+                    : `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;color:#6b7280;padding:16px;">Your message will appear here.</body></html>`
+                }
               />
             </div>
           )}

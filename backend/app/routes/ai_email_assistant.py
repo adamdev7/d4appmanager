@@ -8,8 +8,11 @@ from app.db.session import get_db
 from app.models.ai_email_assistant import (
     AIEmailAssistantSettingsResponse,
     AIEmailAssistantSettingsUpdate,
+    AIEmailAssistantStatsResponse,
     AIReplyResponse,
     AutomationRunResponse,
+    FullHistoryScanRequest,
+    FullHistoryScanResponse,
     OpenAIKeyStatusResponse,
     SetOpenAIKeyBody,
     SyncInboxRequest,
@@ -106,6 +109,23 @@ async def sync_inbox(
     )
 
 
+@router.post("/inbox/full-scan", response_model=FullHistoryScanResponse)
+async def full_history_scan(
+    body: FullHistoryScanRequest,
+    store_id: str | None = Query(default=None),
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return await _service.full_history_scan(
+        db,
+        user,
+        gmail_account_id=body.gmail_account_id,
+        store_id=store_id,
+        max_threads=body.max_threads,
+        confirmed=body.confirmed,
+    )
+
+
 @router.post("/inbox/{inbox_email_id}/unskip")
 async def unskip_email(
     inbox_email_id: str,
@@ -140,7 +160,7 @@ async def reject_reply(
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
-    return _service.reject_reply(db, user, reply_id)
+    return await _service.reject_reply(db, user, reply_id)
 
 
 @router.patch("/replies/{reply_id}", response_model=AIReplyResponse)
@@ -151,6 +171,15 @@ async def update_reply_draft(
     db: Session = Depends(get_db),
 ):
     return _service.update_draft(db, user, reply_id, body.body)
+
+
+@router.get("/stats", response_model=AIEmailAssistantStatsResponse)
+async def get_stats(
+    store_id: str | None = Query(default=None),
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.get_stats(db, user, store_id=store_id)
 
 
 @router.get("/logs")

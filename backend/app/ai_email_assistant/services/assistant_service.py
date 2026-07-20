@@ -1,8 +1,8 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.ai_email_assistant.ai_service import AIService
@@ -18,6 +18,7 @@ from app.ai_email_assistant.prompt_builder import BusinessContext
 from app.config import settings
 from app.core.openai_credentials import (
     clear_user_openai_api_key,
+    is_openai_configured,
     openai_key_status,
     resolve_openai_api_key,
     set_user_openai_api_key,
@@ -36,10 +37,14 @@ from app.integrations.gmail.inbox_client import GmailInboxClient
 from app.models.ai_email_assistant import (
     AIEmailAssistantSettingsResponse,
     AIEmailAssistantSettingsUpdate,
+    AIEmailAssistantStatsResponse,
     AIReplyLogEntry,
     AIReplyResponse,
+    FullHistoryScanResponse,
     InboxEmailResponse,
+    NamedCount,
     OpenAIKeyStatusResponse,
+    PeriodStats,
     SetOpenAIKeyBody,
 )
 
@@ -236,14 +241,28 @@ class AIEmailAssistantService:
         return None
 
     async def _mark_email_read_in_gmail(
-        self, db: Session, email: InboxEmail, account: GmailAccount | None = None
+        self,
+        db: Session,
+        email: InboxEmail,
+        account: GmailAccount | None = None,
+        *,
+        entire_thread: bool = False,
     ) -> None:
-        """Leave the message as read in Gmail so autopilot does not pick it up again."""
+        """Remove UNREAD in Gmail so the bot (and the Gmail UI) will not see it again."""
         acct = account or db.get(GmailAccount, email.gmail_account_id)
         if not acct:
             return
         client = GmailInboxClient(db)
-        await client.mark_as_read(acct, email.gmail_message_id)
+        if entire_thread and email.thread_id:
+            ok = await client.mark_thread_as_read(acct, email.thread_id)
+        else:
+            ok = await client.mark_as_read(acct, email.gmail_message_id)
+        if not ok:
+            logger.warning(
+                "Failed to mark Gmail message %s as read (account=%s)",
+                email.gmail_message_id,
+                acct.id,
+            )
 
     async def _skip_email_as_duplicate(
         self,
@@ -425,6 +444,10 @@ class AIEmailAssistantService:
                 )
             )
             if exists:
+                # Already handled (filtered / drafted / replied) — clear UNREAD so Gmail
+                # and the next sync do not keep surfacing the same message.
+                if exists.status != InboxEmailStatus.NEW.value:
+                    await client.mark_as_read(account, msg_id)
                 continue
 
             detail = await client.get_message(account, msg_id)
@@ -435,6 +458,9 @@ class AIEmailAssistantService:
             # AI classification (with full history) decides reply vs ignore + mark as read.
             if settings_row.verify_gmail_thread_before_reply:
                 if await client.we_sent_last_in_thread(account, detail.thread_id):
+                    # We already replied last — leave this unread message as read so it
+                    # is not scanned again on every autopilot cycle.
+                    await client.mark_as_read(account, msg_id)
                     continue
 
             sender_email = client.parse_sender_email(detail.sender)
@@ -467,6 +493,147 @@ class AIEmailAssistantService:
 
         all_recent = self.list_inbox(db, user, store_id=store_id, limit=max_results)
         return all_recent
+
+    async def full_history_scan(
+        self,
+        db: Session,
+        user: User,
+        *,
+        gmail_account_id: str,
+        store_id: str | None = None,
+        max_threads: int = 100,
+        confirmed: bool = False,
+    ) -> FullHistoryScanResponse:
+        """Scan the entire inbox history, analyze each conversation, answer unanswered clients."""
+        if not confirmed:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "You must confirm that Check inbox will scan your full Gmail history "
+                    "from the start of the mailbox."
+                ),
+            )
+
+        account = db.get(GmailAccount, gmail_account_id)
+        if not account or account.owner_id != user.id:
+            raise HTTPException(status_code=404, detail="Gmail account not found")
+        if account.status != GmailAccountStatus.CONNECTED.value:
+            raise HTTPException(status_code=400, detail="Gmail account is not connected")
+        if not resolve_openai_api_key(user):
+            raise HTTPException(
+                status_code=400,
+                detail="Add your OpenAI API key before running a full inbox check.",
+            )
+
+        settings_row = self.get_or_create_settings(db, user, store_id)
+        client = GmailInboxClient(db)
+        threads = await client.list_all_inbox_threads(
+            account,
+            max_threads=max_threads,
+            only_customer_messages=settings_row.sync_only_customer_unread,
+        )
+
+        imported = 0
+        needs_reply = 0
+        never_answered = 0
+        skipped_already = 0
+        skipped_filtered = 0
+        synced_ids: list[str] = []
+
+        for thread_ref in threads:
+            thread_id = thread_ref.get("id")
+            if not thread_id:
+                continue
+
+            analysis = await client.analyze_thread_history(account, thread_id)
+            if not analysis:
+                continue
+
+            # Team already sent the last message — conversation is waiting on the customer
+            if not analysis.latest_from_customer:
+                skipped_already += 1
+                continue
+
+            # Customer was last to write — may need a reply (never answered OR open follow-up)
+            exists = db.scalar(
+                select(InboxEmail).where(
+                    InboxEmail.gmail_account_id == account.id,
+                    InboxEmail.gmail_message_id == analysis.latest_message_id,
+                )
+            )
+            if exists:
+                # Still re-evaluate if stuck as new; otherwise skip re-import
+                if exists.status == InboxEmailStatus.NEW.value:
+                    synced_ids.append(exists.id)
+                    if analysis.never_answered_by_team:
+                        never_answered += 1
+                    needs_reply += 1
+                elif exists.status in (
+                    InboxEmailStatus.REPLIED.value,
+                    InboxEmailStatus.SKIPPED.value,
+                    InboxEmailStatus.PROCESSED.value,
+                ):
+                    skipped_already += 1
+                continue
+
+            row = InboxEmail(
+                user_id=user.id,
+                store_id=store_id,
+                gmail_account_id=account.id,
+                gmail_message_id=analysis.latest_message_id,
+                thread_id=analysis.thread_id,
+                sender=analysis.customer_sender,
+                sender_email=analysis.customer_email,
+                subject=analysis.subject,
+                body_text=analysis.latest_body,
+                status=InboxEmailStatus.NEW.value,
+            )
+            db.add(row)
+            db.flush()
+            imported += 1
+            needs_reply += 1
+            if analysis.never_answered_by_team:
+                never_answered += 1
+            synced_ids.append(row.id)
+
+        db.commit()
+
+        # Filter + AI: full thread history decides reply vs skip for each candidate
+        for inbox_id in synced_ids:
+            email = db.get(InboxEmail, inbox_id)
+            if not email or email.status != InboxEmailStatus.NEW.value:
+                continue
+            await self._apply_email_filter(db, user, email, settings_row)
+            db.refresh(email)
+            if email.status == InboxEmailStatus.SKIPPED.value:
+                skipped_filtered += 1
+
+        processed = await self.process_pending_replies(
+            db,
+            user,
+            settings_row,
+            store_id=store_id,
+            limit=min(len(synced_ids) or 1, max_threads),
+        )
+
+        inbox = self.list_inbox(db, user, store_id=store_id, limit=50)
+        return FullHistoryScanResponse(
+            threads_scanned=len(threads),
+            imported=imported,
+            needs_reply=needs_reply,
+            never_answered=never_answered,
+            skipped_already_answered=skipped_already,
+            skipped_filtered=skipped_filtered,
+            processed_replies=processed,
+            message=(
+                f"Scanned {len(threads)} conversations. "
+                f"{never_answered} never answered by your team. "
+                f"{needs_reply} needed a reply (customer wrote last). "
+                f"{skipped_already} already waiting on the customer. "
+                f"{processed} replies drafted or sent."
+            ),
+            inbox=inbox,
+        )
 
     async def process_pending_replies(
         self,
@@ -501,6 +668,8 @@ class AIEmailAssistantService:
 
         for email in pending:
             if email.replies:
+                # Draft/reply already exists — mark read so Gmail does not keep it unread.
+                await self._mark_email_read_in_gmail(db, email)
                 continue
 
             email_account = db.get(GmailAccount, email.gmail_account_id)
@@ -658,6 +827,9 @@ class AIEmailAssistantService:
         if settings_row.auto_send_enabled:
             return await self.approve_and_send(db, user, reply.id)
 
+        # Draft-only mode: still mark read in Gmail so the bot does not re-scan it
+        # and so it no longer appears unread when you open Gmail.
+        await self._mark_email_read_in_gmail(db, email, account)
         return self._serialize_reply(reply, email.detected_intent)
 
     async def approve_and_send(self, db: Session, user: User, reply_id: str) -> AIReplyResponse:
@@ -708,13 +880,14 @@ class AIEmailAssistantService:
 
         return self._serialize_reply(reply, email.detected_intent)
 
-    def reject_reply(self, db: Session, user: User, reply_id: str) -> AIReplyResponse:
+    async def reject_reply(self, db: Session, user: User, reply_id: str) -> AIReplyResponse:
         reply = db.get(AIEmailReply, reply_id)
         if not reply or reply.user_id != user.id:
             raise HTTPException(status_code=404, detail="Reply not found")
         reply.status = AIReplyStatus.REJECTED.value
         reply.inbox_email.status = InboxEmailStatus.PROCESSED.value
         db.commit()
+        await self._mark_email_read_in_gmail(db, reply.inbox_email)
         return self._serialize_reply(reply, reply.inbox_email.detected_intent)
 
     def update_draft(self, db: Session, user: User, reply_id: str, body: str) -> AIReplyResponse:
@@ -767,3 +940,149 @@ class AIEmailAssistantService:
                 )
             )
         return entries
+
+    def get_stats(
+        self, db: Session, user: User, *, store_id: str | None = None
+    ) -> AIEmailAssistantStatsResponse:
+        """Aggregate inbox + reply metrics for the store-owner Stats dashboard."""
+        minutes_per_reply = 5
+
+        def _inbox_base():
+            q = select(InboxEmail).where(InboxEmail.user_id == user.id)
+            if store_id:
+                q = q.where(InboxEmail.store_id == store_id)
+            return q
+
+        def _reply_base():
+            q = select(AIEmailReply).where(AIEmailReply.user_id == user.id)
+            if store_id:
+                q = (
+                    q.join(InboxEmail, AIEmailReply.inbox_email_id == InboxEmail.id)
+                    .where(InboxEmail.store_id == store_id)
+                )
+            return q
+
+        def _period_stats(since: datetime | None = None) -> PeriodStats:
+            inbox_q = _inbox_base()
+            reply_q = _reply_base()
+            if since is not None:
+                inbox_q = inbox_q.where(InboxEmail.received_at >= since)
+                reply_q = reply_q.where(AIEmailReply.created_at >= since)
+
+            emails = db.scalars(inbox_q).all()
+            replies = db.scalars(reply_q).all()
+
+            emails_received = len(emails)
+            awaiting = sum(1 for e in emails if e.status == InboxEmailStatus.NEW.value)
+            filtered = sum(1 for e in emails if e.status == InboxEmailStatus.SKIPPED.value)
+            drafts = sum(1 for r in replies if r.status == AIReplyStatus.DRAFT.value)
+            sent = sum(1 for r in replies if r.status == AIReplyStatus.SENT.value)
+            # Also count inbox-level replied if reply rows lag
+            replied_inbox = sum(1 for e in emails if e.status == InboxEmailStatus.REPLIED.value)
+            sent = max(sent, replied_inbox)
+            failed = sum(1 for r in replies if r.status == AIReplyStatus.FAILED.value)
+
+            return PeriodStats(
+                emails_received=emails_received,
+                replies_sent=sent,
+                drafts_pending=drafts,
+                filtered=filtered,
+                failed=failed,
+                awaiting_reply=awaiting,
+            )
+
+        now = datetime.now(UTC)
+        start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_ago = now - timedelta(days=7)
+        month_ago = now - timedelta(days=30)
+
+        all_time = _period_stats(None)
+        today = _period_stats(start_today)
+        last_7 = _period_stats(week_ago)
+        last_30 = _period_stats(month_ago)
+
+        # Filter category breakdown (all time)
+        filter_q = (
+            select(InboxEmail.filter_category, func.count())
+            .where(
+                InboxEmail.user_id == user.id,
+                InboxEmail.status == InboxEmailStatus.SKIPPED.value,
+            )
+            .group_by(InboxEmail.filter_category)
+        )
+        if store_id:
+            filter_q = filter_q.where(InboxEmail.store_id == store_id)
+        filter_rows = db.execute(filter_q).all()
+        filter_breakdown = [
+            NamedCount(name=(name or "other"), count=int(count))
+            for name, count in filter_rows
+            if count
+        ]
+        filter_breakdown.sort(key=lambda x: x.count, reverse=True)
+
+        intent_q = (
+            select(InboxEmail.detected_intent, func.count())
+            .where(
+                InboxEmail.user_id == user.id,
+                InboxEmail.detected_intent.isnot(None),
+            )
+            .group_by(InboxEmail.detected_intent)
+        )
+        if store_id:
+            intent_q = intent_q.where(InboxEmail.store_id == store_id)
+        intent_rows = db.execute(intent_q).all()
+        intent_breakdown = [
+            NamedCount(name=str(name).replace("_", " "), count=int(count))
+            for name, count in intent_rows
+            if name and count
+        ]
+        intent_breakdown.sort(key=lambda x: x.count, reverse=True)
+
+        unique_q = select(func.count(func.distinct(InboxEmail.sender_email))).where(
+            InboxEmail.user_id == user.id,
+            InboxEmail.status == InboxEmailStatus.REPLIED.value,
+        )
+        if store_id:
+            unique_q = unique_q.where(InboxEmail.store_id == store_id)
+        unique_customers = db.scalar(unique_q) or 0
+
+        minutes_saved = all_time.replies_sent * minutes_per_reply
+        hours_saved = round(minutes_saved / 60, 1)
+
+        filter_efficiency = (
+            round((all_time.filtered / all_time.emails_received) * 100, 1)
+            if all_time.emails_received
+            else 0.0
+        )
+        reply_rate = (
+            round((all_time.replies_sent / all_time.emails_received) * 100, 1)
+            if all_time.emails_received
+            else 0.0
+        )
+
+        settings_row = self.get_or_create_settings(db, user, store_id)
+        gmail_id = self.resolve_gmail_account_id(db, user, settings_row)
+        gmail_connected = gmail_id is not None
+
+        return AIEmailAssistantStatsResponse(
+            all_time=all_time,
+            today=today,
+            last_7_days=last_7,
+            last_30_days=last_30,
+            filter_breakdown=filter_breakdown,
+            intent_breakdown=intent_breakdown,
+            unique_customers_helped=int(unique_customers),
+            minutes_saved_estimate=minutes_saved,
+            hours_saved_estimate=hours_saved,
+            filter_efficiency_pct=filter_efficiency,
+            reply_rate_pct=reply_rate,
+            autopilot_enabled=settings_row.automation_enabled,
+            auto_send_enabled=settings_row.auto_send_enabled,
+            automation_last_run_at=(
+                settings_row.automation_last_run_at.isoformat()
+                if settings_row.automation_last_run_at
+                else None
+            ),
+            openai_configured=is_openai_configured(user),
+            gmail_connected=gmail_connected,
+        )

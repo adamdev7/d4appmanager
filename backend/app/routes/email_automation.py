@@ -159,6 +159,9 @@ async def list_rules(
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
+    _ensure_store_access(db, user, store_id)
+    # Quietly upgrade one-line starter copy to fuller professional templates.
+    seed_store_automation_defaults(db, store_id, refresh_legacy_bodies=True)
     return _rules.list_rules(db, user, store_id)
 
 

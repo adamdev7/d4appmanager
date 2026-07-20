@@ -18,6 +18,11 @@ import {
   Building2,
   CheckCircle2,
   ArrowLeft,
+  BarChart3,
+  Clock,
+  Users,
+  ShieldCheck,
+  TrendingUp,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api } from "@/lib/api";
@@ -29,7 +34,35 @@ import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 import type { GmailAccount } from "@/types";
 
-type Tab = "inbox" | "business" | "settings" | "logs";
+type Tab = "inbox" | "stats" | "business" | "settings" | "logs";
+
+type PeriodStats = {
+  emails_received: number;
+  replies_sent: number;
+  drafts_pending: number;
+  filtered: number;
+  failed: number;
+  awaiting_reply: number;
+};
+
+type AssistantStats = {
+  all_time: PeriodStats;
+  today: PeriodStats;
+  last_7_days: PeriodStats;
+  last_30_days: PeriodStats;
+  filter_breakdown: Array<{ name: string; count: number }>;
+  intent_breakdown: Array<{ name: string; count: number }>;
+  unique_customers_helped: number;
+  minutes_saved_estimate: number;
+  hours_saved_estimate: number;
+  filter_efficiency_pct: number;
+  reply_rate_pct: number;
+  autopilot_enabled: boolean;
+  auto_send_enabled: boolean;
+  automation_last_run_at: string | null;
+  openai_configured: boolean;
+  gmail_connected: boolean;
+};
 
 type InboxItem = {
   id: string;
@@ -93,6 +126,7 @@ type LogEntry = {
 
 const TABS: { id: Tab; label: string; icon: typeof Mail }[] = [
   { id: "inbox", label: "Inbox", icon: Mail },
+  { id: "stats", label: "Stats", icon: BarChart3 },
   { id: "business", label: "Business", icon: Building2 },
   { id: "settings", label: "Settings", icon: Settings2 },
   { id: "logs", label: "Activity", icon: ScrollText },
@@ -167,6 +201,7 @@ export function AIEmailAssistantPage() {
   const [inbox, setInbox] = useState<InboxItem[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [stats, setStats] = useState<AssistantStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
@@ -178,6 +213,8 @@ export function AIEmailAssistantPage() {
   const [runningAutomation, setRunningAutomation] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [confirmFullScanOpen, setConfirmFullScanOpen] = useState(false);
+  const [scanResultMessage, setScanResultMessage] = useState("");
 
   const selected = selectedId ? inbox.find((e) => e.id === selectedId) ?? null : null;
 
@@ -203,18 +240,23 @@ export function AIEmailAssistantPage() {
     setLogs(l as LogEntry[]);
   }, []);
 
+  const loadStats = useCallback(async () => {
+    const s = await api.aiEmailAssistant.stats(activeStore?.id);
+    setStats(s as AssistantStats);
+  }, [activeStore?.id]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       await loadAccounts();
-      await Promise.all([loadInbox(), loadSettings(), loadLogs()]);
+      await Promise.all([loadInbox(), loadSettings(), loadLogs(), loadStats()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load AI Email Assistant");
     } finally {
       setLoading(false);
     }
-  }, [loadAccounts, loadInbox, loadSettings, loadLogs]);
+  }, [loadAccounts, loadInbox, loadSettings, loadLogs, loadStats]);
 
   useEffect(() => {
     loadAll();
@@ -239,16 +281,27 @@ export function AIEmailAssistantPage() {
       setTab("settings");
       return;
     }
+    setConfirmFullScanOpen(true);
+  };
+
+  const runFullHistoryScan = async () => {
+    const accId = settings?.gmail_account_id ?? connectedAccount?.id;
+    if (!accId) return;
+    setConfirmFullScanOpen(false);
     setSyncing(true);
     setError("");
+    setScanResultMessage("");
     try {
-      const data = await api.aiEmailAssistant.syncInbox(accId, 15, activeStore?.id);
-      setInbox(data as InboxItem[]);
-      if ((data as InboxItem[]).length) {
-        setSelectedId((data as InboxItem[])[0].id);
+      const result = await api.aiEmailAssistant.fullHistoryScan(accId, 100, activeStore?.id);
+      const inboxData = await api.aiEmailAssistant.inbox(activeStore?.id);
+      setInbox(inboxData as InboxItem[]);
+      if ((inboxData as InboxItem[]).length) {
+        setSelectedId((inboxData as InboxItem[])[0].id);
       }
+      setScanResultMessage(result.message);
+      await Promise.all([loadLogs(), loadStats()]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sync failed");
+      setError(err instanceof Error ? err.message : "Full inbox check failed");
     } finally {
       setSyncing(false);
     }
@@ -300,7 +353,7 @@ export function AIEmailAssistantPage() {
     setActionId(replyId);
     try {
       await api.aiEmailAssistant.approveReply(replyId);
-      await Promise.all([loadInbox(), loadLogs()]);
+      await Promise.all([loadInbox(), loadLogs(), loadStats()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
     } finally {
@@ -418,7 +471,7 @@ export function AIEmailAssistantPage() {
     setError("");
     try {
       const result = await api.aiEmailAssistant.runAutomation(activeStore?.id);
-      await Promise.all([loadInbox(), loadSettings(), loadLogs()]);
+      await Promise.all([loadInbox(), loadSettings(), loadLogs(), loadStats()]);
       if (result.stopped && result.error) {
         setError(result.error);
       } else if (!result.ok && result.error) {
@@ -493,11 +546,60 @@ export function AIEmailAssistantPage() {
           {tab === "inbox" && (
             <Button onClick={syncInbox} disabled={syncing || !connectedAccount}>
               <Mail className="h-4 w-4 mr-2" />
-              {syncing ? "Syncing…" : "Check inbox"}
+              {syncing ? "Scanning history…" : "Check inbox"}
             </Button>
           )}
         </div>
       </div>
+
+      {confirmFullScanOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <Card className="max-w-lg w-full shadow-lg">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+                <AlertCircle className="h-5 w-5 shrink-0" />
+                Full inbox history check
+              </CardTitle>
+              <CardDescription className="text-content-muted leading-relaxed pt-1">
+                This will scan your Gmail <strong className="text-content">from the beginning</strong>{" "}
+                (up to 100 conversations), not only recent unread mail.
+              </CardDescription>
+            </CardHeader>
+            <ul className="px-6 space-y-2 text-sm text-content-muted pb-4">
+              <li>
+                · Reads the <strong className="text-content">full conversation history</strong> with
+                each customer (your team + the client).
+              </li>
+              <li>
+                · Only acts when the <strong className="text-content">customer wrote last</strong> —
+                if your team already sent the latest message, it skips.
+              </li>
+              <li>
+                · If a client was <strong className="text-content">never answered</strong> by your
+                team, the assistant will draft or send a reply.
+              </li>
+              <li>
+                · Uses OpenAI for each conversation — this can take several minutes and use API
+                credits.
+              </li>
+            </ul>
+            <div className="px-6 pb-5 flex flex-wrap gap-2 justify-end">
+              <Button variant="outline" onClick={() => setConfirmFullScanOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={runFullHistoryScan}>
+                I understand — scan everything
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {scanResultMessage && (
+        <p className="text-sm text-content bg-brand-500/10 border border-brand-500/20 rounded-lg px-3 py-2">
+          {scanResultMessage}
+        </p>
+      )}
 
       {needsSetup && (
         <Card className="border-amber-500/30 bg-amber-500/5">
@@ -599,7 +701,7 @@ export function AIEmailAssistantPage() {
                   <p>No emails yet.</p>
                   <p className="text-xs">
                     {connectedAccount
-                      ? 'Click "Check inbox" to pull unread customer emails from Gmail.'
+                      ? 'Click "Check inbox" to scan full Gmail history (you will confirm first).'
                       : "Connect Gmail in Settings to get started."}
                   </p>
                 </li>
@@ -752,6 +854,240 @@ export function AIEmailAssistantPage() {
             )}
           </Card>
         </div>
+      )}
+
+      {tab === "stats" && (
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-content">Assistant impact</h2>
+              <p className="text-sm text-content-muted mt-1 max-w-2xl leading-relaxed">
+                See how much inbox work the AI handles for you — replies sent, noise filtered, and
+                time saved so you can focus on growing the store.
+              </p>
+            </div>
+            <Button variant="outline" onClick={loadStats} disabled={loading}>
+              <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
+              Refresh stats
+            </Button>
+          </div>
+
+          {!stats ? (
+            <Card className="p-10 text-center text-sm text-content-muted">
+              Loading stats…
+            </Card>
+          ) : (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {[
+                  {
+                    label: "Replies sent",
+                    value: stats.all_time.replies_sent,
+                    hint: `${stats.today.replies_sent} today · ${stats.last_7_days.replies_sent} this week`,
+                    icon: Send,
+                  },
+                  {
+                    label: "Noise filtered",
+                    value: stats.all_time.filtered,
+                    hint: `${stats.filter_efficiency_pct}% of inbox skipped as non-actionable`,
+                    icon: ShieldCheck,
+                  },
+                  {
+                    label: "Time saved",
+                    value:
+                      stats.hours_saved_estimate >= 1
+                        ? `${stats.hours_saved_estimate}h`
+                        : `${stats.minutes_saved_estimate}m`,
+                    hint: `~5 min per reply × ${stats.all_time.replies_sent} sent`,
+                    icon: Clock,
+                  },
+                  {
+                    label: "Customers helped",
+                    value: stats.unique_customers_helped,
+                    hint: `${stats.reply_rate_pct}% of received mail got a reply`,
+                    icon: Users,
+                  },
+                ].map(({ label, value, hint, icon: Icon }) => (
+                  <Card key={label} className="p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs font-medium uppercase tracking-wide text-content-subtle">
+                        {label}
+                      </p>
+                      <Icon className="h-4 w-4 text-brand-600 dark:text-brand-400 shrink-0" />
+                    </div>
+                    <p className="mt-2 text-3xl font-semibold tabular-nums text-content">{value}</p>
+                    <p className="mt-1 text-xs text-content-muted leading-snug">{hint}</p>
+                  </Card>
+                ))}
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-3">
+                {(
+                  [
+                    ["Today", stats.today],
+                    ["Last 7 days", stats.last_7_days],
+                    ["Last 30 days", stats.last_30_days],
+                  ] as const
+                ).map(([label, period]) => (
+                  <Card key={label}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base">{label}</CardTitle>
+                      <CardDescription>
+                        {period.emails_received} emails processed by the assistant
+                      </CardDescription>
+                    </CardHeader>
+                    <div className="px-6 pb-5 grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <p className="text-content-subtle text-xs">Sent</p>
+                        <p className="font-semibold tabular-nums text-content">{period.replies_sent}</p>
+                      </div>
+                      <div>
+                        <p className="text-content-subtle text-xs">Filtered</p>
+                        <p className="font-semibold tabular-nums text-content">{period.filtered}</p>
+                      </div>
+                      <div>
+                        <p className="text-content-subtle text-xs">Drafts</p>
+                        <p className="font-semibold tabular-nums text-content">{period.drafts_pending}</p>
+                      </div>
+                      <div>
+                        <p className="text-content-subtle text-xs">Awaiting</p>
+                        <p className="font-semibold tabular-nums text-content">{period.awaiting_reply}</p>
+                      </div>
+                    </div>
+                  </Card>
+                ))}
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">What got filtered</CardTitle>
+                    <CardDescription>
+                      Automated mail, duplicates, and other noise the AI kept out of your send queue.
+                    </CardDescription>
+                  </CardHeader>
+                  <div className="px-6 pb-5 space-y-2">
+                    {stats.filter_breakdown.length === 0 ? (
+                      <p className="text-sm text-content-muted">No filtered emails yet.</p>
+                    ) : (
+                      stats.filter_breakdown.map((row) => {
+                        const max = stats.filter_breakdown[0]?.count || 1;
+                        const pct = Math.max(8, Math.round((row.count / max) * 100));
+                        return (
+                          <div key={row.name}>
+                            <div className="flex justify-between text-sm mb-1">
+                              <span className="text-content capitalize">
+                                {filterCategoryLabel(row.name) ?? row.name}
+                              </span>
+                              <span className="tabular-nums text-content-muted">{row.count}</span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-surface-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-brand-500/70"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Customer intents</CardTitle>
+                    <CardDescription>
+                      What shoppers write about — useful for staffing and FAQ updates.
+                    </CardDescription>
+                  </CardHeader>
+                  <div className="px-6 pb-5 space-y-2">
+                    {stats.intent_breakdown.length === 0 ? (
+                      <p className="text-sm text-content-muted">
+                        Intents appear after the AI reads customer emails.
+                      </p>
+                    ) : (
+                      stats.intent_breakdown.slice(0, 8).map((row) => {
+                        const max = stats.intent_breakdown[0]?.count || 1;
+                        const pct = Math.max(8, Math.round((row.count / max) * 100));
+                        return (
+                          <div key={row.name}>
+                            <div className="flex justify-between text-sm mb-1">
+                              <span className="text-content capitalize">{row.name}</span>
+                              <span className="tabular-nums text-content-muted">{row.count}</span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-surface-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-emerald-500/70"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </Card>
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <TrendingUp className="h-4 w-4 text-brand-600" />
+                    Why this matters
+                  </CardTitle>
+                  <CardDescription>
+                    Snapshot of assistant value for{" "}
+                    {activeStore?.name ? (
+                      <strong className="text-content">{activeStore.name}</strong>
+                    ) : (
+                      "your store"
+                    )}
+                    .
+                  </CardDescription>
+                </CardHeader>
+                <ul className="px-6 pb-5 space-y-2 text-sm text-content-muted">
+                  <li>
+                    · <span className="text-content font-medium">{stats.all_time.replies_sent}</span>{" "}
+                    customer replies sent without you typing each one.
+                  </li>
+                  <li>
+                    · <span className="text-content font-medium">{stats.all_time.filtered}</span>{" "}
+                    messages filtered so you do not waste time on no-reply / non-business mail.
+                  </li>
+                  <li>
+                    · About{" "}
+                    <span className="text-content font-medium">
+                      {stats.hours_saved_estimate >= 1
+                        ? `${stats.hours_saved_estimate} hours`
+                        : `${stats.minutes_saved_estimate} minutes`}
+                    </span>{" "}
+                    of support time saved (estimate).
+                  </li>
+                  <li>
+                    · Autopilot is{" "}
+                    <span className="text-content font-medium">
+                      {stats.autopilot_enabled ? "on" : "off"}
+                    </span>
+                    {stats.auto_send_enabled ? " with auto-send" : " (drafts need approval)"}
+                    {stats.automation_last_run_at
+                      ? ` · last run ${formatTime(stats.automation_last_run_at)}`
+                      : ""}
+                    .
+                  </li>
+                  {(!stats.gmail_connected || !stats.openai_configured) && (
+                    <li className="text-amber-700 dark:text-amber-400">
+                      · Finish setup:{" "}
+                      {!stats.gmail_connected && "connect Gmail"}
+                      {!stats.gmail_connected && !stats.openai_configured && " and "}
+                      {!stats.openai_configured && "add your OpenAI key"} in Settings.
+                    </li>
+                  )}
+                </ul>
+              </Card>
+            </>
+          )}
+        </motion.div>
       )}
 
       {tab === "business" && settings && (

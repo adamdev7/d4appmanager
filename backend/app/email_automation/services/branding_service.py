@@ -45,6 +45,10 @@ class EmailBrandingService:
             return path
         if not path.startswith("/"):
             path = f"/{path}"
+        # Don't return a broken preview URL when the file is missing on disk.
+        file_path = uploads_root() / Path(path).name
+        if not file_path.is_file():
+            return None
         return path
 
     def serialize(self, store: Store) -> dict:
