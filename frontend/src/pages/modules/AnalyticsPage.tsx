@@ -252,7 +252,7 @@ export function AnalyticsPage() {
                   value={formatMoney(summary.revenue, currency)}
                   hint={
                     summary.revenue_source === "stripe"
-                      ? `${summary.stripe_charges ?? 0} charges · ${summary.stripe_subscription_charges ?? 0} sub · ${summary.stripe_one_time_charges ?? 0} one-time (net)`
+                      ? `Stripe → ${currency}${summary.stripe_currency && summary.stripe_currency !== currency ? ` from ${summary.stripe_currency}` : ""} · ${summary.stripe_charges ?? 0} charges`
                       : `${summary.orders} orders · AOV ${formatMoney(summary.aov, storeCurrency)}`
                   }
                   icon={ShoppingBag}
@@ -260,14 +260,10 @@ export function AnalyticsPage() {
                 />
                 <MetricCard
                   label="Ad Spend"
-                  value={formatMoney(summary.ad_spend, currency)}
+                  value={formatMoney(summary.ad_spend, storeCurrency)}
                   hint={
                     summary.ad_spend > 0
-                      ? summary.ad_spend_native &&
-                        summary.ad_spend_currency &&
-                        summary.ad_spend_currency !== currency
-                        ? `Meta ${formatMoney(summary.ad_spend_native, storeCurrency)} → ${currency}`
-                        : `CPA ${formatMoney(summary.cpa || summary.meta_cpa, currency)}`
+                      ? `CPA ${formatMoney(summary.cpa || summary.meta_cpa, storeCurrency)} · Meta stays in ${storeCurrency}`
                       : "Connect Meta in Settings"
                   }
                   icon={Megaphone}
@@ -371,15 +367,22 @@ export function AnalyticsPage() {
                 </Card>
               )}
 
-              {currency !== storeCurrency && (
+              {summary.stripe_fx_note && (
                 <Card padding="md" className="border-border bg-surface-muted/40">
                   <p className="text-sm text-content-muted">
-                    P&amp;L is in <span className="font-medium text-content">{currency}</span> from
-                    Stripe. Store currency is {storeCurrency}
-                    {summary.ad_spend_native
-                      ? ` · Meta spend converted from ${formatMoney(summary.ad_spend_native, storeCurrency)}`
+                    {summary.stripe_fx_note}
+                    {summary.stripe_revenue_native != null && summary.stripe_currency
+                      ? ` · Native total ${formatMoney(summary.stripe_revenue_native, summary.stripe_currency)}`
                       : ""}
-                    .
+                    . Meta ad spend stays in {storeCurrency}.
+                  </p>
+                </Card>
+              )}
+
+              {currency !== storeCurrency && !summary.stripe_fx_note && (
+                <Card padding="md" className="border-border bg-surface-muted/40">
+                  <p className="text-sm text-content-muted">
+                    P&amp;L currency is {currency}; store currency is {storeCurrency}.
                   </p>
                 </Card>
               )}

@@ -302,8 +302,8 @@ export function ProfitBreakdown({
       <CardHeader>
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
-          Period revenue from Stripe includes every successful charge (subscriptions and one-time).
-          MRR is current run-rate only. Meta purchase value is not used in profit.
+          P&amp;L is in store currency. Stripe charges are converted with historical daily FX when
+          needed; Meta ad spend is never converted to pounds. MRR stays in Stripe&apos;s currency.
         </CardDescription>
       </CardHeader>
 

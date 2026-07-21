@@ -87,6 +87,7 @@ export type AnalyticsDashboard = {
     shopify_revenue: number;
     stripe_revenue_gross?: number;
     stripe_revenue_net?: number;
+    stripe_revenue_native?: number;
     stripe_subscription_gross?: number;
     stripe_one_time_gross?: number;
     stripe_subscription_net?: number;
@@ -96,6 +97,7 @@ export type AnalyticsDashboard = {
     stripe_subscription_charges?: number;
     stripe_one_time_charges?: number;
     stripe_currency?: string | null;
+    stripe_fx_note?: string | null;
     fees_already_net?: boolean;
     approx_revenue: number;
     meta_approx_revenue: number;

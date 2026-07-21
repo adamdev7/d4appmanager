@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -173,16 +174,12 @@ class StripeClient:
         until_ts: int,
         currency: str | None = None,
         limit_pages: int = 100,
-    ) -> dict[str, Decimal | int | str | None]:
+    ) -> dict[str, Any]:
         """
         Total Stripe revenue for a period = ALL successful charges (subscriptions + one-time).
 
-        - Subscription charges: Charge has an `invoice` (Billing / recurring)
-        - One-time / regular: Charge has no invoice (PaymentIntent, Checkout, etc.)
-        - `net` comes from balance_transaction (Stripe fees already deducted)
-        - Refunds reduce gross/net proportionally
-
-        This is period cash revenue — not the same as MRR (current run-rate).
+        Returns native-currency totals plus `daily` maps (YYYY-MM-DD → amount) so callers
+        can convert to store currency with historical per-day FX rates.
         """
         preferred = _norm_currency(currency)
         buckets: dict[str, dict[str, Any]] = defaultdict(
@@ -198,6 +195,11 @@ class StripeClient:
                 "subscription_count": 0,
                 "one_time_count": 0,
                 "customers": set(),
+                "daily_net": defaultdict(lambda: Decimal("0")),
+                "daily_gross": defaultdict(lambda: Decimal("0")),
+                "daily_fees": defaultdict(lambda: Decimal("0")),
+                "daily_subscription_net": defaultdict(lambda: Decimal("0")),
+                "daily_one_time_net": defaultdict(lambda: Decimal("0")),
             }
         )
         currency_counts: dict[str, int] = defaultdict(int)
@@ -224,7 +226,6 @@ class StripeClient:
                 for ch in batch:
                     if ch.get("status") != "succeeded":
                         continue
-                    # Skip fully failed / uncaptured extras
                     if ch.get("captured") is False:
                         continue
 
@@ -232,6 +233,9 @@ class StripeClient:
                     if not cur:
                         continue
                     currency_counts[cur] += 1
+
+                    created = int(ch.get("created") or since_ts)
+                    day_key = datetime.utcfromtimestamp(created).strftime("%Y-%m-%d")
 
                     amt = from_stripe_amount(ch.get("amount"), cur)
                     refunded = from_stripe_amount(ch.get("amount_refunded"), cur)
@@ -249,20 +253,24 @@ class StripeClient:
                         fee = Decimal("0")
                         n = effective_gross
 
-                    # invoice present ⇒ subscription / recurring Billing charge
                     is_subscription = bool(ch.get("invoice"))
                     b = buckets[cur]
                     b["gross"] += effective_gross
                     b["fees"] += fee
                     b["net"] += n
+                    b["daily_net"][day_key] += n
+                    b["daily_gross"][day_key] += effective_gross
+                    b["daily_fees"][day_key] += fee
                     if is_subscription:
                         b["subscription_gross"] += effective_gross
                         b["subscription_net"] += n
+                        b["daily_subscription_net"][day_key] += n
                         if effective_gross > 0:
                             b["subscription_count"] += 1
                     else:
                         b["one_time_gross"] += effective_gross
                         b["one_time_net"] += n
+                        b["daily_one_time_net"][day_key] += n
                         if effective_gross > 0:
                             b["one_time_count"] += 1
                     if ch.get("paid") and effective_gross > 0:
@@ -294,8 +302,19 @@ class StripeClient:
             "subscription_count": 0,
             "one_time_count": 0,
             "customers": set(),
+            "daily_net": {},
+            "daily_gross": {},
+            "daily_fees": {},
+            "daily_subscription_net": {},
+            "daily_one_time_net": {},
         }
         b = buckets.get(cur_key) or empty_b
+
+        def _plain(d: Any) -> dict[str, str]:
+            if not d:
+                return {}
+            return {k: str(v) for k, v in dict(d).items()}
+
         return {
             "gross": b["gross"],
             "fees": b["fees"],
@@ -310,6 +329,11 @@ class StripeClient:
             "unique_sources": len(b["customers"]),
             "currency": chosen.upper() if chosen else None,
             "currencies_seen": ",".join(sorted(c.upper() for c in currency_counts)),
+            "daily_net": _plain(b.get("daily_net")),
+            "daily_gross": _plain(b.get("daily_gross")),
+            "daily_fees": _plain(b.get("daily_fees")),
+            "daily_subscription_net": _plain(b.get("daily_subscription_net")),
+            "daily_one_time_net": _plain(b.get("daily_one_time_net")),
         }
 
     async def compute_mrr(
