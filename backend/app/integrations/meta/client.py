@@ -44,9 +44,9 @@ class MetaAdsClient:
         since: str | None = None,
         until: str | None = None,
         date_preset: str | None = None,
-        time_increment: int = 1,
+        time_increment: int | str = 1,
     ) -> dict:
-        """Daily account-level insights."""
+        """Account-level insights (single page). Prefer get_account_insights_all for long ranges."""
         return await self._fetch_insights(
             level="account",
             since=since,
@@ -56,6 +56,40 @@ class MetaAdsClient:
             breakdown_fields="spend,impressions,clicks,cpc,cpm,ctr,actions,action_values,purchase_roas",
         )
 
+    async def get_account_insights_all(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        date_preset: str | None = None,
+        time_increment: int | str = 1,
+        max_pages: int = 50,
+    ) -> list[dict]:
+        """Paginate account insights so All-time daily rows are not truncated at 500."""
+        first = await self._fetch_insights(
+            level="account",
+            since=since,
+            until=until,
+            date_preset=date_preset,
+            time_increment=time_increment,
+            breakdown_fields="spend,impressions,clicks,cpc,cpm,ctr,actions,action_values,purchase_roas",
+        )
+        rows = list(first.get("data") or [])
+        next_url = (first.get("paging") or {}).get("next")
+        pages = 1
+        async with httpx.AsyncClient(timeout=60) as client:
+            while next_url and pages < max_pages:
+                resp = await client.get(next_url)
+                resp.raise_for_status()
+                payload = resp.json()
+                batch = list(payload.get("data") or [])
+                rows.extend(batch)
+                next_url = (payload.get("paging") or {}).get("next")
+                pages += 1
+                if not batch:
+                    break
+        return rows
+
     async def get_campaign_insights(
         self,
         *,
@@ -63,8 +97,8 @@ class MetaAdsClient:
         until: str | None = None,
         date_preset: str | None = None,
     ) -> list[dict]:
-        """Campaign-level insights for the period."""
-        data = await self._fetch_insights(
+        """Campaign-level insights for the period (paginated)."""
+        first = await self._fetch_insights(
             level="campaign",
             since=since,
             until=until,
@@ -75,7 +109,21 @@ class MetaAdsClient:
                 "actions,action_values,purchase_roas"
             ),
         )
-        return list(data.get("data") or [])
+        rows = list(first.get("data") or [])
+        next_url = (first.get("paging") or {}).get("next")
+        pages = 1
+        async with httpx.AsyncClient(timeout=60) as client:
+            while next_url and pages < 20:
+                resp = await client.get(next_url)
+                resp.raise_for_status()
+                payload = resp.json()
+                batch = list(payload.get("data") or [])
+                rows.extend(batch)
+                next_url = (payload.get("paging") or {}).get("next")
+                pages += 1
+                if not batch:
+                    break
+        return rows
 
     async def _fetch_insights(
         self,
@@ -100,7 +148,7 @@ class MetaAdsClient:
             params["time_range"] = f'{{"since":"{since}","until":"{until}"}}'
         else:
             raise ValueError("Either date_preset or since/until must be provided")
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=90) as client:
             resp = await client.get(
                 f"{META_GRAPH_BASE}/{self.ad_account_id}/insights",
                 params=params,

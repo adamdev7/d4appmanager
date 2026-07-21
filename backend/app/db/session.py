@@ -531,6 +531,20 @@ def _migrate_analytics_mrr_columns() -> None:
                     text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {col_type}")
                 )
 
+        # Clear invented fee defaults users never intentionally set
+        conn.execute(
+            text(
+                "UPDATE store_analytics_settings SET transaction_fee_percent = '0' "
+                "WHERE transaction_fee_percent IN ('2.9', '2.90')"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE store_analytics_settings SET transaction_fee_fixed = '0' "
+                "WHERE transaction_fee_fixed IN ('0.30', '0.3')"
+            )
+        )
+
 
 def init_db() -> None:
     from app.db import models  # noqa: F401

@@ -700,12 +700,17 @@ class AnalyticsService:
                     ps["revenue"] += line_rev
                     ps["cogs"] += line_cogs
 
-                ship = shipping_per_order
+                ship = Decimal("0")
                 if order.get("shipping_lines"):
-                    ship = sum(_d(s.get("price")) for s in order["shipping_lines"]) or shipping_per_order
+                    ship = sum(_d(s.get("price")) for s in order["shipping_lines"])
+                elif shipping_per_order > 0:
+                    # Only apply settings default when user explicitly set a shipping cost
+                    ship = shipping_per_order
                 shipping_costs += ship
 
-                fees = total * fee_pct + fee_fixed
+                fees = Decimal("0")
+                if fee_pct > 0 or fee_fixed > 0:
+                    fees = total * fee_pct + fee_fixed
                 transaction_fees += fees
 
                 orders_data.append(
@@ -713,7 +718,7 @@ class AnalyticsService:
                         "order_number": order.get("name") or str(order.get("order_number")),
                         "total": _money(total),
                         "cogs": _money(order_cogs),
-                        "profit": _money(total - order_cogs - ship - (total * fee_pct + fee_fixed)),
+                        "profit": _money(total - order_cogs - ship - fees),
                         "created_at": created,
                     }
                 )
@@ -726,8 +731,14 @@ class AnalyticsService:
 
         if period == "all" and daily_shopify:
             earliest = min(daily_shopify.keys())
+            # Expand chart window to earliest Shopify order — do NOT use this to clip Meta spend
             start_dt = datetime.strptime(earliest, "%Y-%m-%d").replace(tzinfo=UTC)
             since = earliest
+
+        # Only clip Meta to an explicit analytics start date (Shopify launch), never to first Shopify order
+        meta_since = settings_row.analytics_start_date or None
+        if period != "all":
+            meta_since = since if not meta_since or since >= meta_since else meta_since
 
         # --- Meta Ads ---
         ad_spend = Decimal("0")
@@ -753,40 +764,77 @@ class AnalyticsService:
         meta_client = self._meta_client(settings_row)
         if meta_client:
             try:
+                # Lifetime / period totals (single row) — avoids truncating All-time spend
                 if period == "all" and not settings_row.analytics_start_date:
-                    account_insights = await meta_client.get_account_insights(
+                    total_rows = await meta_client.get_account_insights_all(
+                        date_preset="maximum", time_increment="all_days"
+                    )
+                    daily_rows = await meta_client.get_account_insights_all(
                         date_preset="maximum", time_increment=1
                     )
-                else:
-                    account_insights = await meta_client.get_account_insights(
-                        since=since, until=until, time_increment=1
+                elif period == "all" and settings_row.analytics_start_date:
+                    total_rows = await meta_client.get_account_insights_all(
+                        since=meta_since, until=until, time_increment="all_days"
                     )
-                for row in account_insights.get("data") or []:
-                    day = row.get("date_start") or ""
-                    if day and day < since:
-                        continue
-                    spend = _d(row.get("spend"))
-                    ad_spend += spend
+                    daily_rows = await meta_client.get_account_insights_all(
+                        since=meta_since, until=until, time_increment=1
+                    )
+                else:
+                    total_rows = await meta_client.get_account_insights_all(
+                        since=meta_since or since, until=until, time_increment="all_days"
+                    )
+                    daily_rows = await meta_client.get_account_insights_all(
+                        since=meta_since or since, until=until, time_increment=1
+                    )
+
+                # Prefer aggregated totals for summary KPIs
+                for row in total_rows:
+                    ad_spend += _d(row.get("spend"))
                     impressions += int(row.get("impressions") or 0)
                     clicks += int(row.get("clicks") or 0)
-                    purchases = parse_meta_purchases(row.get("actions"))
-                    purchase_val = _d(parse_meta_purchase_value(row.get("action_values")))
+                    meta_purchases += parse_meta_purchases(row.get("actions"))
+                    meta_purchase_value += _d(parse_meta_purchase_value(row.get("action_values")))
                     funnel = parse_meta_funnel(row.get("actions"))
-                    meta_purchases += purchases
-                    meta_purchase_value += purchase_val
                     meta_add_to_cart += funnel["add_to_cart"]
                     meta_initiate_checkout += funnel["initiate_checkout"]
                     meta_view_content += funnel["view_content"]
                     meta_landing_page_views += funnel["landing_page_view"]
                     meta_link_clicks += funnel["link_click"]
+
+                # Daily series for charts only (no clipping to Shopify order dates)
+                for row in daily_rows:
+                    day = row.get("date_start") or ""
+                    if meta_since and day and day < meta_since:
+                        continue
+                    spend = _d(row.get("spend"))
+                    purchases = parse_meta_purchases(row.get("actions"))
+                    purchase_val = _d(parse_meta_purchase_value(row.get("action_values")))
                     daily_meta[day]["spend"] += spend
                     daily_meta[day]["purchases"] += int(purchases)
                     daily_meta[day]["purchase_value"] += purchase_val
 
+                # If aggregate returned empty but daily has data, fall back to summing daily
+                if ad_spend == 0 and daily_meta:
+                    for vals in daily_meta.values():
+                        ad_spend += vals["spend"]
+                        meta_purchases += vals["purchases"]
+                        meta_purchase_value += vals["purchase_value"]
+
+                # Expand All-time chart start to earliest Meta day when no analytics_start_date
+                if period == "all" and daily_meta and not settings_row.analytics_start_date:
+                    earliest_meta = min(d for d in daily_meta.keys() if d)
+                    if earliest_meta < since:
+                        since = earliest_meta
+                        start_dt = datetime.strptime(earliest_meta, "%Y-%m-%d").replace(tzinfo=UTC)
+
                 if period == "all" and not settings_row.analytics_start_date:
                     campaign_rows = await meta_client.get_campaign_insights(date_preset="maximum")
+                elif settings_row.analytics_start_date or period != "all":
+                    campaign_rows = await meta_client.get_campaign_insights(
+                        since=meta_since or since, until=until
+                    )
                 else:
-                    campaign_rows = await meta_client.get_campaign_insights(since=since, until=until)
+                    campaign_rows = await meta_client.get_campaign_insights(date_preset="maximum")
                 for row in campaign_rows:
                     spend = _d(row.get("spend"))
                     purchases = parse_meta_purchases(row.get("actions"))
@@ -838,31 +886,27 @@ class AnalyticsService:
         # When Shopify has revenue, still expose Meta purchase value as attributed approx.
         meta_approx_revenue = meta_purchase_value
 
-        # Estimate variable cost rate from Shopify when possible; else assume 40% cost + fees.
+        # Variable cost rate only from real Shopify costs (never invent COGS/shipping/fees)
         if shopify_revenue > 0 and (cogs + shipping_costs + transaction_fees) > 0:
             variable_cost_rate = (cogs + shipping_costs + transaction_fees) / shopify_revenue
         else:
-            variable_cost_rate = Decimal("0.45")
+            variable_cost_rate = Decimal("0")
 
-        # Meta-attributed P&L estimate using purchase value × observed cost rate.
-        meta_est_variable_costs = meta_purchase_value * variable_cost_rate
+        # Meta-attributed estimate — only subtract costs when we know a real rate
+        meta_est_variable_costs = (
+            meta_purchase_value * variable_cost_rate if variable_cost_rate > 0 else Decimal("0")
+        )
         meta_est_gross_profit = meta_purchase_value - meta_est_variable_costs
         meta_est_net_profit = meta_est_gross_profit - ad_spend
 
         # --- Blended metrics (Shopify P&L − Meta spend; Meta-attributed ROAS separate) ---
-        # Add prior-site Stripe revenue on All-time so pre-Shopify sales balance the books
         applied_prior_revenue = prior_revenue if include_prior else Decimal("0")
         applied_prior_costs = prior_costs if include_prior else Decimal("0")
 
         gross_profit = shopify_revenue - cogs - shipping_costs - transaction_fees
-        # If we only have Meta approx revenue (no Shopify), estimate gross from cost rate.
+        # Meta-only revenue: do NOT invent product costs / shipping / fees the user never entered
         if revenue_source == "meta_approx":
-            gross_profit = meta_est_gross_profit
-            # Keep cogs/shipping/fees as estimates for breakdown clarity
-            if cogs == 0 and shipping_costs == 0 and transaction_fees == 0:
-                cogs = meta_purchase_value * Decimal("0.30")
-                shipping_costs = meta_purchase_value * Decimal("0.08")
-                transaction_fees = meta_purchase_value * Decimal("0.07")
+            gross_profit = meta_purchase_value  # revenue only until costs are configured
 
         if include_prior:
             gross_profit = gross_profit + applied_prior_revenue - applied_prior_costs
@@ -943,9 +987,15 @@ class AnalyticsService:
             day_rev = day_shopify_rev if day_shopify_rev > 0 else day_meta_rev
             day_spend = m["spend"]
             day_orders = s["orders"] if s["orders"] > 0 else m["purchases"]
-            day_gross = day_rev - (day_rev * fee_pct) - shipping_per_order * _d(day_orders)
-            if day_shopify_rev <= 0 and day_meta_rev > 0:
-                day_gross = day_meta_rev * (Decimal("1") - variable_cost_rate)
+            day_cost = Decimal("0")
+            if day_shopify_rev > 0:
+                if fee_pct > 0:
+                    day_cost += day_rev * fee_pct
+                if shipping_per_order > 0:
+                    day_cost += shipping_per_order * _d(day_orders)
+            elif day_meta_rev > 0 and variable_cost_rate > 0:
+                day_cost = day_meta_rev * variable_cost_rate
+            day_gross = day_rev - day_cost
             daily_chart.append(
                 {
                     "date": key,

@@ -428,8 +428,8 @@ class StoreAnalyticsSettings(Base):
     meta_access_token_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
     meta_ad_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     default_shipping_cost: Mapped[str] = mapped_column(String(16), default="0")
-    transaction_fee_percent: Mapped[str] = mapped_column(String(8), default="2.9")
-    transaction_fee_fixed: Mapped[str] = mapped_column(String(8), default="0.30")
+    transaction_fee_percent: Mapped[str] = mapped_column(String(8), default="0")
+    transaction_fee_fixed: Mapped[str] = mapped_column(String(8), default="0")
     # YYYY-MM-DD — ignore Meta spend / treat as analytics window start (e.g. Shopify launch)
     analytics_start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # Revenue from a prior site (e.g. Stripe) to include in All-time profit

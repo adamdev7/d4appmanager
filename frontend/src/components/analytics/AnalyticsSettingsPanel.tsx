@@ -28,8 +28,8 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
   const [metaToken, setMetaToken] = useState("");
   const [adAccountId, setAdAccountId] = useState("");
   const [shippingCost, setShippingCost] = useState("0");
-  const [feePercent, setFeePercent] = useState("2.9");
-  const [feeFixed, setFeeFixed] = useState("0.30");
+  const [feePercent, setFeePercent] = useState("0");
+  const [feeFixed, setFeeFixed] = useState("0");
   const [analyticsStartDate, setAnalyticsStartDate] = useState("");
   const [priorRevenue, setPriorRevenue] = useState("0");
   const [priorCosts, setPriorCosts] = useState("0");
@@ -534,7 +534,8 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
             <CardTitle>Cost assumptions</CardTitle>
           </div>
           <CardDescription>
-            Default values used when calculating profit per order.
+            Leave at 0 unless you want these included in profit. We no longer invent Stripe fees
+            or shipping — only amounts from Shopify orders or values you enter here.
           </CardDescription>
         </CardHeader>
 
