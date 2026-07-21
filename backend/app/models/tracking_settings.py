@@ -43,8 +43,22 @@ class CarrierTestRequest(BaseModel):
     )
 
 
+class CarrierTestEvent(BaseModel):
+    status: str = ""
+    description: str = ""
+    location: str = ""
+    at: str = ""
+
+
 class CarrierTestResponse(BaseModel):
     ok: bool
     provider: str
     message: str
     status: str | None = None
+    tracking_number: str | None = None
+    carrier: str | None = None
+    source: str | None = None
+    carrier_status_raw: str | None = None
+    carrier_sub_status_raw: str | None = None
+    timeline: list[CarrierTestEvent] = Field(default_factory=list)
+    last_updated_at: str | None = None

@@ -259,9 +259,27 @@ class TrackOrderService:
         return []
 
     @staticmethod
+    def _timeline_needs_carrier_enrichment(row: OrderTracking) -> bool:
+        """True when we only have Shopify placeholder events (not 17TRACK/YunExpress yet)."""
+        try:
+            events = json.loads(row.timeline_json or "[]")
+        except json.JSONDecodeError:
+            return True
+        if not isinstance(events, list) or not events:
+            return True
+        if len(events) == 1:
+            desc = str((events[0] or {}).get("description") or "").lower()
+            if "shipper added tracking" in desc or "tracking added" in desc:
+                return True
+        return False
+
+    @staticmethod
     def _should_refresh_carrier(row: OrderTracking) -> bool:
         if not row.tracking_number:
             return False
+        # Always enrich once after Shopify sync — don't wait 30m on placeholder timelines.
+        if TrackOrderService._timeline_needs_carrier_enrichment(row):
+            return True
         if not row.last_updated_at:
             return True
         age = datetime.now(UTC) - row.last_updated_at.replace(tzinfo=UTC)

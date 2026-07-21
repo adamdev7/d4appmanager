@@ -58,35 +58,101 @@ class CarrierEnrichmentService:
         store_id: str,
         provider: str,
         tracking_number: str | None,
-    ) -> tuple[bool, str, str | None]:
+    ) -> dict:
+        """Query a carrier API and return ok/message plus the fetched payload for the UI."""
         config = resolve_carrier_config(self._db, store_id)
-        sample = (tracking_number or "").strip() or "TEST123456789"
+        sample = (tracking_number or "").strip()
+
+        empty = {
+            "ok": False,
+            "message": "",
+            "status": None,
+            "tracking_number": sample or None,
+            "carrier": None,
+            "source": None,
+            "carrier_status_raw": None,
+            "carrier_sub_status_raw": None,
+            "timeline": [],
+            "last_updated_at": None,
+        }
 
         if provider == "yunexpress":
             if not config.has_yunexpress:
-                return False, "Add your YunExpress API key first.", None
+                return {**empty, "message": "Add your YunExpress API key first."}
+            if not sample:
+                return {**empty, "message": "Enter a tracking number to test YunExpress."}
             result = await fetch_yunexpress(config, sample)
-            if result:
-                return True, "YunExpress API responded successfully.", result.get("status")
-            return False, "YunExpress did not return tracking data. Check URL, key, and sample number.", None
+            if not result:
+                return {
+                    **empty,
+                    "message": "YunExpress did not return tracking data. Check URL, key, and number.",
+                }
+            return self._test_result_payload(
+                ok=True,
+                message="YunExpress returned tracking data.",
+                tracking_number=sample,
+                result=result,
+            )
 
         if provider == "17track":
             if not config.has_track17:
-                return False, "Add your 17TRACK API key first.", None
+                return {**empty, "message": "Add your 17TRACK API key first."}
+            if not sample:
+                return {**empty, "message": "Enter a tracking number to test 17TRACK."}
             result = await fetch_17track(config, sample, None)
-            if result:
-                raw = result.get("carrier_status_raw") or ""
-                sub = result.get("carrier_sub_status_raw") or ""
-                detail = f" (17TRACK: {raw}" + (f" / {sub}" if sub and sub != raw else "") + ")"
-                return True, f"17TRACK OK — App status: {result.get('status')}{detail}", result.get("status")
-            return (
-                False,
-                "17TRACK did not return data yet (new numbers may need time after register). "
-                "Try a real tracking number from your store.",
-                None,
+            if not result:
+                return {
+                    **empty,
+                    "message": (
+                        "17TRACK did not return data yet (new numbers may need a minute after "
+                        "register). Try again, or use a number already tracked in 17TRACK."
+                    ),
+                }
+            raw = result.get("carrier_status_raw") or ""
+            sub = result.get("carrier_sub_status_raw") or ""
+            detail = f"17TRACK status: {raw}" + (f" / {sub}" if sub and sub != raw else "")
+            return self._test_result_payload(
+                ok=True,
+                message=f"17TRACK OK — app status: {result.get('status')} ({detail})",
+                tracking_number=sample,
+                result=result,
             )
 
-        return False, "Unknown provider.", None
+        return {**empty, "message": "Unknown provider."}
+
+    @staticmethod
+    def _test_result_payload(
+        *,
+        ok: bool,
+        message: str,
+        tracking_number: str,
+        result: dict,
+    ) -> dict:
+        events = []
+        for event in result.get("events") or []:
+            if not isinstance(event, dict):
+                continue
+            at = event.get("at")
+            events.append(
+                {
+                    "status": str(event.get("status") or ""),
+                    "description": str(event.get("description") or ""),
+                    "location": str(event.get("location") or ""),
+                    "at": at.isoformat() if hasattr(at, "isoformat") else str(at or ""),
+                }
+            )
+        return {
+            "ok": ok,
+            "message": message,
+            "status": result.get("status"),
+            "tracking_number": tracking_number,
+            "carrier": result.get("carrier") or None,
+            "source": result.get("source") or None,
+            "carrier_status_raw": result.get("carrier_status_raw") or None,
+            "carrier_sub_status_raw": result.get("carrier_sub_status_raw") or None,
+            "timeline": events,
+            "last_updated_at": result.get("last_updated_at"),
+        }
 
     @staticmethod
     def _apply_enrichment(row: OrderTracking, enriched: dict) -> None:

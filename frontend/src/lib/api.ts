@@ -51,6 +51,25 @@ export type AuthUser = {
   is_verified?: boolean;
 };
 
+export type CarrierTestResult = {
+  ok: boolean;
+  provider: string;
+  message: string;
+  status: string | null;
+  tracking_number?: string | null;
+  carrier?: string | null;
+  source?: string | null;
+  carrier_status_raw?: string | null;
+  carrier_sub_status_raw?: string | null;
+  timeline?: Array<{
+    status: string;
+    description: string;
+    location?: string;
+    at: string;
+  }>;
+  last_updated_at?: string | null;
+};
+
 export type TrackingSettings = {
   store_id: string;
   carrier_mode: string;
@@ -597,10 +616,10 @@ export const api = {
       storeId: string,
       data: { provider: string; tracking_number?: string }
     ) =>
-      request<{ ok: boolean; provider: string; message: string; status: string | null }>(
-        `/tracking/stores/${storeId}/test-carrier`,
-        { method: "POST", body: JSON.stringify(data) }
-      ),
+      request<CarrierTestResult>(`/tracking/stores/${storeId}/test-carrier`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
     lookup: async (params: {
       order_number: string;
       email: string;

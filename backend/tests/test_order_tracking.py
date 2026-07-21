@@ -1,4 +1,7 @@
+from datetime import UTC, datetime
+
 from app.integrations.tracking.carrier_api import _map_17track_main_status
+from app.tracking.track_service import TrackOrderService
 from app.tracking.payload_parser import (
     fulfillments_from_payload,
     map_shipment_status_to_tracking_status,
@@ -176,3 +179,29 @@ def test_normalize_timeline_newest_first_and_filters_internal():
     assert "information received" in out[-1]["description"].lower()
     assert all("tracking added" not in e["description"].lower() for e in out)
     assert all("updated from" not in e["description"].lower() for e in out)
+
+
+def test_should_refresh_carrier_for_shopify_placeholder_timeline():
+    class Row:
+        tracking_number = "YT2613900703325478"
+        last_updated_at = datetime.now(UTC)
+        timeline_json = (
+            '[{"status":"in_transit","description":"Shipper added tracking YT2613900703325478",'
+            '"location":"YunExpress","at":"2026-07-21T04:59:33+00:00"}]'
+        )
+
+    assert TrackOrderService._timeline_needs_carrier_enrichment(Row()) is True
+    assert TrackOrderService._should_refresh_carrier(Row()) is True
+
+
+def test_should_not_force_refresh_when_carrier_events_exist():
+    class Row:
+        tracking_number = "YT2613900703325478"
+        last_updated_at = datetime.now(UTC)
+        timeline_json = (
+            '[{"status":"in_transit","description":"Arrived at sorting center",'
+            '"location":"","at":"2026-07-21T05:00:00+00:00"}]'
+        )
+
+    assert TrackOrderService._timeline_needs_carrier_enrichment(Row()) is False
+    assert TrackOrderService._should_refresh_carrier(Row()) is False

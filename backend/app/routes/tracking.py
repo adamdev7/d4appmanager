@@ -68,9 +68,9 @@ async def test_carrier_api(
 
         raise HTTPException(status_code=400, detail="provider must be 17track or yunexpress")
 
-    ok, message, status_value = await CarrierEnrichmentService(db).test_provider(
+    result = await CarrierEnrichmentService(db).test_provider(
         store_id,
         provider,
         body.tracking_number,
     )
-    return CarrierTestResponse(ok=ok, provider=provider, message=message, status=status_value)
+    return CarrierTestResponse(provider=provider, **result)

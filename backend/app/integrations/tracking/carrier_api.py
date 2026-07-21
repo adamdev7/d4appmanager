@@ -275,15 +275,13 @@ async def enrich_from_carrier_apis(
     if config.mode == "17track":
         return await fetch_17track(config, tracking_number, carrier)
 
-    if config.should_use_yunexpress(carrier, tracking_number):
-        result = await fetch_yunexpress(config, tracking_number)
+    # auto: prefer 17TRACK (works for YunExpress YT# and most carriers), then YunExpress API
+    if config.has_track17:
+        result = await fetch_17track(config, tracking_number, carrier)
         if result:
             return result
 
-    if config.has_track17:
-        return await fetch_17track(config, tracking_number, carrier)
-
-    if config.has_yunexpress:
+    if config.should_use_yunexpress(carrier, tracking_number) or config.has_yunexpress:
         return await fetch_yunexpress(config, tracking_number)
 
     return None

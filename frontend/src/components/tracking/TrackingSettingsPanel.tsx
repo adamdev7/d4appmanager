@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, KeyRound, PlugZap } from "lucide-react";
-import { api, type TrackingSettings } from "@/lib/api";
+import { ChevronDown, ChevronUp, KeyRound, PlugZap, Search } from "lucide-react";
+import { api, type CarrierTestResult, type TrackingSettings } from "@/lib/api";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -17,7 +17,7 @@ const CARRIER_MODES = [
   {
     value: "auto",
     label: "Automatic (recommended)",
-    hint: "Uses YunExpress when the carrier name matches, otherwise 17TRACK.",
+    hint: "Uses 17TRACK first when configured, then YunExpress as a fallback.",
   },
   {
     value: "17track",
@@ -36,6 +36,96 @@ const CARRIER_MODES = [
   },
 ];
 
+function formatEventTime(iso: string) {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function CarrierTestResultPanel({ result }: { result: CarrierTestResult }) {
+  const timeline = result.timeline ?? [];
+  return (
+    <div className="rounded-xl border border-border bg-surface-muted/40 p-4 space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={result.ok ? "success" : "muted"}>
+          {result.ok ? "Lookup succeeded" : "Lookup failed"}
+        </Badge>
+        {result.source && <Badge variant="brand">{result.source}</Badge>}
+        {result.status && <Badge variant="muted">Status: {result.status}</Badge>}
+      </div>
+
+      <p className="text-sm text-content">{result.message}</p>
+
+      {result.ok && (
+        <div className="grid gap-3 sm:grid-cols-2 text-sm">
+          <div>
+            <p className="text-xs uppercase tracking-wide text-content-subtle">Tracking number</p>
+            <p className="font-medium text-content mt-0.5">{result.tracking_number || "—"}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wide text-content-subtle">Carrier</p>
+            <p className="font-medium text-content mt-0.5">{result.carrier || "—"}</p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wide text-content-subtle">17TRACK status</p>
+            <p className="font-medium text-content mt-0.5">
+              {[result.carrier_status_raw, result.carrier_sub_status_raw]
+                .filter(Boolean)
+                .join(" / ") || "—"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs uppercase tracking-wide text-content-subtle">Last updated</p>
+            <p className="font-medium text-content mt-0.5">
+              {result.last_updated_at ? formatEventTime(result.last_updated_at) : "—"}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {result.ok && (
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-content">
+            Timeline ({timeline.length} event{timeline.length === 1 ? "" : "s"})
+          </p>
+          {timeline.length === 0 ? (
+            <p className="text-sm text-content-muted">
+              No scan events yet. The number may still be registering with 17TRACK.
+            </p>
+          ) : (
+            <ol className="space-y-2 max-h-64 overflow-y-auto">
+              {timeline.map((event, index) => (
+                <li
+                  key={`${event.at}-${index}`}
+                  className="rounded-lg border border-border bg-surface px-3 py-2 text-sm"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="muted">{event.status || "update"}</Badge>
+                    <span className="text-xs text-content-subtle">{formatEventTime(event.at)}</span>
+                  </div>
+                  <p className="mt-1 text-content">{event.description || "Update"}</p>
+                  {event.location ? (
+                    <p className="mt-0.5 text-xs text-content-muted">{event.location}</p>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
   const [carrierMode, setCarrierMode] = useState("auto");
   const [autoEnrich, setAutoEnrich] = useState(true);
@@ -49,6 +139,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
   const [error, setError] = useState("");
   const [testTrack, setTestTrack] = useState("");
   const [testing, setTesting] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<CarrierTestResult | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
@@ -103,16 +194,24 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
   };
 
   const testCarrier = async (provider: "17track" | "yunexpress") => {
+    const number = testTrack.trim();
+    if (!number) {
+      setError("Enter a tracking number first.");
+      setTestResult(null);
+      return;
+    }
     setTesting(provider);
     setError("");
     setMessage("");
+    setTestResult(null);
     try {
       const res = await api.tracking.testCarrier(storeId, {
         provider,
-        tracking_number: testTrack.trim() || undefined,
+        tracking_number: number,
       });
+      setTestResult(res);
       if (res.ok) {
-        setMessage(res.message + (res.status ? ` (status: ${res.status})` : ""));
+        setMessage(res.message);
       } else {
         setError(res.message);
       }
@@ -259,11 +358,15 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
         <div className="rounded-xl border border-dashed border-border p-4 space-y-3">
           <p className="text-sm font-medium text-content flex items-center gap-2">
             <PlugZap className="h-4 w-4" />
-            Test connection
+            Test 17TRACK / carrier lookup
+          </p>
+          <p className="text-xs text-content-muted">
+            Paste a real tracking number (e.g. from order #1005) to see exactly what App Manager
+            gets back from 17TRACK — status, carrier, and timeline events.
           </p>
           <Input
-            label="Sample tracking number (optional)"
-            placeholder="Paste a real tracking number to verify"
+            label="Tracking number"
+            placeholder="e.g. YT2613900703325478"
             value={testTrack}
             onChange={(e) => setTestTrack(e.target.value)}
           />
@@ -275,6 +378,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
               isLoading={testing === "17track"}
               onClick={() => testCarrier("17track")}
             >
+              <Search className="h-4 w-4 mr-1.5" />
               Test 17TRACK
             </Button>
             <Button
@@ -287,14 +391,15 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
               Test YunExpress
             </Button>
           </div>
+          {testResult && <CarrierTestResultPanel result={testResult} />}
         </div>
 
-        {message && (
+        {message && !testResult && (
           <p className="text-sm text-green-700 dark:text-green-400 bg-green-500/10 rounded-lg px-3 py-2">
             {message}
           </p>
         )}
-        {error && (
+        {error && !testResult && (
           <p className="text-sm text-red-600 dark:text-red-400 bg-red-500/10 rounded-lg px-3 py-2">
             {error}
           </p>
