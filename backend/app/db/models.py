@@ -443,6 +443,8 @@ class StoreAnalyticsSettings(Base):
     mrr_manual_amount: Mapped[str] = mapped_column(String(16), default="0")
     mrr_manual_subscribers: Mapped[int] = mapped_column(Integer, default=0)
     mrr_manual_churn_pct: Mapped[str] = mapped_column(String(8), default="0")
+    # ISO currency of last Stripe MRR sync (e.g. GBP) — may differ from store currency
+    mrr_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     mrr_webhook_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     mrr_webhook_secret_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
     mrr_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

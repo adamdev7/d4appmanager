@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import defaultdict
 from decimal import Decimal
 from typing import Any
 
@@ -65,6 +66,17 @@ def _interval_to_monthly_factor(amount: Decimal, interval: str, interval_count: 
     return amount
 
 
+def _pick_majority_currency(counts: dict[str, int], preferred: str | None = None) -> str | None:
+    """Pick the currency with the most volume; prefer `preferred` only if it has data."""
+    pref = _norm_currency(preferred)
+    if pref and counts.get(pref, 0) > 0:
+        return pref.upper()
+    if not counts:
+        return pref.upper() if pref else None
+    best = max(counts.items(), key=lambda kv: kv[1])[0]
+    return best.upper()
+
+
 class StripeClient:
     def __init__(self, secret_key: str) -> None:
         self.secret_key = secret_key.strip()
@@ -84,7 +96,6 @@ class StripeClient:
                 msg = err.get("message") or resp.text[:200]
                 return False, f"Stripe error: {msg}", None
             data = resp.json()
-            # Prefer available/pending balance currency as account hint
             acct_currency = None
             for bucket in ("available", "pending"):
                 rows = data.get(bucket) or []
@@ -95,7 +106,6 @@ class StripeClient:
             return True, "Stripe key works", acct_currency
 
     async def account_default_currency(self) -> str | None:
-        """Best-effort default currency for this Stripe account."""
         ok, _, currency = await self.test_connection()
         return currency.upper() if ok and currency else None
 
@@ -130,31 +140,71 @@ class StripeClient:
                     break
         return subs
 
+    @staticmethod
+    def _customer_key(obj: dict) -> str | None:
+        cust = obj.get("customer")
+        if isinstance(cust, dict) and cust.get("id"):
+            return f"cus:{cust['id']}"
+        if isinstance(cust, str) and cust:
+            return f"cus:{cust}"
+        billing = obj.get("billing_details") or {}
+        email = (billing.get("email") or obj.get("email") or "").strip().lower()
+        if email:
+            return f"email:{email}"
+        return None
+
+    @staticmethod
+    def _sub_currency(sub: dict) -> str:
+        cur = _norm_currency(sub.get("currency"))
+        if cur:
+            return cur
+        items = ((sub.get("items") or {}).get("data")) or []
+        for item in items:
+            price = item.get("price") or {}
+            cur = _norm_currency(price.get("currency"))
+            if cur:
+                return cur
+        return ""
+
     async def period_charge_totals(
         self,
         *,
         since_ts: int,
         until_ts: int,
         currency: str | None = None,
+        limit_pages: int = 100,
     ) -> dict[str, Decimal | int | str | None]:
         """
-        Sum charges in [since_ts, until_ts] for a single currency.
+        Total Stripe revenue for a period = ALL successful charges (subscriptions + one-time).
 
-        Uses Charges API with `balance_transaction` expanded so `net` already
-        excludes Stripe fees. When `currency` is set, other currencies are ignored
-        so totals match the App Manager store currency.
+        - Subscription charges: Charge has an `invoice` (Billing / recurring)
+        - One-time / regular: Charge has no invoice (PaymentIntent, Checkout, etc.)
+        - `net` comes from balance_transaction (Stripe fees already deducted)
+        - Refunds reduce gross/net proportionally
+
+        This is period cash revenue — not the same as MRR (current run-rate).
         """
-        target = _norm_currency(currency)
-        gross = Decimal("0")
-        fees = Decimal("0")
-        net = Decimal("0")
-        charge_count = 0
-        customers: set[str] = set()
-        currencies_seen: set[str] = set()
+        preferred = _norm_currency(currency)
+        buckets: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "gross": Decimal("0"),
+                "fees": Decimal("0"),
+                "net": Decimal("0"),
+                "subscription_gross": Decimal("0"),
+                "one_time_gross": Decimal("0"),
+                "subscription_net": Decimal("0"),
+                "one_time_net": Decimal("0"),
+                "charge_count": 0,
+                "subscription_count": 0,
+                "one_time_count": 0,
+                "customers": set(),
+            }
+        )
+        currency_counts: dict[str, int] = defaultdict(int)
         starting_after: str | None = None
 
-        async with httpx.AsyncClient(timeout=60) as client:
-            for _ in range(30):
+        async with httpx.AsyncClient(timeout=120) as client:
+            for _ in range(limit_pages):
                 params: list[tuple[str, str | int]] = [
                     ("limit", 100),
                     ("created[gte]", int(since_ts)),
@@ -174,11 +224,14 @@ class StripeClient:
                 for ch in batch:
                     if ch.get("status") != "succeeded":
                         continue
-                    cur = _norm_currency(ch.get("currency"))
-                    if cur:
-                        currencies_seen.add(cur.upper())
-                    if target and cur and cur != target:
+                    # Skip fully failed / uncaptured extras
+                    if ch.get("captured") is False:
                         continue
+
+                    cur = _norm_currency(ch.get("currency"))
+                    if not cur:
+                        continue
+                    currency_counts[cur] += 1
 
                     amt = from_stripe_amount(ch.get("amount"), cur)
                     refunded = from_stripe_amount(ch.get("amount_refunded"), cur)
@@ -196,14 +249,27 @@ class StripeClient:
                         fee = Decimal("0")
                         n = effective_gross
 
-                    gross += effective_gross
-                    fees += fee
-                    net += n
+                    # invoice present ⇒ subscription / recurring Billing charge
+                    is_subscription = bool(ch.get("invoice"))
+                    b = buckets[cur]
+                    b["gross"] += effective_gross
+                    b["fees"] += fee
+                    b["net"] += n
+                    if is_subscription:
+                        b["subscription_gross"] += effective_gross
+                        b["subscription_net"] += n
+                        if effective_gross > 0:
+                            b["subscription_count"] += 1
+                    else:
+                        b["one_time_gross"] += effective_gross
+                        b["one_time_net"] += n
+                        if effective_gross > 0:
+                            b["one_time_count"] += 1
                     if ch.get("paid") and effective_gross > 0:
-                        charge_count += 1
+                        b["charge_count"] += 1
                     cust_key = self._customer_key(ch)
                     if cust_key:
-                        customers.add(cust_key)
+                        b["customers"].add(cust_key)
 
                 if not payload.get("has_more") or not batch:
                     break
@@ -211,29 +277,40 @@ class StripeClient:
                 if not starting_after:
                     break
 
-        return {
-            "gross": gross,
-            "fees": fees,
-            "net": net,
-            "charge_count": charge_count,
-            "unique_sources": len(customers),
-            "currency": (target.upper() if target else (next(iter(currencies_seen), None))),
-            "currencies_seen": ",".join(sorted(currencies_seen)),
+        chosen = _pick_majority_currency(dict(currency_counts), preferred)
+        if not chosen:
+            acct = await self.account_default_currency()
+            chosen = acct
+        cur_key = _norm_currency(chosen)
+        empty_b = {
+            "gross": Decimal("0"),
+            "fees": Decimal("0"),
+            "net": Decimal("0"),
+            "subscription_gross": Decimal("0"),
+            "one_time_gross": Decimal("0"),
+            "subscription_net": Decimal("0"),
+            "one_time_net": Decimal("0"),
+            "charge_count": 0,
+            "subscription_count": 0,
+            "one_time_count": 0,
+            "customers": set(),
         }
-
-    @staticmethod
-    def _customer_key(obj: dict) -> str | None:
-        """Stable unique key for a paying customer."""
-        cust = obj.get("customer")
-        if isinstance(cust, dict) and cust.get("id"):
-            return f"cus:{cust['id']}"
-        if isinstance(cust, str) and cust:
-            return f"cus:{cust}"
-        billing = obj.get("billing_details") or {}
-        email = (billing.get("email") or obj.get("email") or "").strip().lower()
-        if email:
-            return f"email:{email}"
-        return None
+        b = buckets.get(cur_key) or empty_b
+        return {
+            "gross": b["gross"],
+            "fees": b["fees"],
+            "net": b["net"],
+            "subscription_gross": b["subscription_gross"],
+            "one_time_gross": b["one_time_gross"],
+            "subscription_net": b["subscription_net"],
+            "one_time_net": b["one_time_net"],
+            "charge_count": int(b["charge_count"]),
+            "subscription_count": int(b["subscription_count"]),
+            "one_time_count": int(b["one_time_count"]),
+            "unique_sources": len(b["customers"]),
+            "currency": chosen.upper() if chosen else None,
+            "currencies_seen": ",".join(sorted(c.upper() for c in currency_counts)),
+        }
 
     async def compute_mrr(
         self, *, currency: str | None = None
@@ -241,41 +318,42 @@ class StripeClient:
         """
         Return (monthly_mrr, unique_subscriber_count, currency_used).
 
-        Subscribers = unique Stripe customers with active / past_due / trialing
-        subscriptions in the target currency (not raw subscription row count).
-
-        Falls back to unique paying customers from last-30-day charges (net of fees)
-        when Billing subscriptions are empty (Phoenix / charge-only MIDs).
+        Currency always comes from Stripe subscription/charge data (e.g. GBP),
+        never relabeled as the Shopify store currency.
         """
-        target = _norm_currency(currency)
-        if not target:
-            detected = await self.account_default_currency()
-            target = _norm_currency(detected)
-
+        preferred = _norm_currency(currency)
         subs = await self.list_active_subscriptions()
+
         if subs:
+            # First pass: detect majority subscription currency from Stripe
+            cur_counts: dict[str, int] = defaultdict(int)
+            for sub in subs:
+                cur = self._sub_currency(sub)
+                if cur:
+                    cur_counts[cur] += 1
+            chosen = _pick_majority_currency(dict(cur_counts), preferred)
+            if not chosen:
+                chosen = await self.account_default_currency()
+            target = _norm_currency(chosen)
+
             total = Decimal("0")
             customers: set[str] = set()
             for sub in subs:
-                sub_cur = _norm_currency(sub.get("currency"))
-                items = ((sub.get("items") or {}).get("data")) or []
-                # Resolve currency from subscription or first price
-                if not sub_cur and items:
-                    price0 = (items[0].get("price") or {}) if items else {}
-                    sub_cur = _norm_currency(price0.get("currency"))
+                sub_cur = self._sub_currency(sub)
                 if target and sub_cur and sub_cur != target:
                     continue
+                if target and not sub_cur:
+                    # Missing currency — only include if we have no target yet
+                    continue
 
-                cust_key = self._customer_key(sub)
-                if not cust_key:
-                    # Still count subscription if no customer id (rare)
-                    cust_key = f"sub:{sub.get('id')}"
+                cust_key = self._customer_key(sub) or f"sub:{sub.get('id')}"
                 customers.add(cust_key)
 
+                items = ((sub.get("items") or {}).get("data")) or []
                 for item in items:
                     qty = Decimal(str(item.get("quantity") or 1))
                     price = item.get("price") or {}
-                    item_cur = _norm_currency(price.get("currency")) or sub_cur
+                    item_cur = _norm_currency(price.get("currency")) or sub_cur or target
                     if target and item_cur and item_cur != target:
                         continue
                     unit = from_stripe_amount(price.get("unit_amount") or 0, item_cur)
@@ -290,12 +368,8 @@ class StripeClient:
         until_ts = int(time.time())
         since_ts = until_ts - 30 * 24 * 3600
         totals = await self.period_charge_totals(
-            since_ts=since_ts, until_ts=until_ts, currency=target or None
+            since_ts=since_ts, until_ts=until_ts, currency=preferred or None
         )
         used = totals.get("currency")
-        used_str = str(used).upper() if used else (target.upper() if target else None)
-        return (
-            Decimal(str(totals["net"])),
-            int(totals["unique_sources"] or 0),
-            used_str,
-        )
+        used_str = str(used).upper() if used else None
+        return Decimal(str(totals["net"])), int(totals["unique_sources"] or 0), used_str

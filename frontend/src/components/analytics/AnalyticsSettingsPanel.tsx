@@ -176,7 +176,7 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
       setStripeAccounts(res.accounts as AnalyticsStripeAccount[]);
       setMessage(
         res.ok
-          ? `Synced ${res.subscribers.toLocaleString()} subscribers · MRR ${formatMoney(res.mrr, res.currency)}`
+          ? `Synced ${res.subscribers.toLocaleString()} subscribers · MRR ${formatMoney(res.mrr, res.currency)} (${res.currency})`
           : `Partial sync. Errors: ${res.errors.join("; ")}`
       );
       onSaved();
@@ -210,9 +210,9 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
             <CardTitle>MRR / Subscriptions</CardTitle>
           </div>
           <CardDescription>
-            Recurring revenue from Stripe is folded into the same Revenue figure as product orders
-            (they are one stream). Sync pulls MRR / subscribers from Billing subscriptions, or from
-            trailing 30-day net charges when a MID is charge-only (e.g. Phoenix).
+            Recurring revenue from Stripe uses Stripe&apos;s own currency (e.g. GBP), even if your
+            Shopify store is CAD. Sync pulls unique subscribers and MRR from Billing subscriptions,
+            or trailing 30-day net charges for charge-only MIDs.
           </CardDescription>
         </CardHeader>
 

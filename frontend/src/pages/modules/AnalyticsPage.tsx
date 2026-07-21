@@ -109,6 +109,9 @@ export function AnalyticsPage() {
   }
 
   const currency = dashboard?.currency ?? settings?.currency ?? "USD";
+  const storeCurrency = dashboard?.store_currency ?? settings?.currency ?? currency;
+  const mrrCurrency =
+    dashboard?.mrr?.currency || dashboard?.stripe_currency || settings?.mrr_currency || currency;
   const summary = dashboard?.summary;
 
   return (
@@ -234,7 +237,11 @@ export function AnalyticsPage() {
                 <MetricCard
                   label="Net Profit"
                   value={formatMoney(summary.net_profit, currency)}
-                  hint="Revenue − COGS − fees − shipping − ads"
+                  hint={
+                    summary.revenue_source === "stripe" || summary.revenue_source === "stripe_mrr"
+                      ? `Stripe revenue − ads (${currency})`
+                      : "Revenue − COGS − fees − shipping − ads"
+                  }
                   icon={Wallet}
                   accent={summary.net_profit >= 0 ? "success" : "danger"}
                   trend={summary.net_profit >= 0 ? "up" : "down"}
@@ -244,11 +251,9 @@ export function AnalyticsPage() {
                   label="Revenue"
                   value={formatMoney(summary.revenue, currency)}
                   hint={
-                    dashboard.mrr
-                      ? `${dashboard.mrr.subscribers.toLocaleString()} subscribers · MRR ${formatMoney(dashboard.mrr.mrr, currency)}`
-                      : summary.revenue_source === "stripe"
-                        ? `${summary.stripe_charges ?? 0} Stripe charges (net of fees)`
-                        : `${summary.orders} orders · AOV ${formatMoney(summary.aov, currency)}`
+                    summary.revenue_source === "stripe"
+                      ? `${summary.stripe_charges ?? 0} charges · ${summary.stripe_subscription_charges ?? 0} sub · ${summary.stripe_one_time_charges ?? 0} one-time (net)`
+                      : `${summary.orders} orders · AOV ${formatMoney(summary.aov, storeCurrency)}`
                   }
                   icon={ShoppingBag}
                   accent="brand"
@@ -258,7 +263,11 @@ export function AnalyticsPage() {
                   value={formatMoney(summary.ad_spend, currency)}
                   hint={
                     summary.ad_spend > 0
-                      ? `CPA ${formatMoney(summary.cpa || summary.meta_cpa, currency)} · Meta used for spend only`
+                      ? summary.ad_spend_native &&
+                        summary.ad_spend_currency &&
+                        summary.ad_spend_currency !== currency
+                        ? `Meta ${formatMoney(summary.ad_spend_native, storeCurrency)} → ${currency}`
+                        : `CPA ${formatMoney(summary.cpa || summary.meta_cpa, currency)}`
                       : "Connect Meta in Settings"
                   }
                   icon={Megaphone}
@@ -287,19 +296,10 @@ export function AnalyticsPage() {
                   icon={TrendingUp}
                 />
                 <MetricCard
-                  label={dashboard.mrr ? "MRR / ARR" : "Orders"}
-                  value={
-                    dashboard.mrr
-                      ? `${formatMoney(dashboard.mrr.mrr, currency)}`
-                      : String(summary.orders)
-                  }
-                  hint={
-                    dashboard.mrr
-                      ? `ARR ${formatMoney(dashboard.mrr.arr, currency)} · ARPU ${formatMoney(dashboard.mrr.arpu, currency)}`
-                      : `AOV ${formatMoney(summary.aov, currency)}`
-                  }
-                  icon={Repeat}
-                  accent="brand"
+                  label="Orders / Charges"
+                  value={String(summary.orders || summary.stripe_charges || 0)}
+                  hint={`AOV ${formatMoney(summary.aov, currency)}`}
+                  icon={ShoppingBag}
                 />
                 <MetricCard
                   label="Meta Funnel"
@@ -315,10 +315,71 @@ export function AnalyticsPage() {
                 />
               </div>
 
+              {dashboard.mrr && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Repeat className="h-4 w-4 text-brand-600" />
+                    <h2 className="text-sm font-semibold text-content">Subscription MRR (Stripe)</h2>
+                    <Badge variant="muted">{dashboard.mrr.source}</Badge>
+                    <Badge variant="muted">{mrrCurrency}</Badge>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <MetricCard
+                      label="MRR"
+                      value={formatMoney(dashboard.mrr.mrr, mrrCurrency)}
+                      hint={
+                        dashboard.mrr.mrr_delta !== 0
+                          ? `${dashboard.mrr.mrr_delta >= 0 ? "+" : ""}${formatMoney(dashboard.mrr.mrr_delta, mrrCurrency)} vs last snapshot`
+                          : "From Stripe Billing / charges"
+                      }
+                      icon={Repeat}
+                      accent="brand"
+                      trend={dashboard.mrr.mrr_delta >= 0 ? "up" : "down"}
+                      trendLabel={`${dashboard.mrr.subscribers.toLocaleString()} subscribers`}
+                    />
+                    <MetricCard
+                      label="Subscribers"
+                      value={dashboard.mrr.subscribers.toLocaleString()}
+                      hint="Unique Stripe customers (active / past due / trial)"
+                      icon={Wallet}
+                    />
+                    <MetricCard
+                      label="ARR"
+                      value={formatMoney(dashboard.mrr.arr, mrrCurrency)}
+                      hint="MRR × 12"
+                      icon={TrendingUp}
+                    />
+                    <MetricCard
+                      label="ARPU"
+                      value={formatMoney(dashboard.mrr.arpu, mrrCurrency)}
+                      hint={
+                        dashboard.mrr.last_synced_at
+                          ? `Synced ${dashboard.mrr.last_synced_at.slice(0, 10)}`
+                          : "Avg revenue per subscriber / month"
+                      }
+                      icon={Target}
+                    />
+                  </div>
+                </div>
+              )}
+
               {dashboard.connections.stripe_error && (
                 <Card padding="md" className="border-amber-500/30 bg-amber-500/5">
                   <p className="text-sm text-amber-700 dark:text-amber-400">
                     Stripe: {dashboard.connections.stripe_error}
+                  </p>
+                </Card>
+              )}
+
+              {currency !== storeCurrency && (
+                <Card padding="md" className="border-border bg-surface-muted/40">
+                  <p className="text-sm text-content-muted">
+                    P&amp;L is in <span className="font-medium text-content">{currency}</span> from
+                    Stripe. Store currency is {storeCurrency}
+                    {summary.ad_spend_native
+                      ? ` · Meta spend converted from ${formatMoney(summary.ad_spend_native, storeCurrency)}`
+                      : ""}
+                    .
                   </p>
                 </Card>
               )}

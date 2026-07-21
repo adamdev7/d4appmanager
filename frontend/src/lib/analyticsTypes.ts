@@ -32,6 +32,7 @@ export type AnalyticsSettings = {
   mrr_manual_amount: number;
   mrr_manual_subscribers: number;
   mrr_manual_churn_pct: number;
+  mrr_currency?: string | null;
   mrr_webhook_configured: boolean;
   mrr_webhook_secret_masked: string | null;
   mrr_webhook_secret: string | null;
@@ -69,6 +70,8 @@ export type AnalyticsDashboard = {
   store_id: string;
   store_name: string;
   currency: string;
+  store_currency?: string;
+  stripe_currency?: string | null;
   period: AnalyticsPeriod;
   chart_granularity: "daily" | "monthly";
   date_range: { since: string; until: string };
@@ -84,12 +87,19 @@ export type AnalyticsDashboard = {
     shopify_revenue: number;
     stripe_revenue_gross?: number;
     stripe_revenue_net?: number;
+    stripe_subscription_gross?: number;
+    stripe_one_time_gross?: number;
+    stripe_subscription_net?: number;
+    stripe_one_time_net?: number;
     stripe_fees?: number;
     stripe_charges?: number;
+    stripe_subscription_charges?: number;
+    stripe_one_time_charges?: number;
+    stripe_currency?: string | null;
     fees_already_net?: boolean;
     approx_revenue: number;
     meta_approx_revenue: number;
-    revenue_source: "shopify" | "stripe" | "meta_approx" | "none";
+    revenue_source: "shopify" | "stripe" | "stripe_mrr" | "meta_approx" | "none";
     prior_external_revenue: number;
     prior_external_costs: number;
     prior_external_label: string;
@@ -103,6 +113,8 @@ export type AnalyticsDashboard = {
     transaction_fees: number;
     gross_profit: number;
     ad_spend: number;
+    ad_spend_native?: number;
+    ad_spend_currency?: string;
     net_profit: number;
     meta_est_gross_profit: number;
     meta_est_net_profit: number;

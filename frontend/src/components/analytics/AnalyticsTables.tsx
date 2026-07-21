@@ -231,7 +231,7 @@ export function ProfitBreakdown({
     {
       label:
         summary.revenue_source === "stripe"
-          ? "Revenue (Stripe, net of fees)"
+          ? "Revenue (Stripe total, net of fees)"
           : "Revenue (orders + subscriptions)",
       value: summary.revenue - (summary.prior_external_revenue || 0),
       type: "positive" as const,
@@ -283,19 +283,35 @@ export function ProfitBreakdown({
     summary.fees_already_net && (summary.stripe_fees || 0) > 0
       ? `Stripe fees of ${money(summary.stripe_fees || 0, currency)} are already removed from revenue — not deducted again.`
       : null;
+  const stripeBreakdownNote =
+    summary.revenue_source === "stripe"
+      ? [
+          (summary.stripe_subscription_net || 0) > 0
+            ? `Subscriptions ${money(summary.stripe_subscription_net || 0, currency)} (${summary.stripe_subscription_charges ?? 0})`
+            : null,
+          (summary.stripe_one_time_net || 0) > 0
+            ? `One-time ${money(summary.stripe_one_time_net || 0, currency)} (${summary.stripe_one_time_charges ?? 0})`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : null;
 
   return (
     <Card padding="lg">
       <CardHeader>
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
-          One revenue stream (product + subscriptions) minus costs and Meta ad spend. Meta purchase
-          value is not used in profit.
+          Period revenue from Stripe includes every successful charge (subscriptions and one-time).
+          MRR is current run-rate only. Meta purchase value is not used in profit.
         </CardDescription>
       </CardHeader>
 
       {startNote && <p className="mb-3 text-xs text-content-muted">{startNote}</p>}
       {feeNote && <p className="mb-3 text-xs text-content-muted">{feeNote}</p>}
+      {stripeBreakdownNote && (
+        <p className="mb-3 text-xs text-content-muted">Stripe mix: {stripeBreakdownNote}</p>
+      )}
 
       <div className="space-y-2">
         {rows.map((row) => (

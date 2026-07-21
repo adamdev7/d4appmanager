@@ -22,6 +22,7 @@ from app.db.models import (
     StoreStatus,
     User,
 )
+from app.integrations.fx import convert_amount
 from app.integrations.meta.client import (
     MetaAdsClient,
     parse_meta_funnel,
@@ -128,6 +129,7 @@ class AnalyticsService:
             "mrr_manual_amount": float(_d(row.mrr_manual_amount)),
             "mrr_manual_subscribers": int(row.mrr_manual_subscribers or 0),
             "mrr_manual_churn_pct": float(_d(row.mrr_manual_churn_pct)),
+            "mrr_currency": (row.mrr_currency or store.currency or "USD").upper(),
             "mrr_webhook_configured": bool(row.mrr_webhook_secret_encrypted),
             "mrr_webhook_secret_masked": self._masked_hint(
                 row.mrr_webhook_secret_hint, bool(row.mrr_webhook_secret_encrypted)
@@ -339,7 +341,6 @@ class AnalyticsService:
     async def sync_mrr_from_stripe(self, db: Session, user: User, store_id: str) -> dict:
         store = self._ensure_store(db, user, store_id)
         settings = get_or_create_analytics_settings(db, store_id)
-        store_currency = (store.currency or "USD").upper()
         accounts = db.scalars(
             select(AnalyticsStripeAccount).where(
                 AnalyticsStripeAccount.store_id == store_id,
@@ -354,25 +355,32 @@ class AnalyticsService:
 
         total_mrr = Decimal("0")
         total_subs = 0
+        stripe_currency: str | None = None
         errors: list[str] = []
         for acct in accounts:
             try:
                 key = decrypt_value(acct.secret_key_encrypted)
                 client = StripeClient(key)
-                mrr, subs, _used_cur = await client.compute_mrr(currency=store_currency)
+                # Do NOT force Shopify store currency — Stripe may bill in GBP while store is CAD
+                mrr, subs, used_cur = await client.compute_mrr(currency=None)
                 acct.last_mrr = str(mrr)
                 acct.last_subscribers = subs
                 acct.last_error = None
                 acct.last_synced_at = datetime.now(UTC)
                 total_mrr += mrr
                 total_subs += subs
+                if used_cur and not stripe_currency:
+                    stripe_currency = used_cur.upper()
             except Exception as e:
                 acct.last_error = str(e)[:500]
                 errors.append(f"{acct.label}: {e}")
+
+        stripe_currency = (stripe_currency or store.currency or "USD").upper()
         settings.mrr_source = "multi_stripe"
         settings.mrr_enabled = True
         settings.mrr_manual_amount = str(total_mrr)
         settings.mrr_manual_subscribers = total_subs
+        settings.mrr_currency = stripe_currency
         settings.mrr_last_synced_at = datetime.now(UTC)
         db.commit()
 
@@ -383,13 +391,13 @@ class AnalyticsService:
             subscribers=total_subs,
             churn_pct=_d(settings.mrr_manual_churn_pct),
             source="multi_stripe",
-            note=f"Synced from {len(accounts)} Stripe account(s) in {store_currency}",
+            note=f"Synced from {len(accounts)} Stripe account(s) in {stripe_currency}",
         )
         return {
             "ok": len(errors) == 0,
             "mrr": _money(total_mrr),
             "subscribers": total_subs,
-            "currency": store_currency,
+            "currency": stripe_currency,
             "errors": errors,
             "accounts": self._list_stripe_accounts(db, store_id),
         }
@@ -470,7 +478,7 @@ class AnalyticsService:
             "arpu": arpu,
             "churn_pct": churn,
             "mrr_delta": mrr_delta,
-            "currency": None,  # filled by caller with store currency
+            "currency": (settings_row.mrr_currency or None),
             "last_synced_at": (
                 settings_row.mrr_last_synced_at.isoformat() if settings_row.mrr_last_synced_at else None
             ),
@@ -479,12 +487,11 @@ class AnalyticsService:
         }
 
     async def _stripe_period_totals(
-        self, db: Session, store_id: str, *, since: str, until: str, currency: str
+        self, db: Session, store_id: str, *, since: str, until: str, currency: str | None = None
     ) -> dict[str, Decimal | int | str | None]:
-        """Sum gross / fee / net across active Stripe MIDs for the date range.
+        """Sum ALL Stripe charges (subscription + one-time) across MIDs for the date range.
 
-        Stripe balance-transaction `net` already deducts Stripe fees — do not deduct again.
-        Only amounts in the store currency are included.
+        Currency is detected from Stripe charge data. `net` already deducts Stripe fees.
         """
         accounts = db.scalars(
             select(AnalyticsStripeAccount).where(
@@ -496,9 +503,15 @@ class AnalyticsService:
             "gross": Decimal("0"),
             "fees": Decimal("0"),
             "net": Decimal("0"),
+            "subscription_gross": Decimal("0"),
+            "one_time_gross": Decimal("0"),
+            "subscription_net": Decimal("0"),
+            "one_time_net": Decimal("0"),
             "charge_count": 0,
+            "subscription_count": 0,
+            "one_time_count": 0,
             "account_count": 0,
-            "currency": (currency or "USD").upper(),
+            "currency": None,
             "error": None,
         }
         if not accounts:
@@ -514,34 +527,43 @@ class AnalyticsService:
 
         since_ts = int(since_dt.timestamp())
         until_ts = int(until_dt.timestamp())
-        gross = Decimal("0")
-        fees = Decimal("0")
-        net = Decimal("0")
+        totals_acc = {k: Decimal("0") for k in (
+            "gross", "fees", "net",
+            "subscription_gross", "one_time_gross",
+            "subscription_net", "one_time_net",
+        )}
         charge_count = 0
+        subscription_count = 0
+        one_time_count = 0
         errors: list[str] = []
-        target_currency = (currency or "USD").upper()
+        detected_currency: str | None = None
 
         for acct in accounts:
             try:
                 key = decrypt_value(acct.secret_key_encrypted)
                 client = StripeClient(key)
                 totals = await client.period_charge_totals(
-                    since_ts=since_ts, until_ts=until_ts, currency=target_currency
+                    since_ts=since_ts,
+                    until_ts=until_ts,
+                    currency=currency,
                 )
-                gross += Decimal(str(totals["gross"]))
-                fees += Decimal(str(totals["fees"]))
-                net += Decimal(str(totals["net"]))
-                charge_count += int(totals["charge_count"])
+                for k in totals_acc:
+                    totals_acc[k] += Decimal(str(totals.get(k) or 0))
+                charge_count += int(totals.get("charge_count") or 0)
+                subscription_count += int(totals.get("subscription_count") or 0)
+                one_time_count += int(totals.get("one_time_count") or 0)
+                if totals.get("currency") and not detected_currency:
+                    detected_currency = str(totals["currency"]).upper()
             except Exception as e:
                 errors.append(f"{acct.label}: {e}")
 
         return {
-            "gross": gross,
-            "fees": fees,
-            "net": net,
+            **totals_acc,
             "charge_count": charge_count,
+            "subscription_count": subscription_count,
+            "one_time_count": one_time_count,
             "account_count": len(accounts),
-            "currency": target_currency,
+            "currency": detected_currency,
             "error": "; ".join(errors) if errors else None,
         }
 
@@ -939,56 +961,80 @@ class AnalyticsService:
         elif meta_configured:
             meta_error = "Could not decrypt Meta credentials — re-save your access token."
 
-        # --- Stripe period charges (net already excludes Stripe fees) ---
+        # --- Stripe period revenue: ALL charges (subscription invoices + one-time) ---
+        stripe_currency_hint = (settings_row.mrr_currency or None)
         stripe_totals = await self._stripe_period_totals(
-            db, store_id, since=since, until=until, currency=currency
+            db, store_id, since=since, until=until, currency=stripe_currency_hint
         )
         stripe_gross = Decimal(str(stripe_totals["gross"]))
         stripe_fees = Decimal(str(stripe_totals["fees"]))
         stripe_net = Decimal(str(stripe_totals["net"]))
+        stripe_sub_gross = Decimal(str(stripe_totals.get("subscription_gross") or 0))
+        stripe_one_time_gross = Decimal(str(stripe_totals.get("one_time_gross") or 0))
+        stripe_sub_net = Decimal(str(stripe_totals.get("subscription_net") or 0))
+        stripe_one_time_net = Decimal(str(stripe_totals.get("one_time_net") or 0))
         stripe_charge_count = int(stripe_totals["charge_count"] or 0)
+        stripe_sub_count = int(stripe_totals.get("subscription_count") or 0)
+        stripe_one_time_count = int(stripe_totals.get("one_time_count") or 0)
+        stripe_currency = (
+            str(stripe_totals.get("currency") or settings_row.mrr_currency or "").upper() or None
+        )
         stripe_error = stripe_totals.get("error")
-        if isinstance(stripe_error, str) and stripe_error and not meta_error:
-            # Surface Stripe sync issues without blocking the dashboard
-            pass
+        stripe_connected = int(stripe_totals.get("account_count") or 0) > 0
 
-        # --- Unified revenue (product + subscription are one stream) ---
-        # Never use Meta purchase value as revenue — only Meta ad spend for profit.
+        if stripe_currency and settings_row.mrr_currency != stripe_currency:
+            settings_row.mrr_currency = stripe_currency
+            db.commit()
+
+        # --- Revenue (period cash from Stripe charges — not MRR run-rate) ---
         shopify_revenue = revenue
-        fees_already_net = False  # True when revenue figures already exclude processor fees
+        store_currency = currency
+        fees_already_net = False
+        pnl_currency = store_currency
+        ad_spend_native = ad_spend
+        ad_spend_currency = store_currency
+        has_stripe_revenue = stripe_connected and (stripe_net != 0 or stripe_gross > 0)
 
-        if shopify_revenue > 0:
-            # Shopify orders include subscriber / product checkouts (linked revenue).
-            base_revenue = shopify_revenue
-            revenue_source = "shopify"
-            # Prefer real Stripe fees for the period when user left fee settings at 0
-            if fee_pct == 0 and fee_fixed == 0 and stripe_fees > 0:
-                transaction_fees = stripe_fees
-                # Stripe fees are the actual processor cut; revenue stays gross (Shopify totals)
-            elif fee_pct > 0 or fee_fixed > 0:
-                # Already computed per-order above from settings
-                pass
-        elif stripe_net != 0 or stripe_gross > 0:
-            # No Shopify orders in range — use Stripe net (fees already deducted)
+        if has_stripe_revenue:
+            # Prefer Stripe total: subscriptions + regular one-time transactions
             base_revenue = stripe_net
             revenue_source = "stripe"
             transaction_fees = Decimal("0")
             fees_already_net = True
             revenue = stripe_net
+            pnl_currency = stripe_currency or store_currency
+            if stripe_currency and stripe_currency != store_currency and ad_spend > 0:
+                ad_spend = await convert_amount(
+                    ad_spend, from_currency=store_currency, to_currency=stripe_currency
+                )
+                ad_spend_currency = stripe_currency
+        elif shopify_revenue > 0:
+            base_revenue = shopify_revenue
+            revenue_source = "shopify"
+            pnl_currency = store_currency
+            if fee_pct == 0 and fee_fixed == 0 and stripe_fees > 0 and (
+                not stripe_currency or stripe_currency == store_currency
+            ):
+                transaction_fees = stripe_fees
         else:
             base_revenue = Decimal("0")
             revenue_source = "none"
 
-        # Keep Meta purchase value only as a diagnostic (campaign attribution), never as P&L revenue
         meta_approx_revenue = Decimal("0")
         approx_revenue = base_revenue
 
         applied_prior_revenue = prior_revenue if include_prior else Decimal("0")
         applied_prior_costs = prior_costs if include_prior else Decimal("0")
+        # Prior external amounts are entered in store currency — convert if P&L is Stripe currency
+        if include_prior and pnl_currency != store_currency:
+            applied_prior_revenue = await convert_amount(
+                applied_prior_revenue, from_currency=store_currency, to_currency=pnl_currency
+            )
+            applied_prior_costs = await convert_amount(
+                applied_prior_costs, from_currency=store_currency, to_currency=pnl_currency
+            )
 
-        # Gross profit from real store revenue only (no Meta-attributed estimate)
         if fees_already_net:
-            # Stripe net already removed fees — do not subtract them again
             gross_profit = base_revenue - cogs - shipping_costs
         else:
             gross_profit = base_revenue - cogs - shipping_costs - transaction_fees
@@ -999,7 +1045,6 @@ class AnalyticsService:
         display_revenue = base_revenue + applied_prior_revenue
         net_profit = gross_profit - ad_spend
 
-        # Meta diagnostics only (not used in profit)
         meta_est_variable_costs = Decimal("0")
         meta_est_gross_profit = Decimal("0")
         meta_est_net_profit = Decimal("0")
@@ -1010,13 +1055,14 @@ class AnalyticsService:
             variable_cost_rate = (cogs + shipping_costs) / base_revenue
 
         mer = _money(display_revenue / ad_spend) if ad_spend > 0 and display_revenue > 0 else 0
-        # Meta ROAS kept for campaign diagnostics only — not used in net profit
-        meta_roas = _money(meta_purchase_value / ad_spend) if ad_spend > 0 and meta_purchase_value > 0 else 0
-        roas = mer  # blended MER (store revenue / spend)
+        meta_roas = _money(meta_purchase_value / ad_spend_native) if ad_spend_native > 0 and meta_purchase_value > 0 else 0
+        roas = mer
         cpa = _money(ad_spend / _d(order_count)) if order_count > 0 and ad_spend > 0 else 0
         if order_count == 0 and stripe_charge_count > 0 and ad_spend > 0:
             cpa = _money(ad_spend / _d(stripe_charge_count))
-        meta_cpa = _money(ad_spend / _d(meta_purchases)) if meta_purchases > 0 and ad_spend > 0 else 0
+        meta_cpa = (
+            _money(ad_spend_native / _d(meta_purchases)) if meta_purchases > 0 and ad_spend_native > 0 else 0
+        )
         aov = _money(shopify_revenue / _d(order_count)) if order_count > 0 else 0
         if aov == 0 and stripe_charge_count > 0 and stripe_gross > 0:
             aov = _money(stripe_gross / _d(stripe_charge_count))
@@ -1127,7 +1173,7 @@ class AnalyticsService:
         )[:10]
 
         insights = self._build_insights(
-            currency=currency,
+            currency=pnl_currency,
             shopify_connected=shopify_connected,
             meta_configured=meta_configured,
             missing_cost_items=missing_cost_items,
@@ -1163,7 +1209,8 @@ class AnalyticsService:
 
         mrr_block = self._mrr_block(db, store_id, settings_row)
         if mrr_block:
-            mrr_block["currency"] = currency
+            if not mrr_block.get("currency"):
+                mrr_block["currency"] = stripe_currency or pnl_currency or currency
             if mrr_block["mrr"] > 0 and ad_spend > 0:
                 months_to_recover = float(ad_spend) / mrr_block["mrr"] if mrr_block["mrr"] else 0
                 insights.append(
@@ -1209,7 +1256,10 @@ class AnalyticsService:
         return {
             "store_id": store_id,
             "store_name": store.name,
-            "currency": currency,
+            # Primary display currency for revenue / profit (Stripe currency when revenue is Stripe)
+            "currency": pnl_currency,
+            "store_currency": store_currency,
+            "stripe_currency": stripe_currency,
             "period": period,
             "chart_granularity": "monthly" if use_monthly else "daily",
             "date_range": {"since": since, "until": until},
@@ -1225,8 +1275,15 @@ class AnalyticsService:
                 "shopify_revenue": _money(shopify_revenue),
                 "stripe_revenue_gross": _money(stripe_gross),
                 "stripe_revenue_net": _money(stripe_net),
+                "stripe_subscription_gross": _money(stripe_sub_gross),
+                "stripe_one_time_gross": _money(stripe_one_time_gross),
+                "stripe_subscription_net": _money(stripe_sub_net),
+                "stripe_one_time_net": _money(stripe_one_time_net),
                 "stripe_fees": _money(stripe_fees),
                 "stripe_charges": stripe_charge_count,
+                "stripe_subscription_charges": stripe_sub_count,
+                "stripe_one_time_charges": stripe_one_time_count,
+                "stripe_currency": stripe_currency,
                 "fees_already_net": fees_already_net,
                 "approx_revenue": _money(approx_revenue),
                 "meta_approx_revenue": _money(meta_approx_revenue),
@@ -1244,6 +1301,8 @@ class AnalyticsService:
                 "transaction_fees": _money(transaction_fees),
                 "gross_profit": _money(gross_profit),
                 "ad_spend": _money(ad_spend),
+                "ad_spend_native": _money(ad_spend_native),
+                "ad_spend_currency": ad_spend_currency,
                 "net_profit": _money(net_profit),
                 "meta_est_gross_profit": _money(meta_est_gross_profit),
                 "meta_est_net_profit": _money(meta_est_net_profit),
@@ -1346,12 +1405,13 @@ class AnalyticsService:
             insights.append(
                 {
                     "level": "info",
-                    "title": "Revenue from Stripe (net of fees)",
+                    "title": "Revenue from Stripe (all transactions)",
                     "message": (
-                        f"No Shopify orders in this range — using Stripe net charges "
-                        f"({money(approx_revenue)}). Stripe fees are already deducted."
+                        f"Period revenue is Stripe net charges ({money(approx_revenue)}) — "
+                        "subscriptions and one-time payments. Fees already deducted. "
+                        "MRR is shown separately as current run-rate."
                     ),
-                    "action": "Connect Shopify or widen the date range to reconcile order-level costs.",
+                    "action": "Keep product costs updated so gross profit stays accurate.",
                 }
             )
 
