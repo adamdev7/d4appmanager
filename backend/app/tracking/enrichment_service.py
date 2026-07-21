@@ -15,6 +15,7 @@ from app.integrations.tracking.carrier_api import (
     fetch_yunexpress,
 )
 from app.tracking.credentials import get_or_create_tracking_settings, resolve_carrier_config
+from app.tracking.shopify_delivery_sync import sync_delivered_to_shopify
 from app.tracking.timeline_normalize import normalize_timeline
 
 logger = logging.getLogger(__name__)
@@ -49,9 +50,26 @@ class CarrierEnrichmentService:
         if not enriched:
             return False
 
-        self._apply_enrichment(row, enriched)
+        await self.apply_enrichment_and_sync(store_id, row, enriched)
         self._db.flush()
         return True
+
+    async def apply_enrichment_and_sync(
+        self,
+        store_id: str,
+        row: OrderTracking,
+        enriched: dict,
+    ) -> None:
+        """Apply carrier payload and push delivered status to Shopify when needed."""
+        previous_status = row.status
+        self._apply_enrichment(row, enriched)
+        try:
+            await sync_delivered_to_shopify(self._db, store_id, row, previous_status)
+        except Exception:
+            logger.exception(
+                "Shopify delivered sync failed for order %s",
+                row.order_number_display,
+            )
 
     async def test_provider(
         self,

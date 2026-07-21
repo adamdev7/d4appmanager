@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
+import { formatMoney } from "@/lib/formatMoney";
 
 type DailyPoint = {
   date: string;
@@ -51,7 +52,7 @@ function ChartTooltip({
       <p className="font-medium text-content mb-1">{formatChartDate(String(label), granularity)}</p>
       {payload.map((entry) => (
         <p key={entry.name} style={{ color: entry.color }} className="text-content-muted">
-          {entry.name}: {currency} {entry.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+          {entry.name}: {formatMoney(entry.value, currency)}
         </p>
       ))}
     </div>

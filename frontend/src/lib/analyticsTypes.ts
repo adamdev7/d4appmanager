@@ -76,13 +76,20 @@ export type AnalyticsDashboard = {
     shopify: boolean;
     meta: boolean;
     meta_error: string | null;
+    stripe?: boolean;
+    stripe_error?: string | null;
   };
   summary: {
     revenue: number;
     shopify_revenue: number;
+    stripe_revenue_gross?: number;
+    stripe_revenue_net?: number;
+    stripe_fees?: number;
+    stripe_charges?: number;
+    fees_already_net?: boolean;
     approx_revenue: number;
     meta_approx_revenue: number;
-    revenue_source: "shopify" | "meta_approx" | "none";
+    revenue_source: "shopify" | "stripe" | "meta_approx" | "none";
     prior_external_revenue: number;
     prior_external_costs: number;
     prior_external_label: string;
@@ -174,6 +181,7 @@ export type AnalyticsDashboard = {
     arpu: number;
     churn_pct: number;
     mrr_delta: number;
+    currency?: string | null;
     last_synced_at: string | null;
     history: Array<{
       date: string;

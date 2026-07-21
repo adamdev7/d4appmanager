@@ -200,6 +200,7 @@ class StoreTrackingSettings(Base):
     store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
     carrier_mode: Mapped[str] = mapped_column(String(32), default="auto")
     auto_enrich_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sync_delivered_to_shopify: Mapped[bool] = mapped_column(Boolean, default=True)
     yunexpress_api_url: Mapped[str] = mapped_column(String(512), default="https://api.yunexpress.com")
     yunexpress_customer_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     yunexpress_carrier_keywords: Mapped[str] = mapped_column(String(255), default="yun,yunexpress")

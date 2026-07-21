@@ -74,6 +74,7 @@ export type TrackingSettings = {
   store_id: string;
   carrier_mode: string;
   auto_enrich_enabled: boolean;
+  sync_delivered_to_shopify: boolean;
   yunexpress_api_url: string;
   yunexpress_customer_code: string | null;
   yunexpress_carrier_keywords: string;
@@ -675,6 +676,7 @@ export const api = {
         ok: boolean;
         mrr: number;
         subscribers: number;
+        currency: string;
         errors: string[];
         accounts: unknown[];
       }>(`/analytics/stores/${storeId}/mrr/sync-stripe`, { method: "POST" }),

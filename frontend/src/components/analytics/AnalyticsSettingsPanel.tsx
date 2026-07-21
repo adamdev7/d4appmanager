@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { api, type AnalyticsSettings } from "@/lib/api";
 import type { AnalyticsStripeAccount } from "@/lib/analyticsTypes";
+import { formatMoney } from "@/lib/formatMoney";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -175,7 +176,7 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
       setStripeAccounts(res.accounts as AnalyticsStripeAccount[]);
       setMessage(
         res.ok
-          ? `Synced MRR ${res.mrr} across ${res.accounts.length} Stripe account(s).`
+          ? `Synced ${res.subscribers.toLocaleString()} subscribers · MRR ${formatMoney(res.mrr, res.currency)}`
           : `Partial sync. Errors: ${res.errors.join("; ")}`
       );
       onSaved();
@@ -209,9 +210,9 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
             <CardTitle>MRR / Subscriptions</CardTitle>
           </div>
           <CardDescription>
-            Opt-in recurring revenue analytics. For Phoenix Technologies checkout with many Stripe
-            MIDs, use Manual (or webhook) — Phoenix owns subscriptions; Stripe usually only
-            processes charges.
+            Recurring revenue from Stripe is folded into the same Revenue figure as product orders
+            (they are one stream). Sync pulls MRR / subscribers from Billing subscriptions, or from
+            trailing 30-day net charges when a MID is charge-only (e.g. Phoenix).
           </CardDescription>
         </CardHeader>
 
@@ -534,8 +535,9 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
             <CardTitle>Cost assumptions</CardTitle>
           </div>
           <CardDescription>
-            Leave at 0 unless you want these included in profit. We no longer invent Stripe fees
-            or shipping — only amounts from Shopify orders or values you enter here.
+            Leave fee fields at 0 to use real Stripe fees from your connected keys (when available).
+            Stripe net amounts already exclude Stripe fees — those are never deducted twice. Only enter
+            a % / fixed fee if you want a manual override on gross order totals.
           </CardDescription>
         </CardHeader>
 

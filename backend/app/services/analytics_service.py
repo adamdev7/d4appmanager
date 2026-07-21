@@ -111,7 +111,7 @@ class AnalyticsService:
             "store_id": store_id,
             "store_name": store.name,
             "shop_domain": store.shop_domain,
-            "currency": store.currency,
+            "currency": (store.currency or "USD").upper(),
             "shopify_connected": store.status == StoreStatus.CONNECTED.value,
             "meta_configured": meta_configured,
             "meta_token_masked": self._masked_hint(row.meta_access_token_hint, bool(row.meta_access_token_encrypted)),
@@ -337,8 +337,9 @@ class AnalyticsService:
         return {"ok": True, "accounts": self._list_stripe_accounts(db, store_id)}
 
     async def sync_mrr_from_stripe(self, db: Session, user: User, store_id: str) -> dict:
-        self._ensure_store(db, user, store_id)
+        store = self._ensure_store(db, user, store_id)
         settings = get_or_create_analytics_settings(db, store_id)
+        store_currency = (store.currency or "USD").upper()
         accounts = db.scalars(
             select(AnalyticsStripeAccount).where(
                 AnalyticsStripeAccount.store_id == store_id,
@@ -358,7 +359,7 @@ class AnalyticsService:
             try:
                 key = decrypt_value(acct.secret_key_encrypted)
                 client = StripeClient(key)
-                mrr, subs = await client.compute_mrr()
+                mrr, subs, _used_cur = await client.compute_mrr(currency=store_currency)
                 acct.last_mrr = str(mrr)
                 acct.last_subscribers = subs
                 acct.last_error = None
@@ -382,12 +383,13 @@ class AnalyticsService:
             subscribers=total_subs,
             churn_pct=_d(settings.mrr_manual_churn_pct),
             source="multi_stripe",
-            note=f"Synced from {len(accounts)} Stripe account(s)",
+            note=f"Synced from {len(accounts)} Stripe account(s) in {store_currency}",
         )
         return {
             "ok": len(errors) == 0,
             "mrr": _money(total_mrr),
             "subscribers": total_subs,
+            "currency": store_currency,
             "errors": errors,
             "accounts": self._list_stripe_accounts(db, store_id),
         }
@@ -468,11 +470,79 @@ class AnalyticsService:
             "arpu": arpu,
             "churn_pct": churn,
             "mrr_delta": mrr_delta,
+            "currency": None,  # filled by caller with store currency
             "last_synced_at": (
                 settings_row.mrr_last_synced_at.isoformat() if settings_row.mrr_last_synced_at else None
             ),
             "history": history,
             "stripe_account_count": len(self._list_stripe_accounts(db, store_id)),
+        }
+
+    async def _stripe_period_totals(
+        self, db: Session, store_id: str, *, since: str, until: str, currency: str
+    ) -> dict[str, Decimal | int | str | None]:
+        """Sum gross / fee / net across active Stripe MIDs for the date range.
+
+        Stripe balance-transaction `net` already deducts Stripe fees — do not deduct again.
+        Only amounts in the store currency are included.
+        """
+        accounts = db.scalars(
+            select(AnalyticsStripeAccount).where(
+                AnalyticsStripeAccount.store_id == store_id,
+                AnalyticsStripeAccount.is_active.is_(True),
+            )
+        ).all()
+        empty: dict[str, Decimal | int | str | None] = {
+            "gross": Decimal("0"),
+            "fees": Decimal("0"),
+            "net": Decimal("0"),
+            "charge_count": 0,
+            "account_count": 0,
+            "currency": (currency or "USD").upper(),
+            "error": None,
+        }
+        if not accounts:
+            return empty
+
+        try:
+            since_dt = datetime.strptime(since[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+            until_dt = datetime.strptime(until[:10], "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59, tzinfo=UTC
+            )
+        except ValueError:
+            return empty
+
+        since_ts = int(since_dt.timestamp())
+        until_ts = int(until_dt.timestamp())
+        gross = Decimal("0")
+        fees = Decimal("0")
+        net = Decimal("0")
+        charge_count = 0
+        errors: list[str] = []
+        target_currency = (currency or "USD").upper()
+
+        for acct in accounts:
+            try:
+                key = decrypt_value(acct.secret_key_encrypted)
+                client = StripeClient(key)
+                totals = await client.period_charge_totals(
+                    since_ts=since_ts, until_ts=until_ts, currency=target_currency
+                )
+                gross += Decimal(str(totals["gross"]))
+                fees += Decimal(str(totals["fees"]))
+                net += Decimal(str(totals["net"]))
+                charge_count += int(totals["charge_count"])
+            except Exception as e:
+                errors.append(f"{acct.label}: {e}")
+
+        return {
+            "gross": gross,
+            "fees": fees,
+            "net": net,
+            "charge_count": charge_count,
+            "account_count": len(accounts),
+            "currency": target_currency,
+            "error": "; ".join(errors) if errors else None,
         }
 
     async def test_meta_connection(
@@ -535,7 +605,7 @@ class AnalyticsService:
         missing_costs = sum(1 for i in items if i["cost_per_unit"] <= 0)
         return {
             "store_id": store_id,
-            "currency": store.currency,
+            "currency": (store.currency or "USD").upper(),
             "products": items,
             "total_variants": len(items),
             "missing_costs": missing_costs,
@@ -614,7 +684,7 @@ class AnalyticsService:
         start_dt, end_dt, since, until = self._parse_range(
             period, store, settings_row.analytics_start_date
         )
-        currency = store.currency or "USD"
+        currency = (store.currency or "USD").upper()
 
         cost_map = {
             (r.shopify_product_id, r.shopify_variant_id): _d(r.cost_per_unit)
@@ -869,58 +939,87 @@ class AnalyticsService:
         elif meta_configured:
             meta_error = "Could not decrypt Meta credentials — re-save your access token."
 
-        # --- Revenue approximation (Meta purchase value) ---
+        # --- Stripe period charges (net already excludes Stripe fees) ---
+        stripe_totals = await self._stripe_period_totals(
+            db, store_id, since=since, until=until, currency=currency
+        )
+        stripe_gross = Decimal(str(stripe_totals["gross"]))
+        stripe_fees = Decimal(str(stripe_totals["fees"]))
+        stripe_net = Decimal(str(stripe_totals["net"]))
+        stripe_charge_count = int(stripe_totals["charge_count"] or 0)
+        stripe_error = stripe_totals.get("error")
+        if isinstance(stripe_error, str) and stripe_error and not meta_error:
+            # Surface Stripe sync issues without blocking the dashboard
+            pass
+
+        # --- Unified revenue (product + subscription are one stream) ---
+        # Never use Meta purchase value as revenue — only Meta ad spend for profit.
         shopify_revenue = revenue
-        # Prefer Shopify when available; fall back to Meta purchase value as approx revenue.
+        fees_already_net = False  # True when revenue figures already exclude processor fees
+
         if shopify_revenue > 0:
-            approx_revenue = shopify_revenue
+            # Shopify orders include subscriber / product checkouts (linked revenue).
+            base_revenue = shopify_revenue
             revenue_source = "shopify"
-        elif meta_purchase_value > 0:
-            approx_revenue = meta_purchase_value
-            revenue_source = "meta_approx"
-            revenue = meta_purchase_value
+            # Prefer real Stripe fees for the period when user left fee settings at 0
+            if fee_pct == 0 and fee_fixed == 0 and stripe_fees > 0:
+                transaction_fees = stripe_fees
+                # Stripe fees are the actual processor cut; revenue stays gross (Shopify totals)
+            elif fee_pct > 0 or fee_fixed > 0:
+                # Already computed per-order above from settings
+                pass
+        elif stripe_net != 0 or stripe_gross > 0:
+            # No Shopify orders in range — use Stripe net (fees already deducted)
+            base_revenue = stripe_net
+            revenue_source = "stripe"
+            transaction_fees = Decimal("0")
+            fees_already_net = True
+            revenue = stripe_net
         else:
-            approx_revenue = Decimal("0")
+            base_revenue = Decimal("0")
             revenue_source = "none"
 
-        # When Shopify has revenue, still expose Meta purchase value as attributed approx.
-        meta_approx_revenue = meta_purchase_value
+        # Keep Meta purchase value only as a diagnostic (campaign attribution), never as P&L revenue
+        meta_approx_revenue = Decimal("0")
+        approx_revenue = base_revenue
 
-        # Variable cost rate only from real Shopify costs (never invent COGS/shipping/fees)
-        if shopify_revenue > 0 and (cogs + shipping_costs + transaction_fees) > 0:
-            variable_cost_rate = (cogs + shipping_costs + transaction_fees) / shopify_revenue
-        else:
-            variable_cost_rate = Decimal("0")
-
-        # Meta-attributed estimate — only subtract costs when we know a real rate
-        meta_est_variable_costs = (
-            meta_purchase_value * variable_cost_rate if variable_cost_rate > 0 else Decimal("0")
-        )
-        meta_est_gross_profit = meta_purchase_value - meta_est_variable_costs
-        meta_est_net_profit = meta_est_gross_profit - ad_spend
-
-        # --- Blended metrics (Shopify P&L − Meta spend; Meta-attributed ROAS separate) ---
         applied_prior_revenue = prior_revenue if include_prior else Decimal("0")
         applied_prior_costs = prior_costs if include_prior else Decimal("0")
 
-        gross_profit = shopify_revenue - cogs - shipping_costs - transaction_fees
-        # Meta-only revenue: do NOT invent product costs / shipping / fees the user never entered
-        if revenue_source == "meta_approx":
-            gross_profit = meta_purchase_value  # revenue only until costs are configured
+        # Gross profit from real store revenue only (no Meta-attributed estimate)
+        if fees_already_net:
+            # Stripe net already removed fees — do not subtract them again
+            gross_profit = base_revenue - cogs - shipping_costs
+        else:
+            gross_profit = base_revenue - cogs - shipping_costs - transaction_fees
 
         if include_prior:
             gross_profit = gross_profit + applied_prior_revenue - applied_prior_costs
 
+        display_revenue = base_revenue + applied_prior_revenue
         net_profit = gross_profit - ad_spend
-        display_revenue = (
-            (shopify_revenue if shopify_revenue > 0 else approx_revenue) + applied_prior_revenue
-        )
+
+        # Meta diagnostics only (not used in profit)
+        meta_est_variable_costs = Decimal("0")
+        meta_est_gross_profit = Decimal("0")
+        meta_est_net_profit = Decimal("0")
+        variable_cost_rate = Decimal("0")
+        if base_revenue > 0 and (cogs + shipping_costs + transaction_fees) > 0 and not fees_already_net:
+            variable_cost_rate = (cogs + shipping_costs + transaction_fees) / base_revenue
+        elif base_revenue > 0 and (cogs + shipping_costs) > 0 and fees_already_net:
+            variable_cost_rate = (cogs + shipping_costs) / base_revenue
+
         mer = _money(display_revenue / ad_spend) if ad_spend > 0 and display_revenue > 0 else 0
-        meta_roas = _money(meta_purchase_value / ad_spend) if ad_spend > 0 else 0
+        # Meta ROAS kept for campaign diagnostics only — not used in net profit
+        meta_roas = _money(meta_purchase_value / ad_spend) if ad_spend > 0 and meta_purchase_value > 0 else 0
         roas = mer  # blended MER (store revenue / spend)
         cpa = _money(ad_spend / _d(order_count)) if order_count > 0 and ad_spend > 0 else 0
+        if order_count == 0 and stripe_charge_count > 0 and ad_spend > 0:
+            cpa = _money(ad_spend / _d(stripe_charge_count))
         meta_cpa = _money(ad_spend / _d(meta_purchases)) if meta_purchases > 0 and ad_spend > 0 else 0
         aov = _money(shopify_revenue / _d(order_count)) if order_count > 0 else 0
+        if aov == 0 and stripe_charge_count > 0 and stripe_gross > 0:
+            aov = _money(stripe_gross / _d(stripe_charge_count))
         meta_aov = (
             _money(meta_purchase_value / _d(meta_purchases)) if meta_purchases > 0 else 0
         )
@@ -983,18 +1082,20 @@ class AnalyticsService:
                 )
             day_shopify_rev = s["revenue"]
             day_meta_rev = m["purchase_value"]
-            # Prefer Shopify revenue for charts; fall back to Meta purchase value.
-            day_rev = day_shopify_rev if day_shopify_rev > 0 else day_meta_rev
+            # Charts use real store revenue only — never Meta purchase value
+            day_rev = day_shopify_rev
             day_spend = m["spend"]
-            day_orders = s["orders"] if s["orders"] > 0 else m["purchases"]
+            day_orders = s["orders"]
             day_cost = Decimal("0")
             if day_shopify_rev > 0:
-                if fee_pct > 0:
-                    day_cost += day_rev * fee_pct
+                if not fees_already_net:
+                    if fee_pct > 0:
+                        day_cost += day_rev * fee_pct
+                    elif transaction_fees > 0 and shopify_revenue > 0:
+                        # Allocate actual Stripe fees proportionally across days
+                        day_cost += transaction_fees * (day_rev / shopify_revenue)
                 if shipping_per_order > 0:
                     day_cost += shipping_per_order * _d(day_orders)
-            elif day_meta_rev > 0 and variable_cost_rate > 0:
-                day_cost = day_meta_rev * variable_cost_rate
             day_gross = day_rev - day_cost
             daily_chart.append(
                 {
@@ -1062,6 +1163,7 @@ class AnalyticsService:
 
         mrr_block = self._mrr_block(db, store_id, settings_row)
         if mrr_block:
+            mrr_block["currency"] = currency
             if mrr_block["mrr"] > 0 and ad_spend > 0:
                 months_to_recover = float(ad_spend) / mrr_block["mrr"] if mrr_block["mrr"] else 0
                 insights.append(
@@ -1115,10 +1217,17 @@ class AnalyticsService:
                 "shopify": shopify_connected,
                 "meta": meta_configured and meta_error is None,
                 "meta_error": meta_error,
+                "stripe": int(stripe_totals["account_count"] or 0) > 0,
+                "stripe_error": stripe_error if isinstance(stripe_error, str) else None,
             },
             "summary": {
                 "revenue": _money(display_revenue),
                 "shopify_revenue": _money(shopify_revenue),
+                "stripe_revenue_gross": _money(stripe_gross),
+                "stripe_revenue_net": _money(stripe_net),
+                "stripe_fees": _money(stripe_fees),
+                "stripe_charges": stripe_charge_count,
+                "fees_already_net": fees_already_net,
                 "approx_revenue": _money(approx_revenue),
                 "meta_approx_revenue": _money(meta_approx_revenue),
                 "revenue_source": revenue_source,
@@ -1228,21 +1337,21 @@ class AnalyticsService:
                 {
                     "level": "info",
                     "title": "Add Meta Ads credentials",
-                    "message": "Connect Meta to track ad spend, attributed purchases, and blended profit.",
+                    "message": "Connect Meta to track ad spend and campaign performance. Revenue always comes from orders/Stripe — never Meta purchase value.",
                     "action": "Open the Analytics Settings tab and paste your Meta token + ad account ID.",
                 }
             )
 
-        if revenue_source == "meta_approx" and meta_purchase_value > 0:
+        if revenue_source == "stripe":
             insights.append(
                 {
                     "level": "info",
-                    "title": "Using Meta purchase value as revenue approx",
+                    "title": "Revenue from Stripe (net of fees)",
                     "message": (
-                        f"No Shopify orders in this range — estimating revenue at "
-                        f"{money(meta_purchase_value)} from Meta tracked purchases."
+                        f"No Shopify orders in this range — using Stripe net charges "
+                        f"({money(approx_revenue)}). Stripe fees are already deducted."
                     ),
-                    "action": "Confirm pixel purchase events match real checkouts, then connect Shopify for exact P&L.",
+                    "action": "Connect Shopify or widen the date range to reconcile order-level costs.",
                 }
             )
 
@@ -1256,21 +1365,20 @@ class AnalyticsService:
                 }
             )
 
-        # Break-even / ROAS
+        # Break-even / ROAS — use store MER (real revenue / spend), not Meta purchase ROAS
         if ad_spend > 0 and break_even_roas > 0:
-            effective_roas = meta_roas if meta_roas > 0 else mer
-            if effective_roas < break_even_roas:
-                gap = round(break_even_roas - effective_roas, 2)
+            if mer < break_even_roas:
+                gap = round(break_even_roas - mer, 2)
                 insights.append(
                     {
                         "level": "danger",
                         "title": "Ads are below break-even",
                         "message": (
-                            f"ROAS is {effective_roas}x vs break-even {break_even_roas}x "
-                            f"(need +{gap}x). You are losing money on ad-driven sales."
+                            f"MER is {mer}x vs break-even {break_even_roas}x "
+                            f"(need +{gap}x). You are losing money after ads."
                         ),
                         "action": (
-                            "Pause campaigns under break-even ROAS, raise offer AOV "
+                            "Pause weak campaigns, raise offer AOV "
                             "(bundles/upsells), or cut COGS/shipping to lower break-even."
                         ),
                     }
@@ -1282,41 +1390,26 @@ class AnalyticsService:
                         "title": "Profitable after ads",
                         "message": (
                             f"Net profit {money(net_profit)} this period "
-                            f"(MER {mer}x, Meta ROAS {meta_roas}x)."
+                            f"(MER {mer}x — store revenue ÷ ad spend)."
                         ),
-                        "action": "Scale the highest-ROAS campaigns 10–20% while watching CPA vs AOV.",
+                        "action": "Scale the highest-performing campaigns 10–20% while watching CPA vs AOV.",
                     }
                 )
 
-        # Attribution gap between Shopify and Meta
-        if shopify_revenue > 0 and meta_purchase_value > 0:
-            if attribution_coverage_pct < 50:
-                insights.append(
-                    {
-                        "level": "warning",
-                        "title": "Low Meta attribution coverage",
-                        "message": (
-                            f"Meta tracks {attribution_coverage_pct}% of Shopify revenue "
-                            f"({money(meta_purchase_value)} of {money(shopify_revenue)})."
-                        ),
-                        "action": (
-                            "Verify the Meta pixel + CAPI purchase events, and check if "
-                            "organic/other channels drive most sales."
-                        ),
-                    }
-                )
-            elif attribution_coverage_pct > 120:
-                insights.append(
-                    {
-                        "level": "info",
-                        "title": "Meta purchase value exceeds Shopify revenue",
-                        "message": (
-                            f"Meta reports {money(meta_purchase_value)} vs Shopify "
-                            f"{money(shopify_revenue)} — likely view-through or delayed attribution."
-                        ),
-                        "action": "Use Meta ROAS for campaign decisions, but Shopify net profit for cash reality.",
-                    }
-                )
+        # Attribution gap is diagnostic only — Meta purchase value is never used as revenue
+        if shopify_revenue > 0 and meta_purchase_value > 0 and attribution_coverage_pct < 40:
+            insights.append(
+                {
+                    "level": "info",
+                    "title": "Meta tracks fewer purchases than store orders",
+                    "message": (
+                        f"Meta attributes {attribution_coverage_pct}% of store revenue "
+                        f"({money(meta_purchase_value)} of {money(shopify_revenue)}). "
+                        "Profit still uses store/Stripe revenue − ad spend."
+                    ),
+                    "action": "Optional: verify pixel + CAPI if you rely on Meta campaign ROAS for optimization.",
+                }
+            )
 
         # AOV comparison
         if aov > 0 and meta_aov > 0 and meta_aov < aov * 0.75:

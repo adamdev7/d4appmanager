@@ -129,6 +129,7 @@ function CarrierTestResultPanel({ result }: { result: CarrierTestResult }) {
 export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
   const [carrierMode, setCarrierMode] = useState("auto");
   const [autoEnrich, setAutoEnrich] = useState(true);
+  const [syncDelivered, setSyncDelivered] = useState(true);
   const [yunUrl, setYunUrl] = useState("https://api.yunexpress.com");
   const [yunCode, setYunCode] = useState("");
   const [yunKeywords, setYunKeywords] = useState("yun,yunexpress");
@@ -146,6 +147,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
     if (!settings) return;
     setCarrierMode(settings.carrier_mode);
     setAutoEnrich(settings.auto_enrich_enabled);
+    setSyncDelivered(settings.sync_delivered_to_shopify ?? true);
     setYunUrl(settings.yunexpress_api_url);
     setYunCode(settings.yunexpress_customer_code ?? "");
     setYunKeywords(settings.yunexpress_carrier_keywords);
@@ -161,6 +163,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
       const payload: Record<string, unknown> = {
         carrier_mode: carrierMode,
         auto_enrich_enabled: autoEnrich,
+        sync_delivered_to_shopify: syncDelivered,
         yunexpress_api_url: yunUrl,
         yunexpress_customer_code: yunCode || null,
         yunexpress_carrier_keywords: yunKeywords,
@@ -241,6 +244,13 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
           onChange={setAutoEnrich}
           label="Update status automatically"
           description="When tracking is added in Shopify, pull the latest shipment status for the customer."
+        />
+
+        <Switch
+          checked={syncDelivered}
+          onChange={setSyncDelivered}
+          label="Mark delivered on Shopify"
+          description="When 17TRACK or YunExpress reports delivered, also mark the fulfillment as delivered in Shopify Admin."
         />
 
         <div className="space-y-2">

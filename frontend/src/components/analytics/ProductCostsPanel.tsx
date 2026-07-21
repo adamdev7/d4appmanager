@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Package, Save, Search } from "lucide-react";
 import { api, type AnalyticsProduct } from "@/lib/api";
+import { formatMoney } from "@/lib/formatMoney";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -177,7 +178,7 @@ export function ProductCostsPanel({ storeId, currency }: Props) {
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right text-content-muted whitespace-nowrap">
-                      {currency} {price.toFixed(2)}
+                      {formatMoney(price, currency)}
                     </td>
                     <td className="px-4 py-3">
                       <Input

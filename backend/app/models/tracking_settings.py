@@ -5,6 +5,7 @@ class TrackingSettingsResponse(BaseModel):
     store_id: str
     carrier_mode: str
     auto_enrich_enabled: bool
+    sync_delivered_to_shopify: bool
     yunexpress_api_url: str
     yunexpress_customer_code: str | None
     yunexpress_carrier_keywords: str
@@ -22,6 +23,7 @@ class TrackingSettingsUpdate(BaseModel):
         description="auto | 17track | yunexpress | shopify_only",
     )
     auto_enrich_enabled: bool | None = None
+    sync_delivered_to_shopify: bool | None = None
     yunexpress_api_url: str | None = None
     yunexpress_customer_code: str | None = None
     yunexpress_carrier_keywords: str | None = None

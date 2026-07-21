@@ -31,6 +31,9 @@ class TrackingService:
             "store_id": store_id,
             "carrier_mode": row.carrier_mode,
             "auto_enrich_enabled": row.auto_enrich_enabled,
+            "sync_delivered_to_shopify": bool(
+                getattr(row, "sync_delivered_to_shopify", True)
+            ),
             "yunexpress_api_url": row.yunexpress_api_url,
             "yunexpress_customer_code": row.yunexpress_customer_code,
             "yunexpress_carrier_keywords": row.yunexpress_carrier_keywords,
@@ -58,6 +61,9 @@ class TrackingService:
 
         if body.get("auto_enrich_enabled") is not None:
             row.auto_enrich_enabled = bool(body["auto_enrich_enabled"])
+
+        if body.get("sync_delivered_to_shopify") is not None:
+            row.sync_delivered_to_shopify = bool(body["sync_delivered_to_shopify"])
 
         if body.get("yunexpress_api_url") is not None:
             row.yunexpress_api_url = str(body["yunexpress_api_url"]).strip() or "https://api.yunexpress.com"

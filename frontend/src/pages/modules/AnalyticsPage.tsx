@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import {
   ArrowLeft,
   BarChart3,
-  DollarSign,
   Megaphone,
   Package,
   RefreshCw,
@@ -18,6 +17,7 @@ import {
 import { useStore } from "@/context/StoreContext";
 import { api, type AnalyticsDashboard, type AnalyticsPeriod, type AnalyticsSettings } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { formatMoney } from "@/lib/formatMoney";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
@@ -46,10 +46,6 @@ const PERIODS: Array<{ id: AnalyticsPeriod; label: string }> = [
   { id: "90d", label: "90 days" },
   { id: "all", label: "All time" },
 ];
-
-function fmtMoney(value: number, currency: string) {
-  return `${currency} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
 
 export function AnalyticsPage() {
   const { activeStore, stores } = useStore();
@@ -148,6 +144,9 @@ export function AnalyticsPage() {
               <Badge variant={dashboard.connections.meta ? "success" : "muted"}>
                 Meta Ads {dashboard.connections.meta ? "connected" : "not set"}
               </Badge>
+              <Badge variant={dashboard.connections.stripe ? "success" : "muted"}>
+                Stripe {dashboard.connections.stripe ? "connected" : "not set"}
+              </Badge>
             </>
           )}
           <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
@@ -234,46 +233,43 @@ export function AnalyticsPage() {
               <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                 <MetricCard
                   label="Net Profit"
-                  value={fmtMoney(summary.net_profit, currency)}
-                  hint="After COGS, fees, shipping & ads"
+                  value={formatMoney(summary.net_profit, currency)}
+                  hint="Revenue − COGS − fees − shipping − ads"
                   icon={Wallet}
                   accent={summary.net_profit >= 0 ? "success" : "danger"}
                   trend={summary.net_profit >= 0 ? "up" : "down"}
                   trendLabel={`${summary.net_margin_pct}% net margin`}
                 />
                 <MetricCard
-                  label={
-                    summary.revenue_source === "meta_approx"
-                      ? "Approx. Revenue (Meta)"
-                      : "Revenue"
-                  }
-                  value={fmtMoney(summary.revenue, currency)}
+                  label="Revenue"
+                  value={formatMoney(summary.revenue, currency)}
                   hint={
-                    summary.revenue_source === "meta_approx"
-                      ? `${summary.meta_purchases} Meta purchases · est. from purchase value`
-                      : `${summary.orders} orders · AOV ${fmtMoney(summary.aov, currency)}`
+                    dashboard.mrr
+                      ? `${dashboard.mrr.subscribers.toLocaleString()} subscribers · MRR ${formatMoney(dashboard.mrr.mrr, currency)}`
+                      : summary.revenue_source === "stripe"
+                        ? `${summary.stripe_charges ?? 0} Stripe charges (net of fees)`
+                        : `${summary.orders} orders · AOV ${formatMoney(summary.aov, currency)}`
                   }
                   icon={ShoppingBag}
                   accent="brand"
                 />
                 <MetricCard
                   label="Ad Spend"
-                  value={fmtMoney(summary.ad_spend, currency)}
+                  value={formatMoney(summary.ad_spend, currency)}
                   hint={
                     summary.ad_spend > 0
-                      ? `Meta ROAS ${summary.meta_roas}x · CPA ${fmtMoney(summary.meta_cpa || summary.cpa, currency)}`
+                      ? `CPA ${formatMoney(summary.cpa || summary.meta_cpa, currency)} · Meta used for spend only`
                       : "Connect Meta in Settings"
                   }
                   icon={Megaphone}
                 />
                 <MetricCard
-                  label="MER / Meta ROAS"
-                  value={`${summary.mer}x / ${summary.meta_roas}x`}
-                  hint={`Break-even: ${summary.break_even_roas}x ROAS`}
+                  label="MER"
+                  value={`${summary.mer}x`}
+                  hint={`Break-even ${summary.break_even_roas}x · revenue ÷ ad spend`}
                   icon={Target}
                   accent={
-                    (summary.meta_roas || summary.mer) >= summary.break_even_roas &&
-                    summary.break_even_roas > 0
+                    summary.mer >= summary.break_even_roas && summary.break_even_roas > 0
                       ? "success"
                       : summary.ad_spend > 0
                         ? "warning"
@@ -286,19 +282,24 @@ export function AnalyticsPage() {
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <MetricCard
                   label="Gross Profit"
-                  value={fmtMoney(summary.gross_profit, currency)}
+                  value={formatMoney(summary.gross_profit, currency)}
                   hint={`${summary.margin_before_ads_pct}% margin before ads`}
                   icon={TrendingUp}
                 />
                 <MetricCard
-                  label="Meta Purchase Value"
-                  value={fmtMoney(summary.meta_purchase_value, currency)}
-                  hint={
-                    summary.shopify_revenue > 0
-                      ? `${summary.attribution_coverage_pct}% of Shopify revenue`
-                      : `${summary.meta_purchases} tracked purchases`
+                  label={dashboard.mrr ? "MRR / ARR" : "Orders"}
+                  value={
+                    dashboard.mrr
+                      ? `${formatMoney(dashboard.mrr.mrr, currency)}`
+                      : String(summary.orders)
                   }
-                  icon={DollarSign}
+                  hint={
+                    dashboard.mrr
+                      ? `ARR ${formatMoney(dashboard.mrr.arr, currency)} · ARPU ${formatMoney(dashboard.mrr.arpu, currency)}`
+                      : `AOV ${formatMoney(summary.aov, currency)}`
+                  }
+                  icon={Repeat}
+                  accent="brand"
                 />
                 <MetricCard
                   label="Meta Funnel"
@@ -309,57 +310,17 @@ export function AnalyticsPage() {
                 <MetricCard
                   label="Meta CTR / CPC"
                   value={`${summary.ctr}%`}
-                  hint={`${summary.clicks.toLocaleString()} clicks · CPC ${fmtMoney(summary.cpc, currency)}`}
+                  hint={`${summary.clicks.toLocaleString()} clicks · CPC ${formatMoney(summary.cpc, currency)}`}
                   icon={Package}
                 />
               </div>
 
-              {dashboard.mrr && (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Repeat className="h-4 w-4 text-brand-600" />
-                    <h2 className="text-sm font-semibold text-content">Subscription MRR</h2>
-                    <Badge variant="muted">{dashboard.mrr.source}</Badge>
-                  </div>
-                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                    <MetricCard
-                      label="MRR"
-                      value={fmtMoney(dashboard.mrr.mrr, currency)}
-                      hint={
-                        dashboard.mrr.mrr_delta !== 0
-                          ? `${dashboard.mrr.mrr_delta >= 0 ? "+" : ""}${fmtMoney(dashboard.mrr.mrr_delta, currency)} vs last snapshot`
-                          : "Update in Analytics Settings"
-                      }
-                      icon={Repeat}
-                      accent="brand"
-                      trend={dashboard.mrr.mrr_delta >= 0 ? "up" : "down"}
-                      trendLabel={`${dashboard.mrr.subscribers} subscribers`}
-                    />
-                    <MetricCard
-                      label="ARR"
-                      value={fmtMoney(dashboard.mrr.arr, currency)}
-                      hint="MRR × 12"
-                      icon={TrendingUp}
-                    />
-                    <MetricCard
-                      label="ARPU"
-                      value={fmtMoney(dashboard.mrr.arpu, currency)}
-                      hint="Average revenue per subscriber / month"
-                      icon={Wallet}
-                    />
-                    <MetricCard
-                      label="Churn"
-                      value={`${dashboard.mrr.churn_pct}%`}
-                      hint={
-                        dashboard.mrr.last_synced_at
-                          ? `Synced ${dashboard.mrr.last_synced_at.slice(0, 10)}`
-                          : "Enter churn in Settings"
-                      }
-                      icon={Target}
-                      accent={dashboard.mrr.churn_pct >= 8 ? "warning" : "default"}
-                    />
-                  </div>
-                </div>
+              {dashboard.connections.stripe_error && (
+                <Card padding="md" className="border-amber-500/30 bg-amber-500/5">
+                  <p className="text-sm text-amber-700 dark:text-amber-400">
+                    Stripe: {dashboard.connections.stripe_error}
+                  </p>
+                </Card>
               )}
 
               {/* Insights */}
@@ -410,10 +371,10 @@ export function AnalyticsPage() {
                           <tr key={o.order_number + o.created_at} className="border-b border-border last:border-0">
                             <td className="px-5 py-3 font-medium text-content">{o.order_number}</td>
                             <td className="px-5 py-3 text-right text-content-muted">
-                              {fmtMoney(o.total, currency)}
+                              {formatMoney(o.total, currency)}
                             </td>
                             <td className="px-5 py-3 text-right text-content-muted">
-                              {fmtMoney(o.cogs, currency)}
+                              {formatMoney(o.cogs, currency)}
                             </td>
                             <td
                               className={cn(
@@ -421,7 +382,7 @@ export function AnalyticsPage() {
                                 o.profit >= 0 ? "text-emerald-600" : "text-red-600"
                               )}
                             >
-                              {fmtMoney(o.profit, currency)}
+                              {formatMoney(o.profit, currency)}
                             </td>
                           </tr>
                         ))}

@@ -546,6 +546,35 @@ def _migrate_analytics_mrr_columns() -> None:
         )
 
 
+def _migrate_sync_delivered_to_shopify_column() -> None:
+    """Add toggle to push carrier-delivered status back to Shopify fulfillments."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    table = "store_tracking_settings"
+    if table not in insp.get_table_names():
+        return
+
+    cols = {c["name"] for c in insp.get_columns(table)}
+    if "sync_delivered_to_shopify" in cols:
+        return
+
+    col_type = (
+        "BOOLEAN DEFAULT 1" if dialect == "sqlite" else "BOOLEAN DEFAULT TRUE"
+    )
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN sync_delivered_to_shopify {col_type}")
+            )
+        elif dialect == "postgresql":
+            conn.execute(
+                text(
+                    f"ALTER TABLE {table} "
+                    f"ADD COLUMN IF NOT EXISTS sync_delivered_to_shopify {col_type}"
+                )
+            )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -557,3 +586,4 @@ def init_db() -> None:
     _migrate_email_branding_columns()
     _migrate_analytics_balance_columns()
     _migrate_analytics_mrr_columns()
+    _migrate_sync_delivered_to_shopify_column()

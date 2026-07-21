@@ -205,3 +205,19 @@ def test_should_not_force_refresh_when_carrier_events_exist():
 
     assert TrackOrderService._timeline_needs_carrier_enrichment(Row()) is False
     assert TrackOrderService._should_refresh_carrier(Row()) is False
+
+
+def test_fulfillment_targets_for_delivered_sync():
+    from app.tracking.shopify_delivery_sync import _fulfillment_targets
+
+    class Row:
+        tracking_number = "YT1"
+        fulfillments_json = (
+            '[{"id":"123","tracking_number":"YT1","shipment_status":"in_transit"},'
+            '{"id":"456","tracking_number":"YT2","shipment_status":"in_transit"},'
+            '{"id":"789","tracking_number":"YT1","shipment_status":"delivered"},'
+            '{"id":"not-numeric","tracking_number":"YT1","shipment_status":""}]'
+        )
+
+    ids = [f["id"] for f in _fulfillment_targets(Row())]
+    assert ids == ["123"]

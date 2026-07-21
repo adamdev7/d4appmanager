@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowRight, CheckCircle2, Info, Lightbulb } from "lucide-react";
 import type { AnalyticsDashboard, AnalyticsInsight } from "@/lib/analyticsTypes";
 import { cn } from "@/lib/cn";
+import { formatMoney } from "@/lib/formatMoney";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 
 const levelStyles = {
@@ -110,12 +111,11 @@ export function CampaignTable({
                   {c.campaign_name}
                 </td>
                 <td className="px-5 py-3 text-right text-content-muted">
-                  {currency} {c.spend.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  {formatMoney(c.spend, currency)}
                 </td>
                 <td className="px-5 py-3 text-right text-content-muted">{c.purchases}</td>
                 <td className="px-5 py-3 text-right text-content-muted">
-                  {currency}{" "}
-                  {c.purchase_value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  {formatMoney(c.purchase_value, currency)}
                 </td>
                 <td className="px-5 py-3 text-right">
                   <span
@@ -128,7 +128,7 @@ export function CampaignTable({
                   </span>
                 </td>
                 <td className="px-5 py-3 text-right text-content-muted">
-                  {c.cpa > 0 ? `${currency} ${c.cpa.toFixed(2)}` : "—"}
+                  {c.cpa > 0 ? formatMoney(c.cpa, currency) : "—"}
                 </td>
                 <td className="px-5 py-3 text-right text-content-muted">{c.ctr.toFixed(2)}%</td>
               </tr>
@@ -174,10 +174,10 @@ export function TopProductsTable({
                 </td>
                 <td className="px-5 py-3 text-right text-content-muted">{p.units_sold}</td>
                 <td className="px-5 py-3 text-right text-content-muted">
-                  {currency} {p.revenue.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  {formatMoney(p.revenue, currency)}
                 </td>
                 <td className="px-5 py-3 text-right text-content">
-                  {currency} {p.profit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  {formatMoney(p.profit, currency)}
                 </td>
                 <td className="px-5 py-3 text-right">
                   <span
@@ -199,8 +199,7 @@ export function TopProductsTable({
 }
 
 function money(value: number, currency: string) {
-  const sign = value < 0 ? "−" : "";
-  return `${sign}${currency} ${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+  return formatMoney(value, currency);
 }
 
 export function ProfitBreakdown({
@@ -210,14 +209,13 @@ export function ProfitBreakdown({
   summary: AnalyticsDashboard["summary"];
   currency: string;
 }) {
-  const shopifyRows = [
+  const rows = [
     ...(summary.prior_external_revenue > 0
       ? [
           {
             label: summary.prior_external_label || "Prior site (Stripe)",
             value: summary.prior_external_revenue,
             type: "positive" as const,
-            source: "External",
           },
         ]
       : []),
@@ -227,105 +225,80 @@ export function ProfitBreakdown({
             label: "Prior site costs",
             value: -summary.prior_external_costs,
             type: "negative" as const,
-            source: "External",
           },
         ]
       : []),
     {
-      label: "Shopify revenue",
-      value: summary.shopify_revenue,
+      label:
+        summary.revenue_source === "stripe"
+          ? "Revenue (Stripe, net of fees)"
+          : "Revenue (orders + subscriptions)",
+      value: summary.revenue - (summary.prior_external_revenue || 0),
       type: "positive" as const,
-      source: "Shopify",
     },
     {
       label: "Product costs (COGS)",
       value: -summary.cogs,
       type: "negative" as const,
-      source: "Shopify",
     },
     {
       label: "Shipping",
       value: -summary.shipping_costs,
       type: "negative" as const,
-      source: "Shopify",
     },
-    {
-      label: "Payment fees",
-      value: -summary.transaction_fees,
-      type: "negative" as const,
-      source: "Shopify",
-    },
+    // Only subtract fees when revenue is still gross (Shopify). Stripe net already excludes fees.
+    ...(!summary.fees_already_net && summary.transaction_fees > 0
+      ? [
+          {
+            label:
+              summary.stripe_fees && summary.stripe_fees > 0
+                ? "Payment fees (Stripe)"
+                : "Payment fees",
+            value: -summary.transaction_fees,
+            type: "negative" as const,
+          },
+        ]
+      : []),
     {
       label: "Gross profit",
       value: summary.gross_profit,
       type: "subtotal" as const,
-      source: "Blended",
     },
     {
       label: "Meta ad spend",
       value: -summary.ad_spend,
       type: "negative" as const,
-      source: "Meta",
     },
     {
       label: "Net profit",
       value: summary.net_profit,
       type: "total" as const,
-      source: "Blended",
     },
   ];
 
-  const hasMeta = summary.meta_purchase_value > 0 || summary.ad_spend > 0;
-  const attributionNote =
-    summary.shopify_revenue > 0 && summary.meta_purchase_value > 0
-      ? `Meta tracks ${summary.attribution_coverage_pct}% of Shopify revenue`
-      : summary.revenue_source === "meta_approx"
-        ? "Revenue approximated from Meta purchase value"
-        : null;
   const startNote = summary.analytics_start_date
-    ? `Counting from ${summary.analytics_start_date} (Shopify launch / analytics start)`
+    ? `Counting from ${summary.analytics_start_date} (analytics start)`
     : null;
+  const feeNote =
+    summary.fees_already_net && (summary.stripe_fees || 0) > 0
+      ? `Stripe fees of ${money(summary.stripe_fees || 0, currency)} are already removed from revenue — not deducted again.`
+      : null;
 
   return (
     <Card padding="lg">
       <CardHeader>
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
-          Shopify store P&amp;L combined with Meta ads spend and purchase value
+          One revenue stream (product + subscriptions) minus costs and Meta ad spend. Meta purchase
+          value is not used in profit.
         </CardDescription>
       </CardHeader>
 
-      {/* Dual-source snapshot */}
-      <div className="mb-4 grid grid-cols-2 gap-3">
-        <div className="rounded-lg border border-border bg-surface-muted/40 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-content-muted">Shopify</p>
-          <p className="mt-1 text-sm font-semibold text-content">
-            {money(summary.shopify_revenue, currency)}
-          </p>
-          <p className="text-xs text-content-muted mt-0.5">
-            {summary.orders} orders · AOV {money(summary.aov, currency)}
-          </p>
-        </div>
-        <div className="rounded-lg border border-border bg-surface-muted/40 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-content-muted">Meta</p>
-          <p className="mt-1 text-sm font-semibold text-content">
-            {money(summary.meta_purchase_value, currency)}
-          </p>
-          <p className="text-xs text-content-muted mt-0.5">
-            {summary.meta_purchases} purchases · ROAS {summary.meta_roas}x
-          </p>
-        </div>
-      </div>
-
-      {attributionNote && (
-        <p className="mb-3 text-xs text-content-muted">{attributionNote}</p>
-      )}
-      {startNote && (
-        <p className="mb-3 text-xs text-content-muted">{startNote}</p>
-      )}
+      {startNote && <p className="mb-3 text-xs text-content-muted">{startNote}</p>}
+      {feeNote && <p className="mb-3 text-xs text-content-muted">{feeNote}</p>}
 
       <div className="space-y-2">
-        {shopifyRows.map((row) => (
+        {rows.map((row) => (
           <div
             key={row.label}
             className={cn(
@@ -336,15 +309,12 @@ export function ProfitBreakdown({
           >
             <span
               className={cn(
-                "flex flex-col sm:flex-row sm:items-center sm:gap-2 min-w-0",
+                "truncate",
                 row.type === "total" ? "text-content" : "text-content-muted",
                 row.type === "subtotal" && "text-content"
               )}
             >
-              <span className="truncate">{row.label}</span>
-              <span className="text-[10px] uppercase tracking-wide text-content-subtle font-normal">
-                {row.source}
-              </span>
+              {row.label}
             </span>
             <span
               className={cn(
@@ -359,45 +329,9 @@ export function ProfitBreakdown({
         ))}
       </div>
 
-      {hasMeta && (
-        <div className="mt-4 pt-4 border-t border-border space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-content-muted mb-2">
-            Meta-attributed estimate
-          </p>
-          <div className="flex justify-between items-center text-sm">
-            <span className="text-content-muted">Meta purchase value</span>
-            <span className="text-content">{money(summary.meta_purchase_value, currency)}</span>
-          </div>
-          <div className="flex justify-between items-center text-sm">
-            <span className="text-content-muted">
-              Est. variable costs ({summary.variable_cost_rate_pct}%)
-            </span>
-            <span className="text-red-600 dark:text-red-400">
-              {money(-(summary.meta_purchase_value - summary.meta_est_gross_profit), currency)}
-            </span>
-          </div>
-          <div className="flex justify-between items-center text-sm">
-            <span className="text-content-muted">Meta ad spend</span>
-            <span className="text-red-600 dark:text-red-400">
-              {money(-summary.ad_spend, currency)}
-            </span>
-          </div>
-          <div className="flex justify-between items-center text-sm font-medium pt-2 border-t border-border">
-            <span className="text-content">Est. Meta-attributed net</span>
-            <span
-              className={
-                summary.meta_est_net_profit >= 0 ? "text-emerald-600" : "text-red-600"
-              }
-            >
-              {money(summary.meta_est_net_profit, currency)}
-            </span>
-          </div>
-        </div>
-      )}
-
-      <div className="mt-4 pt-4 border-t border-border grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+      <div className="mt-4 pt-4 border-t border-border grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
         <div>
-          <p className="text-content-muted">Break-even ROAS</p>
+          <p className="text-content-muted">Break-even MER</p>
           <p className="font-semibold text-content">{summary.break_even_roas}x</p>
         </div>
         <div>
@@ -405,12 +339,8 @@ export function ProfitBreakdown({
           <p className="font-semibold text-content">{summary.net_margin_pct}%</p>
         </div>
         <div>
-          <p className="text-content-muted">MER (Shopify)</p>
+          <p className="text-content-muted">MER</p>
           <p className="font-semibold text-content">{summary.mer}x</p>
-        </div>
-        <div>
-          <p className="text-content-muted">Meta ROAS</p>
-          <p className="font-semibold text-content">{summary.meta_roas}x</p>
         </div>
       </div>
     </Card>

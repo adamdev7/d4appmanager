@@ -167,6 +167,92 @@ class ShopifyClient:
                     break
         return all_products
 
+    async def create_fulfillment_event(
+        self,
+        fulfillment_id: str,
+        *,
+        status: str = "delivered",
+        message: str | None = None,
+        order_id: str | None = None,
+    ) -> dict:
+        """Mark a fulfillment shipment status (e.g. delivered) via Admin API.
+
+        Prefers GraphQL ``fulfillmentEventCreate``; falls back to REST when
+        ``order_id`` is available. Requires the ``write_fulfillments`` scope.
+        """
+        if not self.access_token:
+            raise ValueError("No access token")
+
+        fid = str(fulfillment_id).strip()
+        if not fid:
+            raise ValueError("fulfillment_id is required")
+
+        graphql_status = status.strip().upper().replace(" ", "_")
+        gid = fid if fid.startswith("gid://") else f"gid://shopify/Fulfillment/{fid}"
+        event_input: dict = {
+            "fulfillmentId": gid,
+            "status": graphql_status,
+        }
+        if message:
+            event_input["message"] = message
+
+        mutation = """
+        mutation fulfillmentEventCreate($fulfillmentEvent: FulfillmentEventInput!) {
+          fulfillmentEventCreate(fulfillmentEvent: $fulfillmentEvent) {
+            fulfillmentEvent { id status }
+            userErrors { field message }
+          }
+        }
+        """
+        headers = {
+            "X-Shopify-Access-Token": self.access_token,
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
+                headers=headers,
+                json={"query": mutation, "variables": {"fulfillmentEvent": event_input}},
+            )
+            if resp.status_code < 400:
+                payload = resp.json()
+                errors = payload.get("errors") or []
+                result = (payload.get("data") or {}).get("fulfillmentEventCreate") or {}
+                user_errors = result.get("userErrors") or []
+                if not errors and not user_errors and result.get("fulfillmentEvent"):
+                    return result["fulfillmentEvent"]
+                # Access / scope issues — don't silently fall back with a bad token
+                combined = " ".join(
+                    str(e.get("message") or e) for e in (errors + user_errors)
+                ).lower()
+                if "access" in combined or "scope" in combined or "permission" in combined:
+                    raise PermissionError(combined or "Shopify denied fulfillment event create")
+                if user_errors or errors:
+                    # Fall through to REST if we have order_id
+                    if not order_id:
+                        raise RuntimeError(combined or "fulfillmentEventCreate failed")
+                else:
+                    # Unexpected empty success — try REST
+                    if not order_id:
+                        raise RuntimeError("fulfillmentEventCreate returned no event")
+            elif order_id is None:
+                resp.raise_for_status()
+
+            if not order_id:
+                raise RuntimeError("Could not create fulfillment event")
+
+            rest_status = status.strip().lower().replace(" ", "_")
+            rest_body: dict = {"event": {"status": rest_status}}
+            if message:
+                rest_body["event"]["message"] = message
+            rest_resp = await client.post(
+                f"{self.admin_api_base}/orders/{order_id}/fulfillments/{fid}/events.json",
+                headers=headers,
+                json=rest_body,
+            )
+            rest_resp.raise_for_status()
+            return rest_resp.json().get("fulfillment_event") or rest_resp.json()
+
     @staticmethod
     def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:
         if not settings.shopify_client_secret:

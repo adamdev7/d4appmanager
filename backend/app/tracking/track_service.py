@@ -79,7 +79,9 @@ class TrackOrderService:
             if config.mode != "shopify_only" and (config.has_track17 or config.has_yunexpress):
                 enriched = await enrich_from_carrier_apis(config, tracking_number, carrier)
                 if enriched:
-                    CarrierEnrichmentService(self._db)._apply_enrichment(row, enriched)
+                    await CarrierEnrichmentService(self._db).apply_enrichment_and_sync(
+                        store_id, row, enriched
+                    )
                     status = row.status
                     carrier = row.carrier or carrier
                     events = self._load_timeline(row.timeline_json, shipment_status=status)

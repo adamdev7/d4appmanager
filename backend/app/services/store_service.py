@@ -82,7 +82,7 @@ class StoreService:
         store.status = StoreStatus.CONNECTED.value
         store.plan = shop_data.get("plan_display_name", "Shopify")
         store.timezone = shop_data.get("iana_timezone", "UTC")
-        store.currency = shop_data.get("currency", "USD")
+        store.currency = str(shop_data.get("currency") or "USD").upper()
         db.commit()
         db.refresh(store)
 
@@ -108,7 +108,7 @@ class StoreService:
         if data.timezone is not None:
             store.timezone = data.timezone
         if data.currency is not None:
-            store.currency = data.currency
+            store.currency = str(data.currency).strip().upper() or store.currency
         db.commit()
         db.refresh(store)
         return self._serialize(store)
