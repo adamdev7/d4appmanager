@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_verified_user
@@ -8,7 +8,9 @@ from app.models.analytics import (
     AnalyticsSettingsUpdate,
     MetaTestRequest,
     MetaTestResponse,
+    MrrWebhookPayload,
     ProductCostsUpdate,
+    StripeAccountCreate,
 )
 from app.services.analytics_service import AnalyticsService
 
@@ -73,3 +75,45 @@ async def update_product_costs(
 ):
     items = [item.model_dump() for item in body.items]
     return _service.update_product_costs(db, user, store_id, items)
+
+
+@router.post("/stores/{store_id}/stripe-accounts")
+async def add_stripe_account(
+    store_id: str,
+    body: StripeAccountCreate,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return await _service.add_stripe_account(db, user, store_id, body.model_dump())
+
+
+@router.delete("/stores/{store_id}/stripe-accounts/{account_id}")
+async def delete_stripe_account(
+    store_id: str,
+    account_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.delete_stripe_account(db, user, store_id, account_id)
+
+
+@router.post("/stores/{store_id}/mrr/sync-stripe")
+async def sync_mrr_from_stripe(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return await _service.sync_mrr_from_stripe(db, user, store_id)
+
+
+@router.post("/stores/{store_id}/mrr/webhook")
+async def mrr_webhook(
+    store_id: str,
+    body: MrrWebhookPayload,
+    db: Session = Depends(get_db),
+    x_mrr_webhook_secret: str | None = Header(default=None, alias="X-MRR-Webhook-Secret"),
+):
+    """Public webhook for Phoenix / Zapier / scripts to push current MRR."""
+    return _service.ingest_mrr_webhook(
+        db, store_id, x_mrr_webhook_secret or "", body.model_dump()
+    )

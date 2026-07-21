@@ -13,6 +13,7 @@ import {
   Target,
   TrendingUp,
   Wallet,
+  Repeat,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api, type AnalyticsDashboard, type AnalyticsPeriod, type AnalyticsSettings } from "@/lib/api";
@@ -241,9 +242,17 @@ export function AnalyticsPage() {
                   trendLabel={`${summary.net_margin_pct}% net margin`}
                 />
                 <MetricCard
-                  label="Revenue"
+                  label={
+                    summary.revenue_source === "meta_approx"
+                      ? "Approx. Revenue (Meta)"
+                      : "Revenue"
+                  }
                   value={fmtMoney(summary.revenue, currency)}
-                  hint={`${summary.orders} orders · AOV ${fmtMoney(summary.aov, currency)}`}
+                  hint={
+                    summary.revenue_source === "meta_approx"
+                      ? `${summary.meta_purchases} Meta purchases · est. from purchase value`
+                      : `${summary.orders} orders · AOV ${fmtMoney(summary.aov, currency)}`
+                  }
                   icon={ShoppingBag}
                   accent="brand"
                 />
@@ -252,18 +261,19 @@ export function AnalyticsPage() {
                   value={fmtMoney(summary.ad_spend, currency)}
                   hint={
                     summary.ad_spend > 0
-                      ? `ROAS ${summary.roas}x · CPA ${fmtMoney(summary.cpa, currency)}`
+                      ? `Meta ROAS ${summary.meta_roas}x · CPA ${fmtMoney(summary.meta_cpa || summary.cpa, currency)}`
                       : "Connect Meta in Settings"
                   }
                   icon={Megaphone}
                 />
                 <MetricCard
-                  label="MER / Blended ROAS"
-                  value={`${summary.mer}x`}
+                  label="MER / Meta ROAS"
+                  value={`${summary.mer}x / ${summary.meta_roas}x`}
                   hint={`Break-even: ${summary.break_even_roas}x ROAS`}
                   icon={Target}
                   accent={
-                    summary.roas >= summary.break_even_roas && summary.break_even_roas > 0
+                    (summary.meta_roas || summary.mer) >= summary.break_even_roas &&
+                    summary.break_even_roas > 0
                       ? "success"
                       : summary.ad_spend > 0
                         ? "warning"
@@ -281,24 +291,76 @@ export function AnalyticsPage() {
                   icon={TrendingUp}
                 />
                 <MetricCard
-                  label="Product Costs"
-                  value={fmtMoney(summary.cogs, currency)}
-                  hint="Set costs in Product Costs tab"
-                  icon={Package}
+                  label="Meta Purchase Value"
+                  value={fmtMoney(summary.meta_purchase_value, currency)}
+                  hint={
+                    summary.shopify_revenue > 0
+                      ? `${summary.attribution_coverage_pct}% of Shopify revenue`
+                      : `${summary.meta_purchases} tracked purchases`
+                  }
+                  icon={DollarSign}
                 />
                 <MetricCard
-                  label="Meta CTR"
-                  value={`${summary.ctr}%`}
-                  hint={`${summary.clicks.toLocaleString()} clicks · CPC ${fmtMoney(summary.cpc, currency)}`}
+                  label="Meta Funnel"
+                  value={`${summary.meta_add_to_cart} ATC`}
+                  hint={`${summary.meta_initiate_checkout} checkouts · ${summary.checkout_to_purchase_pct}% convert`}
                   icon={BarChart3}
                 />
                 <MetricCard
-                  label="Meta Purchases"
-                  value={String(summary.meta_purchases)}
-                  hint={`${fmtMoney(summary.meta_purchase_value, currency)} tracked value`}
-                  icon={DollarSign}
+                  label="Meta CTR / CPC"
+                  value={`${summary.ctr}%`}
+                  hint={`${summary.clicks.toLocaleString()} clicks · CPC ${fmtMoney(summary.cpc, currency)}`}
+                  icon={Package}
                 />
               </div>
+
+              {dashboard.mrr && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Repeat className="h-4 w-4 text-brand-600" />
+                    <h2 className="text-sm font-semibold text-content">Subscription MRR</h2>
+                    <Badge variant="muted">{dashboard.mrr.source}</Badge>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <MetricCard
+                      label="MRR"
+                      value={fmtMoney(dashboard.mrr.mrr, currency)}
+                      hint={
+                        dashboard.mrr.mrr_delta !== 0
+                          ? `${dashboard.mrr.mrr_delta >= 0 ? "+" : ""}${fmtMoney(dashboard.mrr.mrr_delta, currency)} vs last snapshot`
+                          : "Update in Analytics Settings"
+                      }
+                      icon={Repeat}
+                      accent="brand"
+                      trend={dashboard.mrr.mrr_delta >= 0 ? "up" : "down"}
+                      trendLabel={`${dashboard.mrr.subscribers} subscribers`}
+                    />
+                    <MetricCard
+                      label="ARR"
+                      value={fmtMoney(dashboard.mrr.arr, currency)}
+                      hint="MRR × 12"
+                      icon={TrendingUp}
+                    />
+                    <MetricCard
+                      label="ARPU"
+                      value={fmtMoney(dashboard.mrr.arpu, currency)}
+                      hint="Average revenue per subscriber / month"
+                      icon={Wallet}
+                    />
+                    <MetricCard
+                      label="Churn"
+                      value={`${dashboard.mrr.churn_pct}%`}
+                      hint={
+                        dashboard.mrr.last_synced_at
+                          ? `Synced ${dashboard.mrr.last_synced_at.slice(0, 10)}`
+                          : "Enter churn in Settings"
+                      }
+                      icon={Target}
+                      accent={dashboard.mrr.churn_pct >= 8 ? "warning" : "default"}
+                    />
+                  </div>
+                </div>
+              )}
 
               {/* Insights */}
               <ProfitInsights insights={dashboard.insights} />

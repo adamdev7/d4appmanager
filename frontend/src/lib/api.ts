@@ -641,5 +641,23 @@ export const api = {
         method: "PUT",
         body: JSON.stringify({ items }),
       }),
+    addStripeAccount: (storeId: string, data: { label: string; secret_key: string }) =>
+      request<{ ok: boolean; accounts: unknown[] }>(`/analytics/stores/${storeId}/stripe-accounts`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    deleteStripeAccount: (storeId: string, accountId: string) =>
+      request<{ ok: boolean; accounts: unknown[] }>(
+        `/analytics/stores/${storeId}/stripe-accounts/${accountId}`,
+        { method: "DELETE" }
+      ),
+    syncMrrStripe: (storeId: string) =>
+      request<{
+        ok: boolean;
+        mrr: number;
+        subscribers: number;
+        errors: string[];
+        accounts: unknown[];
+      }>(`/analytics/stores/${storeId}/mrr/sync-stripe`, { method: "POST" }),
   },
 };

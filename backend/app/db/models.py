@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -430,10 +430,68 @@ class StoreAnalyticsSettings(Base):
     default_shipping_cost: Mapped[str] = mapped_column(String(16), default="0")
     transaction_fee_percent: Mapped[str] = mapped_column(String(8), default="2.9")
     transaction_fee_fixed: Mapped[str] = mapped_column(String(8), default="0.30")
+    # YYYY-MM-DD — ignore Meta spend / treat as analytics window start (e.g. Shopify launch)
+    analytics_start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # Revenue from a prior site (e.g. Stripe) to include in All-time profit
+    prior_external_revenue: Mapped[str] = mapped_column(String(16), default="0")
+    prior_external_costs: Mapped[str] = mapped_column(String(16), default="0")
+    prior_external_label: Mapped[str] = mapped_column(String(64), default="Prior site (Stripe)")
+    # Opt-in MRR (subscriptions) analytics — e.g. Phoenix checkout + multi-Stripe MIDs
+    mrr_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    mrr_source: Mapped[str] = mapped_column(String(32), default="manual")  # manual | multi_stripe
+    mrr_manual_amount: Mapped[str] = mapped_column(String(16), default="0")
+    mrr_manual_subscribers: Mapped[int] = mapped_column(Integer, default=0)
+    mrr_manual_churn_pct: Mapped[str] = mapped_column(String(8), default="0")
+    mrr_webhook_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mrr_webhook_secret_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    mrr_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class AnalyticsStripeAccount(Base):
+    """Optional Stripe MID credentials for multi-account MRR aggregation."""
+
+    __tablename__ = "analytics_stripe_accounts"
+    __table_args__ = (
+        UniqueConstraint("store_id", "label", name="uq_analytics_stripe_store_label"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    label: Mapped[str] = mapped_column(String(128), default="Stripe")
+    secret_key_encrypted: Mapped[str] = mapped_column(Text)
+    secret_key_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_mrr: Mapped[str] = mapped_column(String(16), default="0")
+    last_subscribers: Mapped[int] = mapped_column(Integer, default=0)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MrrSnapshot(Base):
+    """Point-in-time MRR snapshots for trend charts."""
+
+    __tablename__ = "mrr_snapshots"
+    __table_args__ = (
+        UniqueConstraint("store_id", "snapshot_date", name="uq_mrr_snapshot_store_date"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    snapshot_date: Mapped[str] = mapped_column(String(10), index=True)  # YYYY-MM-DD
+    mrr: Mapped[str] = mapped_column(String(16), default="0")
+    subscribers: Mapped[int] = mapped_column(Integer, default=0)
+    churn_pct: Mapped[str] = mapped_column(String(8), default="0")
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ProductCost(Base):

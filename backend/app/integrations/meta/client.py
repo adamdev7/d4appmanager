@@ -109,6 +109,37 @@ class MetaAdsClient:
             return resp.json()
 
 
+# Preferred action types (first match wins) for purchase counting / value.
+_PURCHASE_ACTION_TYPES = (
+    "omni_purchase",
+    "purchase",
+    "offsite_conversion.fb_pixel_purchase",
+    "onsite_web_purchase",
+    "web_in_store_purchase",
+)
+
+# Funnel / engagement action types to surface in analytics.
+_FUNNEL_ACTION_ALIASES: dict[str, tuple[str, ...]] = {
+    "add_to_cart": (
+        "omni_add_to_cart",
+        "add_to_cart",
+        "offsite_conversion.fb_pixel_add_to_cart",
+    ),
+    "initiate_checkout": (
+        "omni_initiated_checkout",
+        "initiate_checkout",
+        "offsite_conversion.fb_pixel_initiate_checkout",
+    ),
+    "view_content": (
+        "omni_view_content",
+        "view_content",
+        "offsite_conversion.fb_pixel_view_content",
+    ),
+    "landing_page_view": ("landing_page_view",),
+    "link_click": ("link_click",),
+}
+
+
 def parse_meta_actions(actions: list[dict] | None, action_type: str) -> float:
     if not actions:
         return 0.0
@@ -121,22 +152,44 @@ def parse_meta_actions(actions: list[dict] | None, action_type: str) -> float:
     return 0.0
 
 
-def parse_meta_purchases(actions: list[dict] | None) -> float:
-    for action_type in ("omni_purchase", "purchase", "offsite_conversion.fb_pixel_purchase"):
+def parse_meta_action_first(actions: list[dict] | None, action_types: tuple[str, ...]) -> float:
+    """Return the first matching action value from a preferred type list."""
+    for action_type in action_types:
         count = parse_meta_actions(actions, action_type)
         if count > 0:
             return count
     return 0.0
 
 
+def parse_meta_purchases(actions: list[dict] | None) -> float:
+    return parse_meta_action_first(actions, _PURCHASE_ACTION_TYPES)
+
+
 def parse_meta_purchase_value(action_values: list[dict] | None) -> float:
-    if not action_values:
+    return parse_meta_action_first(action_values, _PURCHASE_ACTION_TYPES)
+
+
+def parse_meta_funnel(actions: list[dict] | None) -> dict[str, float]:
+    """Extract common funnel metrics from Meta actions."""
+    return {
+        key: parse_meta_action_first(actions, aliases)
+        for key, aliases in _FUNNEL_ACTION_ALIASES.items()
+    }
+
+
+def parse_meta_purchase_roas(purchase_roas: list[dict] | None) -> float:
+    """Parse purchase_roas field from Meta insights (ratio, not percentage)."""
+    if not purchase_roas:
         return 0.0
-    for action_type in ("omni_purchase", "purchase", "offsite_conversion.fb_pixel_purchase"):
-        for item in action_values:
-            if item.get("action_type") == action_type:
-                try:
-                    return float(item.get("value") or 0)
-                except (TypeError, ValueError):
-                    return 0.0
-    return 0.0
+    for item in purchase_roas:
+        action_type = item.get("action_type") or ""
+        if action_type in _PURCHASE_ACTION_TYPES or action_type.endswith("purchase"):
+            try:
+                return float(item.get("value") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+    # Fallback: first reported ROAS entry
+    try:
+        return float((purchase_roas[0] or {}).get("value") or 0)
+    except (TypeError, ValueError, IndexError):
+        return 0.0

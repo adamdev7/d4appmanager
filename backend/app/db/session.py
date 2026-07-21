@@ -474,6 +474,64 @@ def _migrate_email_branding_columns() -> None:
                 )
 
 
+def _migrate_analytics_balance_columns() -> None:
+    """Add prior-site revenue + analytics start date for Shopify migrations."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    table = "store_analytics_settings"
+    if table not in insp.get_table_names():
+        return
+
+    cols = {c["name"] for c in insp.get_columns(table)}
+    additions: list[tuple[str, str]] = [
+        ("analytics_start_date", "VARCHAR(10)"),
+        ("prior_external_revenue", "VARCHAR(16) DEFAULT '0'"),
+        ("prior_external_costs", "VARCHAR(16) DEFAULT '0'"),
+        ("prior_external_label", "VARCHAR(64) DEFAULT 'Prior site (Stripe)'"),
+    ]
+    with engine.begin() as conn:
+        for name, col_type in additions:
+            if name in cols:
+                continue
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {col_type}")
+                )
+
+
+def _migrate_analytics_mrr_columns() -> None:
+    """Add opt-in MRR analytics columns (Phoenix / multi-Stripe subscriptions)."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    table = "store_analytics_settings"
+    if table not in insp.get_table_names():
+        return
+
+    cols = {c["name"] for c in insp.get_columns(table)}
+    additions: list[tuple[str, str]] = [
+        ("mrr_enabled", "BOOLEAN DEFAULT 0" if dialect == "sqlite" else "BOOLEAN DEFAULT FALSE"),
+        ("mrr_source", "VARCHAR(32) DEFAULT 'manual'"),
+        ("mrr_manual_amount", "VARCHAR(16) DEFAULT '0'"),
+        ("mrr_manual_subscribers", "INTEGER DEFAULT 0"),
+        ("mrr_manual_churn_pct", "VARCHAR(8) DEFAULT '0'"),
+        ("mrr_webhook_secret_encrypted", "TEXT"),
+        ("mrr_webhook_secret_hint", "VARCHAR(8)"),
+        ("mrr_last_synced_at", "TIMESTAMP" if dialect == "sqlite" else "TIMESTAMPTZ"),
+    ]
+    with engine.begin() as conn:
+        for name, col_type in additions:
+            if name in cols:
+                continue
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {col_type}")
+                )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -483,3 +541,5 @@ def init_db() -> None:
     _migrate_user_openai_key_columns()
     _migrate_order_tracking_summary_columns()
     _migrate_email_branding_columns()
+    _migrate_analytics_balance_columns()
+    _migrate_analytics_mrr_columns()
