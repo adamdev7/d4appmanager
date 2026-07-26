@@ -23,40 +23,61 @@
       rel="stylesheet"
     />
     <title>App Manager</title>
+    <!-- Match home page bg so the shell never flashes white before React paints -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #050505;
+      }
+    </style>
   </head>
   <body>
-    <div id="root">
-      <!--
-        Static, no-JavaScript fallback so search crawlers and Google's OAuth
-        branding verifier can read the app name and purpose from the raw HTML.
-        React replaces this content on load for interactive users.
-      -->
-      <main style="min-height:100vh;margin:0;padding:48px 24px;background:#050505;color:#fff;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column;align-items:center;text-align:center;box-sizing:border-box;">
-        <img src="/app-manager-logo.png" alt="App Manager logo" width="160" height="160" style="width:160px;height:160px;object-fit:contain;border-radius:16px;" />
-        <h1 style="margin:24px 0 4px;font-size:2.25rem;letter-spacing:-0.01em;">App Manager</h1>
-        <p style="margin:0;font-size:0.8rem;letter-spacing:0.28em;text-transform:uppercase;color:rgba(255,255,255,0.65);">Power your business</p>
-        <p style="max-width:640px;margin:28px auto 0;font-size:1.05rem;line-height:1.7;color:rgba(255,255,255,0.8);">
+    <div id="root"></div>
+
+    <!--
+      OAuth branding content for crawlers that read raw HTML / no-JS pages.
+      Kept outside #root and visually hidden so real users never flash this
+      simpler layout before React mounts the real HomePage.
+    -->
+    <div id="oauth-branding" hidden>
+      <h1>App Manager</h1>
+      <p>Power your business</p>
+      <p>
+        App Manager is a multi-store Shopify automation platform. It helps ecommerce
+        teams run email flows through Gmail, reply to customers with AI assistance,
+        track shipments, and review analytics and Meta ads — all from one place.
+      </p>
+      <p>
+        When you connect Gmail, App Manager uses Google OAuth to send and manage
+        business email on your behalf for its Email Automation and AI Email Assistant
+        features. You can disconnect Google access at any time from your settings. How
+        App Manager accesses, uses, stores, and shares Google user data is described in
+        our Privacy Policy.
+      </p>
+      <p><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms of Service</a></p>
+    </div>
+
+    <noscript>
+      <main style="min-height:100vh;margin:0;padding:48px 24px;background:#050505;color:#fff;font-family:Inter,system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;text-align:center;">
+        <img src="/app-manager-logo.png" alt="App Manager logo" width="160" height="160" />
+        <h1>App Manager</h1>
+        <p>Power your business</p>
+        <p style="max-width:640px;">
           App Manager is a multi-store Shopify automation platform. It helps ecommerce
           teams run email flows through Gmail, reply to customers with AI assistance,
-          track shipments, and review analytics and Meta ads &mdash; all from one place.
+          track shipments, and review analytics and Meta ads — all from one place.
         </p>
-        <p style="max-width:640px;margin:20px auto 0;font-size:1rem;line-height:1.7;color:rgba(255,255,255,0.7);">
+        <p style="max-width:640px;">
           When you connect Gmail, App Manager uses Google OAuth to send and manage
           business email on your behalf for its Email Automation and AI Email Assistant
-          features. You can disconnect Google access at any time from your settings. How
-          App Manager accesses, uses, stores, and shares Google user data is described in
-          our Privacy Policy.
+          features. See our <a href="/privacy" style="color:#9FE870;">Privacy Policy</a>
+          and <a href="/terms" style="color:#9FE870;">Terms of Service</a>.
         </p>
-        <p style="margin:32px auto 0;">
-          <a href="/login" style="color:#050505;background:#9FE870;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600;">Sign in to App Manager</a>
-        </p>
-        <p style="margin:24px auto 0;font-size:0.95rem;">
-          <a href="/privacy" style="color:#9FE870;">Privacy Policy</a>
-          &nbsp;&middot;&nbsp;
-          <a href="/terms" style="color:#9FE870;">Terms of Service</a>
-        </p>
+        <p><a href="/login" style="color:#050505;background:#9FE870;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600;">Sign in to App Manager</a></p>
       </main>
-    </div>
+    </noscript>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
