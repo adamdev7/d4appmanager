@@ -36,6 +36,7 @@ from app.integrations.meta.client import (
     parse_meta_video_3s_plays,
 )
 from app.integrations.shopify.client import ShopifyClient
+from app.services.analytics_service import AnalyticsService
 from app.tracking.credentials import mask_api_key_hint
 
 logger = logging.getLogger(__name__)
@@ -908,29 +909,133 @@ class AdsService:
         ).all()
         return [self._serialize_report(r) for r in rows]
 
-    def _build_ai_prompt(self, dashboard: dict, report_type: str) -> tuple[str, str]:
+    async def _fetch_analytics_for_report(
+        self,
+        db: Session,
+        user: User,
+        store_id: str,
+        *,
+        period: str,
+        since: str | None,
+        until: str | None,
+    ) -> dict | None:
+        """Pull Analytics P&L for the same window so AI can use real revenue (incl. MRR shops)."""
+        analytics = AnalyticsService()
+        try:
+            if period == "all":
+                dash = await analytics.get_dashboard(db, user, store_id, "all")
+            else:
+                if not since or not until:
+                    return None
+                dash = await analytics.get_dashboard(
+                    db,
+                    user,
+                    store_id,
+                    "custom",
+                    custom_since=since,
+                    custom_until=until,
+                )
+        except HTTPException as e:
+            logger.info("Analytics snapshot skipped for ads report: %s", e.detail)
+            return None
+        except Exception as e:
+            logger.warning("Analytics snapshot failed for ads report: %s", e)
+            return None
+
+        summary = dash.get("summary") or {}
+        mrr = dash.get("mrr") or {}
+        mrr_enabled = bool(mrr.get("enabled"))
+        return {
+            "date_range": dash.get("date_range"),
+            "currency": dash.get("currency"),
+            "store_currency": dash.get("store_currency"),
+            "is_mrr_shop": mrr_enabled,
+            "revenue_source": summary.get("revenue_source"),
+            "business_revenue": summary.get("revenue"),
+            "shopify_revenue": summary.get("shopify_revenue"),
+            "stripe_revenue_gross": summary.get("stripe_revenue_gross"),
+            "stripe_revenue_net": summary.get("stripe_revenue_net"),
+            "stripe_subscription_gross": summary.get("stripe_subscription_gross"),
+            "stripe_one_time_gross": summary.get("stripe_one_time_gross"),
+            "ad_spend": summary.get("ad_spend"),
+            "mer": summary.get("mer"),
+            "roas_on_business_revenue": summary.get("roas"),
+            "meta_roas": summary.get("meta_roas"),
+            "meta_purchase_value": summary.get("meta_purchase_value"),
+            "meta_purchases": summary.get("meta_purchases"),
+            "net_profit": summary.get("net_profit"),
+            "gross_profit": summary.get("gross_profit"),
+            "orders": summary.get("orders"),
+            "aov": summary.get("aov"),
+            "cpa": summary.get("cpa"),
+            "attribution_gap": summary.get("attribution_gap"),
+            "attribution_coverage_pct": summary.get("attribution_coverage_pct"),
+            "mrr": {
+                "enabled": mrr_enabled,
+                "source": mrr.get("source"),
+                "mrr": mrr.get("mrr"),
+                "arr": mrr.get("arr"),
+                "subscribers": mrr.get("subscribers"),
+                "arpu": mrr.get("arpu"),
+                "churn_pct": mrr.get("churn_pct"),
+                "mrr_delta": mrr.get("mrr_delta"),
+                "currency": mrr.get("currency"),
+            }
+            if mrr_enabled
+            else {"enabled": False},
+            "guidance": (
+                "This shop has MRR / Analytics revenue enabled. Treat analytics.business_revenue "
+                "(and Stripe/MRR fields) as the source of truth for efficiency. Do NOT use Meta "
+                "purchase_value or platform ROAS as P&L revenue."
+                if mrr_enabled
+                else (
+                    "Use analytics.business_revenue for store-truth revenue vs Meta purchase_value. "
+                    "Meta purchase_value is directional only."
+                )
+            ),
+        }
+
+    def _build_ai_prompt(
+        self,
+        dashboard: dict,
+        report_type: str,
+        *,
+        analytics: dict | None = None,
+    ) -> tuple[str, str]:
         summary = dashboard.get("summary") or {}
         alerts = dashboard.get("alerts") or []
         campaigns = (dashboard.get("campaigns") or [])[:10]
         ads = (dashboard.get("ads") or [])[:15]
         missed = dashboard.get("missed_angles") or []
         attribution = dashboard.get("attribution") or {}
+        is_mrr = bool((analytics or {}).get("is_mrr_shop"))
 
         system = (
             "You are an expert Meta Ads analyst for e-commerce brands. "
             "Write clear, actionable reports for a store owner who is not a media buyer. "
             "Prefer MER, nCAC, hook rate, frequency, outbound CTR, and funnel drop-offs over vanity metrics. "
+            "CRITICAL: Meta purchase_value and platform ROAS are NOT business truth — they are often inflated. "
+            "When ANALYTICS_DATA is present, use analytics.business_revenue, analytics.mer, analytics.net_profit, "
+            "and analytics.mrr as the source of truth for revenue and efficiency for the requested timeframe. "
+            "If analytics.is_mrr_shop is true, this is an MRR / subscription shop: emphasize recurring revenue, "
+            "subscribers, churn, and Stripe/MRR figures from Analytics — never judge success only on Meta purchases. "
+            "Compare Meta-attributed purchase_value to analytics.business_revenue and call out the gap. "
             "Call out what looks healthy vs what needs checking. "
             "Never invent numbers — only use the JSON provided. "
             "Respond in Markdown with sections: Executive summary, What's working, "
             "Needs attention, Creative notes, Recommended actions (3–5 bullets)."
+            + (
+                " Add a short 'MRR / Analytics lens' section that ties ad spend to recurring revenue health."
+                if is_mrr
+                else ""
+            )
         )
         payload = {
             "report_type": report_type,
             "period": dashboard.get("period"),
             "range": {"since": dashboard.get("since"), "until": dashboard.get("until")},
             "currency": dashboard.get("currency"),
-            "summary": summary,
+            "meta_ads_summary": summary,
             "attribution": attribution,
             "alerts": alerts,
             "missed_angles": missed,
@@ -938,11 +1043,20 @@ class AdsService:
             "top_ads": ads,
             "winners": dashboard.get("winners") or [],
             "needs_check": dashboard.get("needs_check") or [],
+            "analytics": analytics,
+            "measurement_rules": {
+                "prefer_analytics_revenue": True,
+                "meta_purchase_value_is_directional_only": True,
+                "mrr_shop": is_mrr,
+            },
         }
         user_msg = (
             f"Generate a {report_type.replace('_', ' ')} Meta Ads performance report "
-            f"for this e-commerce store.\n\n"
-            f"DATA:\n```json\n{json.dumps(payload, default=str)[:14000]}\n```"
+            f"for this e-commerce store for the selected timeframe.\n\n"
+            f"Use ANALYTICS_DATA for real revenue / MER / profit"
+            f"{' (MRR shop — prioritize subscription revenue)' if is_mrr else ''}. "
+            f"Use META_ADS data for creative/delivery health and campaign diagnostics.\n\n"
+            f"DATA:\n```json\n{json.dumps(payload, default=str)[:16000]}\n```"
         )
         return system, user_msg
 
@@ -989,7 +1103,17 @@ class AdsService:
         if not dashboard.get("meta_configured"):
             raise HTTPException(status_code=400, detail="Connect Meta Ads before generating a report")
 
-        system, user_msg = self._build_ai_prompt(dashboard, report_type)
+        analytics_snapshot = await self._fetch_analytics_for_report(
+            db,
+            user,
+            store_id,
+            period=period,
+            since=dashboard.get("since"),
+            until=dashboard.get("until"),
+        )
+        system, user_msg = self._build_ai_prompt(
+            dashboard, report_type, analytics=analytics_snapshot
+        )
         model = settings.openai_model
         ai = AIService(model=model, api_key=api_key)
 

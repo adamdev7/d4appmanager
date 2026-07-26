@@ -103,7 +103,8 @@ export function AdsReportTimeframeModal({
               Report timeframe
             </h2>
             <p className="text-sm text-content-muted mt-0.5">
-              Choose the period for this AI ads analysis.
+              Choose the period for this AI ads analysis. Revenue comes from Analytics for the same
+              window (MRR shops included) — not only Meta purchase value.
             </p>
           </div>
           <button

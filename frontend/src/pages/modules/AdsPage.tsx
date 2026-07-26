@@ -376,7 +376,9 @@ export function AdsPage() {
             <CardHeader>
               <CardTitle>AI campaign reports</CardTitle>
               <CardDescription>
-                Uses your AI Email Assistant OpenAI key after you opt in under Settings.
+                Uses your AI Email Assistant OpenAI key after you opt in under Settings. Reports pull
+                Meta ads plus Analytics revenue for the same timeframe — including MRR/Stripe when
+                that shop is an MRR business.
               </CardDescription>
             </CardHeader>
             <div className="flex flex-wrap gap-2">
