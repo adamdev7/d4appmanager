@@ -732,7 +732,12 @@ export const api = {
       request<AdsAiReport[]>(`/ads/stores/${storeId}/reports`),
     generateReport: (
       storeId: string,
-      data: { report_type?: string; period?: Exclude<AdsPeriod, "custom"> } = {}
+      data: {
+        report_type?: string;
+        period?: AdsPeriod;
+        since?: string;
+        until?: string;
+      } = {}
     ) =>
       request<AdsAiReport>(`/ads/stores/${storeId}/reports/generate`, {
         method: "POST",

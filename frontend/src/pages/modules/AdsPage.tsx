@@ -33,6 +33,7 @@ import {
   MissedAnglesGrid,
 } from "@/components/ads/AdsTables";
 import { AdsSettingsPanel } from "@/components/ads/AdsSettingsPanel";
+import { AdsReportTimeframeModal } from "@/components/ads/AdsReportTimeframeModal";
 
 type Tab = "dashboard" | "reports" | "settings";
 
@@ -92,6 +93,7 @@ export function AdsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
   const [error, setError] = useState("");
   const [reportError, setReportError] = useState("");
 
@@ -189,17 +191,29 @@ export function AdsPage() {
     setCalendarOpen(false);
   };
 
-  const generateReport = async (reportType: "on_demand" | "daily" | "weekly" = "on_demand") => {
+  const openReportModal = () => {
+    setReportError("");
+    setReportModalOpen(true);
+  };
+
+  const generateReport = async (opts: {
+    period: AdsPeriod;
+    since?: string;
+    until?: string;
+  }) => {
     if (!storeId) return;
     setGenerating(true);
     setReportError("");
     try {
       const report = await api.ads.generateReport(storeId, {
-        report_type: reportType,
-        period: reportType === "weekly" ? "30d" : "7d",
+        report_type: "on_demand",
+        period: opts.period,
+        since: opts.since,
+        until: opts.until,
       });
       setActiveReport(report);
       setReports((prev) => [report, ...prev.filter((r) => r.id !== report.id)]);
+      setReportModalOpen(false);
       setTab("reports");
     } catch (err) {
       setReportError(err instanceof Error ? err.message : "Report generation failed");
@@ -366,16 +380,9 @@ export function AdsPage() {
               </CardDescription>
             </CardHeader>
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => generateReport("on_demand")} disabled={generating}>
+              <Button onClick={openReportModal} disabled={generating}>
                 <Sparkles className="h-4 w-4" />
                 {generating ? "Analyzing…" : "Generate report now"}
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => generateReport("weekly")}
-                disabled={generating}
-              >
-                Weekly deep dive
               </Button>
             </div>
             {reportError && (
@@ -543,7 +550,7 @@ export function AdsPage() {
           <div className="flex flex-wrap gap-2">
             <Button
               variant="secondary"
-              onClick={() => generateReport("on_demand")}
+              onClick={openReportModal}
               disabled={generating || !settings?.ai_reports_consent}
             >
               <Sparkles className="h-4 w-4" />
@@ -578,6 +585,16 @@ export function AdsPage() {
           <AdsCreativesTable rows={dashboard.ads.slice(0, 40)} currency={currency} />
         </div>
       )}
+
+      <AdsReportTimeframeModal
+        open={reportModalOpen}
+        generating={generating}
+        defaultPeriod={period}
+        defaultSince={period === "custom" ? appliedSince : dashboard?.since}
+        defaultUntil={period === "custom" ? appliedUntil : dashboard?.until}
+        onClose={() => !generating && setReportModalOpen(false)}
+        onConfirm={generateReport}
+      />
     </div>
   );
 }

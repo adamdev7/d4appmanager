@@ -1,4 +1,4 @@
-export type AdsPeriod = "7d" | "30d" | "90d" | "all" | "custom";
+export type AdsPeriod = "1d" | "7d" | "14d" | "30d" | "90d" | "all" | "custom";
 
 export type AdsEntityRow = {
   id: string;

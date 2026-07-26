@@ -14,7 +14,7 @@ _service = AdsService()
 @router.get("/stores/{store_id}/overview")
 async def ads_overview(
     store_id: str,
-    period: str = Query("30d", pattern="^(7d|30d|90d|all|custom)$"),
+    period: str = Query("30d", pattern="^(1d|7d|14d|30d|90d|all|custom)$"),
     since: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     until: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     run_scheduled: bool = Query(False),
@@ -86,4 +86,6 @@ async def generate_ads_report(
         store_id,
         report_type=body.report_type,
         period=body.period,
+        custom_since=body.since,
+        custom_until=body.until,
     )

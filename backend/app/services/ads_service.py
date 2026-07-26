@@ -240,11 +240,16 @@ class AdsService:
                     start = start.replace(tzinfo=UTC)
             else:
                 start = datetime(2010, 1, 1, tzinfo=UTC)
+        elif period == "1d":
+            start = end
         elif period == "7d":
             start = end - timedelta(days=6)
+        elif period == "14d":
+            start = end - timedelta(days=13)
         elif period == "90d":
             start = end - timedelta(days=89)
         else:
+            # 30d default
             start = end - timedelta(days=29)
 
         start = start.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -949,6 +954,8 @@ class AdsService:
         *,
         report_type: str = "on_demand",
         period: str = "7d",
+        custom_since: str | None = None,
+        custom_until: str | None = None,
     ) -> dict:
         self._ensure_store(db, user, store_id)
         ads_settings = self.get_or_create_ads_settings(db, store_id)
@@ -971,7 +978,14 @@ class AdsService:
                 detail="Add your OpenAI API key in AI Email Assistant → Business context first",
             )
 
-        dashboard = await self.get_dashboard(db, user, store_id, period)
+        dashboard = await self.get_dashboard(
+            db,
+            user,
+            store_id,
+            period,
+            custom_since=custom_since,
+            custom_until=custom_until,
+        )
         if not dashboard.get("meta_configured"):
             raise HTTPException(status_code=400, detail="Connect Meta Ads before generating a report")
 
@@ -1001,10 +1015,22 @@ class AdsService:
             if len(" ".join(summary_lines)) > 280:
                 break
         summary = " ".join(summary_lines)[:400]
+        period_labels = {
+            "1d": "Daily",
+            "7d": "7-day",
+            "14d": "14-day",
+            "30d": "30-day",
+            "90d": "90-day",
+            "all": "All-time",
+            "custom": "Custom-range",
+        }
+        range_note = ""
+        if dashboard.get("since") and dashboard.get("until"):
+            range_note = f" ({dashboard['since']} → {dashboard['until']})"
         title_map = {
             "daily": "Daily Ads Report",
             "weekly": "Weekly Ads Report",
-            "on_demand": "Ads Performance Analysis",
+            "on_demand": f"{period_labels.get(period, 'Ads')} Report{range_note}",
         }
         report = AdsAiReport(
             store_id=store_id,
