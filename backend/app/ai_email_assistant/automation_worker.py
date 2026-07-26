@@ -62,6 +62,18 @@ async def run_automation_for_settings(settings_id: str, *, force: bool = False) 
             }
 
         store_id = settings_row.store_id
+        if not store_id:
+            stop_autopilot(
+                db,
+                settings_row,
+                "AI Email Assistant must be linked to a store. Open the module with a store selected.",
+            )
+            return {
+                "ok": False,
+                "stopped": True,
+                "error": settings_row.automation_last_error,
+            }
+
         max_emails = settings_row.automation_max_emails_per_run
 
         await _service.sync_inbox(
@@ -113,6 +125,9 @@ async def run_due_automations() -> None:
         ).all()
         now = datetime.now(UTC)
         for row in rows:
+            if not row.store_id:
+                # Legacy user-wide settings — skip until migrated to a store
+                continue
             interval = max(5, min(row.automation_interval_minutes, 120))
             due = True
             if row.automation_last_run_at:

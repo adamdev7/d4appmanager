@@ -219,33 +219,57 @@ export function AIEmailAssistantPage() {
   const selected = selectedId ? inbox.find((e) => e.id === selectedId) ?? null : null;
 
   const loadAccounts = useCallback(async () => {
-    const data = await api.gmail.accounts(activeStore?.id);
+    if (!activeStore?.id) {
+      setAccounts([]);
+      return [];
+    }
+    const data = await api.gmail.accounts(activeStore.id);
     setAccounts(data as GmailAccount[]);
     return data as GmailAccount[];
   }, [activeStore?.id]);
 
   const loadInbox = useCallback(async () => {
-    const data = await api.aiEmailAssistant.inbox(activeStore?.id);
+    if (!activeStore?.id) {
+      setInbox([]);
+      return;
+    }
+    const data = await api.aiEmailAssistant.inbox(activeStore.id);
     setInbox(data as InboxItem[]);
     setSelectedId((prev) => prev ?? (data as InboxItem[])[0]?.id ?? null);
   }, [activeStore?.id]);
 
   const loadSettings = useCallback(async () => {
-    const s = await api.aiEmailAssistant.settings(activeStore?.id);
+    if (!activeStore?.id) {
+      setSettings(null);
+      return;
+    }
+    const s = await api.aiEmailAssistant.settings(activeStore.id);
     setSettings(s as Settings);
   }, [activeStore?.id]);
 
   const loadLogs = useCallback(async () => {
-    const l = await api.aiEmailAssistant.logs();
+    if (!activeStore?.id) {
+      setLogs([]);
+      return;
+    }
+    const l = await api.aiEmailAssistant.logs(activeStore.id);
     setLogs(l as LogEntry[]);
-  }, []);
+  }, [activeStore?.id]);
 
   const loadStats = useCallback(async () => {
-    const s = await api.aiEmailAssistant.stats(activeStore?.id);
+    if (!activeStore?.id) {
+      setStats(null);
+      return;
+    }
+    const s = await api.aiEmailAssistant.stats(activeStore.id);
     setStats(s as AssistantStats);
   }, [activeStore?.id]);
 
   const loadAll = useCallback(async () => {
+    if (!activeStore?.id) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
@@ -256,7 +280,7 @@ export function AIEmailAssistantPage() {
     } finally {
       setLoading(false);
     }
-  }, [loadAccounts, loadInbox, loadSettings, loadLogs, loadStats]);
+  }, [activeStore?.id, loadAccounts, loadInbox, loadSettings, loadLogs, loadStats]);
 
   useEffect(() => {
     loadAll();
@@ -292,14 +316,14 @@ export function AIEmailAssistantPage() {
     setError("");
     setScanResultMessage("Starting full inbox check…");
     try {
-      await api.aiEmailAssistant.fullHistoryScan(accId, 100, activeStore?.id);
+      await api.aiEmailAssistant.fullHistoryScan(accId, 100, activeStore.id);
 
       // Poll status — scan runs in the background to avoid gateway timeouts.
       const started = Date.now();
       const maxWaitMs = 30 * 60 * 1000;
       while (Date.now() - started < maxWaitMs) {
         await new Promise((r) => setTimeout(r, 2000));
-        const status = await api.aiEmailAssistant.fullHistoryScanStatus(activeStore?.id);
+        const status = await api.aiEmailAssistant.fullHistoryScanStatus(activeStore.id);
         if (status.message) {
           setScanResultMessage(
             status.status === "running" && status.total
@@ -335,7 +359,7 @@ export function AIEmailAssistantPage() {
     setError("");
     try {
       await api.aiEmailAssistant.unskipEmail(emailId);
-      const reply = await api.aiEmailAssistant.generateReply(emailId, activeStore?.id);
+      const reply = await api.aiEmailAssistant.generateReply(emailId, activeStore.id);
       setDraftEdit(reply.effective_body);
       await loadInbox();
     } catch (err) {
@@ -349,7 +373,7 @@ export function AIEmailAssistantPage() {
     setActionId(emailId);
     setError("");
     try {
-      const reply = await api.aiEmailAssistant.generateReply(emailId, activeStore?.id);
+      const reply = await api.aiEmailAssistant.generateReply(emailId, activeStore.id);
       setDraftEdit(reply.effective_body);
       await loadInbox();
     } catch (err) {
@@ -477,7 +501,7 @@ export function AIEmailAssistantPage() {
           verify_gmail_thread_before_reply: settings.verify_gmail_thread_before_reply,
           use_thread_context: settings.use_thread_context,
         },
-        activeStore?.id
+        activeStore.id
       );
       await loadSettings();
       setSettingsSaved(true);
@@ -493,7 +517,7 @@ export function AIEmailAssistantPage() {
     setRunningAutomation(true);
     setError("");
     try {
-      const result = await api.aiEmailAssistant.runAutomation(activeStore?.id);
+      const result = await api.aiEmailAssistant.runAutomation(activeStore.id);
       await Promise.all([loadInbox(), loadSettings(), loadLogs(), loadStats()]);
       if (result.stopped && result.error) {
         setError(result.error);
@@ -522,7 +546,7 @@ export function AIEmailAssistantPage() {
     ? [
         {
           done: Boolean(connectedAccount),
-          label: "Connect Gmail",
+          label: "Connect Gmail to this store",
           action: () => setTab("settings"),
         },
         {
@@ -538,14 +562,36 @@ export function AIEmailAssistantPage() {
       ]
     : [];
 
+  if (!activeStore) {
+    return (
+      <div className="max-w-2xl mx-auto">
+        <Card padding="lg">
+          <CardTitle>Select a store</CardTitle>
+          <CardDescription className="mt-2">
+            AI Email Assistant is per store — each store can use its own Gmail inbox and
+            business rules. Choose a store from the sidebar, or{" "}
+            <Link to="/settings/stores" className="text-brand-600 hover:underline">
+              connect your Shopify store
+            </Link>
+            .
+          </CardDescription>
+        </Card>
+      </div>
+    );
+  }
+
+  const storeId = activeStore.id;
+
   return (
     <div className="space-y-6 max-w-6xl">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-content tracking-tight">AI Email Assistant</h1>
           <p className="text-content-muted mt-1 max-w-xl text-sm leading-relaxed">
-            Read customer emails, draft replies in your brand voice, and send through Gmail —
-            manually or on autopilot.
+            Read customer emails for{" "}
+            <strong className="text-content">{activeStore.name}</strong>, draft replies in
+            your brand voice, and send through this store&apos;s Gmail — manually or on
+            autopilot.
           </p>
           {settings && (
             <div className="flex flex-wrap gap-2 mt-3">

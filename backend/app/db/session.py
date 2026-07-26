@@ -602,6 +602,130 @@ def _migrate_verification_code_attempts() -> None:
             )
 
 
+def _migrate_ai_email_null_store_scope() -> None:
+    """Attach legacy user-wide AI settings/inbox rows to each user's first store."""
+    insp = inspect(engine)
+    if "ai_email_assistant_settings" not in insp.get_table_names():
+        return
+    if "stores" not in insp.get_table_names():
+        return
+
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            # Drop orphan user-wide settings when a store-scoped row already exists
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM ai_email_assistant_settings
+                    WHERE store_id IS NULL
+                      AND EXISTS (
+                        SELECT 1 FROM ai_email_assistant_settings a2
+                        WHERE a2.user_id = ai_email_assistant_settings.user_id
+                          AND a2.store_id IS NOT NULL
+                      )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE ai_email_assistant_settings
+                    SET store_id = (
+                        SELECT s.id FROM stores s
+                        WHERE s.owner_id = ai_email_assistant_settings.user_id
+                        ORDER BY s.created_at ASC
+                        LIMIT 1
+                    )
+                    WHERE store_id IS NULL
+                      AND EXISTS (
+                        SELECT 1 FROM stores s
+                        WHERE s.owner_id = ai_email_assistant_settings.user_id
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM ai_email_assistant_settings a2
+                        WHERE a2.user_id = ai_email_assistant_settings.user_id
+                          AND a2.store_id = (
+                            SELECT s.id FROM stores s
+                            WHERE s.owner_id = ai_email_assistant_settings.user_id
+                            ORDER BY s.created_at ASC
+                            LIMIT 1
+                          )
+                      )
+                    """
+                )
+            )
+            if "inbox_emails" in insp.get_table_names():
+                conn.execute(
+                    text(
+                        """
+                        UPDATE inbox_emails
+                        SET store_id = (
+                            SELECT s.id FROM stores s
+                            WHERE s.owner_id = inbox_emails.user_id
+                            ORDER BY s.created_at ASC
+                            LIMIT 1
+                        )
+                        WHERE store_id IS NULL
+                          AND EXISTS (
+                            SELECT 1 FROM stores s
+                            WHERE s.owner_id = inbox_emails.user_id
+                          )
+                        """
+                    )
+                )
+        elif dialect == "postgresql":
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM ai_email_assistant_settings a
+                    WHERE a.store_id IS NULL
+                      AND EXISTS (
+                        SELECT 1 FROM ai_email_assistant_settings a2
+                        WHERE a2.user_id = a.user_id
+                          AND a2.store_id IS NOT NULL
+                      )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE ai_email_assistant_settings AS a
+                    SET store_id = s.id
+                    FROM (
+                        SELECT DISTINCT ON (owner_id) id, owner_id
+                        FROM stores
+                        ORDER BY owner_id, created_at ASC
+                    ) AS s
+                    WHERE a.store_id IS NULL
+                      AND a.user_id = s.owner_id
+                      AND NOT EXISTS (
+                        SELECT 1 FROM ai_email_assistant_settings a2
+                        WHERE a2.user_id = a.user_id
+                          AND a2.store_id = s.id
+                      )
+                    """
+                )
+            )
+            if "inbox_emails" in insp.get_table_names():
+                conn.execute(
+                    text(
+                        """
+                        UPDATE inbox_emails AS i
+                        SET store_id = s.id
+                        FROM (
+                            SELECT DISTINCT ON (owner_id) id, owner_id
+                            FROM stores
+                            ORDER BY owner_id, created_at ASC
+                        ) AS s
+                        WHERE i.store_id IS NULL
+                          AND i.user_id = s.owner_id
+                        """
+                    )
+                )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -615,3 +739,4 @@ def init_db() -> None:
     _migrate_analytics_mrr_columns()
     _migrate_sync_delivered_to_shopify_column()
     _migrate_verification_code_attempts()
+    _migrate_ai_email_null_store_scope()

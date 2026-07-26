@@ -194,8 +194,9 @@ async def get_stats(
 
 @router.get("/logs")
 async def list_ai_logs(
+    store_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
-    return _service.list_reply_logs(db, user, limit=limit)
+    return _service.list_reply_logs(db, user, store_id=store_id, limit=limit)

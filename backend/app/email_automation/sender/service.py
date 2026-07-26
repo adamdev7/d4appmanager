@@ -21,7 +21,14 @@ class EmailSenderService:
         if preferred_gmail_account_id:
             account = self._db.get(GmailAccount, preferred_gmail_account_id)
             if account and account.status == GmailAccountStatus.CONNECTED.value:
-                return account.id
+                linked = self._db.scalar(
+                    select(GmailStoreLink.id).where(
+                        GmailStoreLink.gmail_account_id == preferred_gmail_account_id,
+                        GmailStoreLink.store_id == store_id,
+                    )
+                )
+                if linked:
+                    return account.id
 
         linked = self._db.scalar(
             select(GmailAccount)
@@ -31,16 +38,7 @@ class EmailSenderService:
                 GmailAccount.status == GmailAccountStatus.CONNECTED.value,
             )
         )
-        if linked:
-            return linked.id
-
-        default = self._db.scalar(
-            select(GmailAccount).where(
-                GmailAccount.is_default_sender.is_(True),
-                GmailAccount.status == GmailAccountStatus.CONNECTED.value,
-            )
-        )
-        return default.id if default else None
+        return linked.id if linked else None
 
     async def send_automation_email(
         self,

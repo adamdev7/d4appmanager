@@ -29,8 +29,10 @@ from app.db.models import (
     AIReplyStatus,
     GmailAccount,
     GmailAccountStatus,
+    GmailStoreLink,
     InboxEmail,
     InboxEmailStatus,
+    Store,
     User,
 )
 from app.integrations.gmail.inbox_client import GmailInboxClient
@@ -52,46 +54,73 @@ logger = logging.getLogger(__name__)
 
 
 class AIEmailAssistantService:
+    def _ensure_store(self, db: Session, user: User, store_id: str | None) -> Store:
+        if not store_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Select a store for the AI Email Assistant. Settings and inbox are per store.",
+            )
+        store = db.get(Store, store_id)
+        if not store or store.owner_id != user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Store not found")
+        return store
+
+    def _gmail_linked_to_store(self, db: Session, *, gmail_account_id: str, store_id: str) -> bool:
+        return (
+            db.scalar(
+                select(GmailStoreLink.id).where(
+                    GmailStoreLink.gmail_account_id == gmail_account_id,
+                    GmailStoreLink.store_id == store_id,
+                )
+            )
+            is not None
+        )
+
     def resolve_gmail_account_id(
         self, db: Session, user: User, settings_row: AIEmailAssistantSettings
     ) -> str | None:
+        """Resolve Gmail for this store only — never fall back to another store's mailbox."""
+        store_id = settings_row.store_id
+        if not store_id:
+            return None
+
         if settings_row.gmail_account_id:
             acc = db.get(GmailAccount, settings_row.gmail_account_id)
-            if acc and acc.owner_id == user.id and acc.status == GmailAccountStatus.CONNECTED.value:
+            if (
+                acc
+                and acc.owner_id == user.id
+                and acc.status == GmailAccountStatus.CONNECTED.value
+                and self._gmail_linked_to_store(
+                    db, gmail_account_id=acc.id, store_id=store_id
+                )
+            ):
                 return acc.id
-        acc = db.scalar(
-            select(GmailAccount)
-            .where(
-                GmailAccount.owner_id == user.id,
-                GmailAccount.status == GmailAccountStatus.CONNECTED.value,
-                GmailAccount.is_default_sender.is_(True),
-            )
-            .limit(1)
-        )
-        if acc:
-            return acc.id
-        acc = db.scalar(
-            select(GmailAccount)
-            .where(
-                GmailAccount.owner_id == user.id,
-                GmailAccount.status == GmailAccountStatus.CONNECTED.value,
-            )
-            .limit(1)
-        )
-        return acc.id if acc else None
 
-    def _settings_query(self, user_id: str, store_id: str | None):
-        q = select(AIEmailAssistantSettings).where(AIEmailAssistantSettings.user_id == user_id)
-        if store_id is None:
-            return q.where(AIEmailAssistantSettings.store_id.is_(None))
-        return q.where(AIEmailAssistantSettings.store_id == store_id)
+        linked = db.scalar(
+            select(GmailAccount)
+            .join(GmailStoreLink, GmailStoreLink.gmail_account_id == GmailAccount.id)
+            .where(
+                GmailStoreLink.store_id == store_id,
+                GmailAccount.owner_id == user.id,
+                GmailAccount.status == GmailAccountStatus.CONNECTED.value,
+            )
+            .order_by(GmailAccount.is_default_sender.desc())
+            .limit(1)
+        )
+        return linked.id if linked else None
 
     def get_or_create_settings(
         self, db: Session, user: User, store_id: str | None = None
     ) -> AIEmailAssistantSettings:
-        row = db.scalar(self._settings_query(user.id, store_id))
+        store = self._ensure_store(db, user, store_id)
+        row = db.scalar(
+            select(AIEmailAssistantSettings).where(
+                AIEmailAssistantSettings.user_id == user.id,
+                AIEmailAssistantSettings.store_id == store.id,
+            )
+        )
         if not row:
-            row = AIEmailAssistantSettings(user_id=user.id, store_id=store_id)
+            row = AIEmailAssistantSettings(user_id=user.id, store_id=store.id)
             db.add(row)
             db.commit()
             db.refresh(row)
@@ -132,6 +161,7 @@ class AIEmailAssistantService:
     def get_settings_response(
         self, db: Session, user: User, store_id: str | None = None
     ) -> AIEmailAssistantSettingsResponse:
+        self._ensure_store(db, user, store_id)
         row = self.get_or_create_settings(db, user, store_id)
         key_info = openai_key_status(user)
         return AIEmailAssistantSettingsResponse(
@@ -171,12 +201,20 @@ class AIEmailAssistantService:
         data: AIEmailAssistantSettingsUpdate,
         store_id: str | None = None,
     ) -> AIEmailAssistantSettingsResponse:
+        store = self._ensure_store(db, user, store_id)
         if data.gmail_account_id:
             acc = db.get(GmailAccount, data.gmail_account_id)
             if not acc or acc.owner_id != user.id:
                 raise HTTPException(status_code=400, detail="Invalid Gmail account")
+            if not self._gmail_linked_to_store(
+                db, gmail_account_id=acc.id, store_id=store.id
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="That Gmail account is not linked to this store. Connect it under Settings → Gmail for this store.",
+                )
 
-        row = self.get_or_create_settings(db, user, store_id)
+        row = self.get_or_create_settings(db, user, store.id)
         row.business_name = data.business_name
         row.business_type = data.business_type
         row.tone_of_voice = data.tone_of_voice
@@ -198,7 +236,7 @@ class AIEmailAssistantService:
         row.verify_gmail_thread_before_reply = data.verify_gmail_thread_before_reply
         row.use_thread_context = data.use_thread_context
         db.commit()
-        return self.get_settings_response(db, user, store_id)
+        return self.get_settings_response(db, user, store.id)
 
     async def _fetch_customer_context(
         self,
@@ -432,15 +470,16 @@ class AIEmailAssistantService:
     def list_inbox(
         self, db: Session, user: User, *, store_id: str | None = None, limit: int = 50
     ) -> list[InboxEmailResponse]:
-        q = (
+        store = self._ensure_store(db, user, store_id)
+        emails = db.scalars(
             select(InboxEmail)
-            .where(InboxEmail.user_id == user.id)
+            .where(
+                InboxEmail.user_id == user.id,
+                InboxEmail.store_id == store.id,
+            )
             .order_by(InboxEmail.received_at.desc())
             .limit(limit)
-        )
-        if store_id:
-            q = q.where(InboxEmail.store_id == store_id)
-        emails = db.scalars(q).all()
+        ).all()
         return [self._serialize_inbox(e) for e in emails]
 
     async def sync_inbox(
@@ -452,13 +491,21 @@ class AIEmailAssistantService:
         store_id: str | None = None,
         max_results: int = 15,
     ) -> list[InboxEmailResponse]:
+        store = self._ensure_store(db, user, store_id)
         account = db.get(GmailAccount, gmail_account_id)
         if not account or account.owner_id != user.id:
             raise HTTPException(status_code=404, detail="Gmail account not found")
         if account.status != GmailAccountStatus.CONNECTED.value:
             raise HTTPException(status_code=400, detail="Gmail account is not connected")
+        if not self._gmail_linked_to_store(
+            db, gmail_account_id=account.id, store_id=store.id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Gmail account is not linked to this store. Connect it under Settings → Gmail.",
+            )
 
-        settings_row = self.get_or_create_settings(db, user, store_id)
+        settings_row = self.get_or_create_settings(db, user, store.id)
         client = GmailInboxClient(db)
         summaries = await client.list_unread_messages(
             account,
@@ -502,7 +549,7 @@ class AIEmailAssistantService:
             sender_email = client.parse_sender_email(detail.sender)
             row = InboxEmail(
                 user_id=user.id,
-                store_id=store_id,
+                store_id=store.id,
                 gmail_account_id=account.id,
                 gmail_message_id=detail.message_id,
                 thread_id=detail.thread_id,
@@ -527,7 +574,7 @@ class AIEmailAssistantService:
                 await self._mark_email_read_in_gmail(db, row, account)
 
         await self.process_pending_replies(
-            db, user, settings_row, store_id=store_id, limit=max_results
+            db, user, settings_row, store_id=store.id, limit=max_results
         )
 
         # After replies, clear UNREAD again for anything that ended as skipped/processed.
@@ -541,7 +588,7 @@ class AIEmailAssistantService:
             ):
                 await self._mark_email_read_in_gmail(db, row, account)
 
-        all_recent = self.list_inbox(db, user, store_id=store_id, limit=max_results)
+        all_recent = self.list_inbox(db, user, store_id=store.id, limit=max_results)
         return all_recent
 
     async def start_full_history_scan(
@@ -577,11 +624,20 @@ class AIEmailAssistantService:
                 detail="Add your OpenAI API key before running a full inbox check.",
             )
 
-        settings_row = self.get_or_create_settings(db, user, store_id)
+        store = self._ensure_store(db, user, store_id)
+        if not self._gmail_linked_to_store(
+            db, gmail_account_id=account.id, store_id=store.id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Gmail account is not linked to this store. Connect it under Settings → Gmail.",
+            )
+
+        settings_row = self.get_or_create_settings(db, user, store.id)
         from app.ai_email_assistant.full_scan_worker import is_scan_running
 
         if settings_row.full_scan_status == "running" and is_scan_running(settings_row.id):
-            return self.get_full_scan_status(db, user, store_id=store_id)
+            return self.get_full_scan_status(db, user, store_id=store.id)
 
         settings_row.full_scan_status = "running"
         settings_row.full_scan_message = "Starting full inbox check…"
@@ -595,11 +651,11 @@ class AIEmailAssistantService:
             settings_id=settings_row.id,
             user_id=user.id,
             gmail_account_id=gmail_account_id,
-            store_id=store_id,
+            store_id=store.id,
             max_threads=max_threads,
         )
         if not started:
-            return self.get_full_scan_status(db, user, store_id=store_id)
+            return self.get_full_scan_status(db, user, store_id=store.id)
 
         return FullHistoryScanResponse(
             status="running",
@@ -670,7 +726,16 @@ class AIEmailAssistantService:
                 detail="Add your OpenAI API key before running a full inbox check.",
             )
 
-        settings_row = self.get_or_create_settings(db, user, store_id)
+        store = self._ensure_store(db, user, store_id)
+        if not self._gmail_linked_to_store(
+            db, gmail_account_id=account.id, store_id=store.id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Gmail account is not linked to this store. Connect it under Settings → Gmail.",
+            )
+
+        settings_row = self.get_or_create_settings(db, user, store.id)
         client = GmailInboxClient(db)
         if progress_cb:
             progress_cb(0, max_threads, "Listing Gmail conversations…")
@@ -732,7 +797,7 @@ class AIEmailAssistantService:
 
             row = InboxEmail(
                 user_id=user.id,
-                store_id=store_id,
+                store_id=store.id,
                 gmail_account_id=account.id,
                 gmail_message_id=analysis.latest_message_id,
                 thread_id=analysis.thread_id,
@@ -781,11 +846,11 @@ class AIEmailAssistantService:
             db,
             user,
             settings_row,
-            store_id=store_id,
+            store_id=store.id,
             limit=min(len(synced_ids) or 1, max_threads),
         )
 
-        inbox = self.list_inbox(db, user, store_id=store_id, limit=50)
+        inbox = self.list_inbox(db, user, store_id=store.id, limit=50)
         message = (
             f"Scanned {len(threads)} conversations. "
             f"{never_answered} never answered by your team. "
@@ -821,19 +886,20 @@ class AIEmailAssistantService:
         if not resolve_openai_api_key(user):
             return 0
 
+        scoped_store_id = store_id or settings_row.store_id
+        if not scoped_store_id:
+            return 0
+
         q = (
             select(InboxEmail)
             .where(
                 InboxEmail.user_id == user.id,
                 InboxEmail.status == InboxEmailStatus.NEW.value,
+                InboxEmail.store_id == scoped_store_id,
             )
             .order_by(InboxEmail.received_at.asc())
             .limit(limit)
         )
-        if store_id is None:
-            q = q.where(InboxEmail.store_id.is_(None))
-        else:
-            q = q.where(InboxEmail.store_id == store_id)
 
         pending = db.scalars(q).all()
         processed = 0
@@ -868,7 +934,9 @@ class AIEmailAssistantService:
                     continue
 
             try:
-                await self.generate_and_maybe_send(db, user, email.id, store_id=store_id)
+                await self.generate_and_maybe_send(
+                    db, user, email.id, store_id=scoped_store_id
+                )
                 processed += 1
                 if settings_row.one_reply_per_thread:
                     replied_threads.add(email.thread_id)
@@ -932,7 +1000,14 @@ class AIEmailAssistantService:
         if not email or email.user_id != user.id:
             raise HTTPException(status_code=404, detail="Email not found")
 
-        settings_row = self.get_or_create_settings(db, user, store_id or email.store_id)
+        store = self._ensure_store(db, user, store_id or email.store_id)
+        if email.store_id is None:
+            email.store_id = store.id
+            db.commit()
+        elif email.store_id != store.id:
+            raise HTTPException(status_code=404, detail="Email not found for this store")
+
+        settings_row = self.get_or_create_settings(db, user, store.id)
 
         if email.status == InboxEmailStatus.SKIPPED.value:
             raise HTTPException(
@@ -1088,10 +1163,17 @@ class AIEmailAssistantService:
         db.refresh(email)
         return self._serialize_inbox(email)
 
-    def list_reply_logs(self, db: Session, user: User, *, limit: int = 50) -> list[AIReplyLogEntry]:
+    def list_reply_logs(
+        self, db: Session, user: User, *, store_id: str | None = None, limit: int = 50
+    ) -> list[AIReplyLogEntry]:
+        store = self._ensure_store(db, user, store_id)
         replies = db.scalars(
             select(AIEmailReply)
-            .where(AIEmailReply.user_id == user.id)
+            .join(InboxEmail, AIEmailReply.inbox_email_id == InboxEmail.id)
+            .where(
+                AIEmailReply.user_id == user.id,
+                InboxEmail.store_id == store.id,
+            )
             .order_by(AIEmailReply.created_at.desc())
             .limit(limit)
         ).all()
@@ -1118,22 +1200,24 @@ class AIEmailAssistantService:
         self, db: Session, user: User, *, store_id: str | None = None
     ) -> AIEmailAssistantStatsResponse:
         """Aggregate inbox + reply metrics for the store-owner Stats dashboard."""
+        store = self._ensure_store(db, user, store_id)
         minutes_per_reply = 5
 
         def _inbox_base():
-            q = select(InboxEmail).where(InboxEmail.user_id == user.id)
-            if store_id:
-                q = q.where(InboxEmail.store_id == store_id)
-            return q
+            return select(InboxEmail).where(
+                InboxEmail.user_id == user.id,
+                InboxEmail.store_id == store.id,
+            )
 
         def _reply_base():
-            q = select(AIEmailReply).where(AIEmailReply.user_id == user.id)
-            if store_id:
-                q = (
-                    q.join(InboxEmail, AIEmailReply.inbox_email_id == InboxEmail.id)
-                    .where(InboxEmail.store_id == store_id)
+            return (
+                select(AIEmailReply)
+                .join(InboxEmail, AIEmailReply.inbox_email_id == InboxEmail.id)
+                .where(
+                    AIEmailReply.user_id == user.id,
+                    InboxEmail.store_id == store.id,
                 )
-            return q
+            )
 
         def _period_stats(since: datetime | None = None) -> PeriodStats:
             inbox_q = _inbox_base()
@@ -1179,12 +1263,11 @@ class AIEmailAssistantService:
             select(InboxEmail.filter_category, func.count())
             .where(
                 InboxEmail.user_id == user.id,
+                InboxEmail.store_id == store.id,
                 InboxEmail.status == InboxEmailStatus.SKIPPED.value,
             )
             .group_by(InboxEmail.filter_category)
         )
-        if store_id:
-            filter_q = filter_q.where(InboxEmail.store_id == store_id)
         filter_rows = db.execute(filter_q).all()
         filter_breakdown = [
             NamedCount(name=(name or "other"), count=int(count))
@@ -1197,12 +1280,11 @@ class AIEmailAssistantService:
             select(InboxEmail.detected_intent, func.count())
             .where(
                 InboxEmail.user_id == user.id,
+                InboxEmail.store_id == store.id,
                 InboxEmail.detected_intent.isnot(None),
             )
             .group_by(InboxEmail.detected_intent)
         )
-        if store_id:
-            intent_q = intent_q.where(InboxEmail.store_id == store_id)
         intent_rows = db.execute(intent_q).all()
         intent_breakdown = [
             NamedCount(name=str(name).replace("_", " "), count=int(count))
@@ -1213,10 +1295,9 @@ class AIEmailAssistantService:
 
         unique_q = select(func.count(func.distinct(InboxEmail.sender_email))).where(
             InboxEmail.user_id == user.id,
+            InboxEmail.store_id == store.id,
             InboxEmail.status == InboxEmailStatus.REPLIED.value,
         )
-        if store_id:
-            unique_q = unique_q.where(InboxEmail.store_id == store_id)
         unique_customers = db.scalar(unique_q) or 0
 
         minutes_saved = all_time.replies_sent * minutes_per_reply
@@ -1233,7 +1314,7 @@ class AIEmailAssistantService:
             else 0.0
         )
 
-        settings_row = self.get_or_create_settings(db, user, store_id)
+        settings_row = self.get_or_create_settings(db, user, store.id)
         gmail_id = self.resolve_gmail_account_id(db, user, settings_row)
         gmail_connected = gmail_id is not None
 

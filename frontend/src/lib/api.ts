@@ -565,7 +565,7 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify({ body }),
       }),
-    logs: () =>
+    logs: (storeId?: string) =>
       request<
         Array<{
           id: string;
@@ -578,7 +578,7 @@ export const api = {
           created_at: string;
           sent_at: string | null;
         }>
-      >("/ai-email-assistant/logs"),
+      >(`/ai-email-assistant/logs${storeId ? `?store_id=${storeId}` : ""}`),
     stats: (storeId?: string) =>
       request<{
         all_time: {

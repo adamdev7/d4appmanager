@@ -6,11 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.db.models import (
     AIEmailAssistantSettings,
+    AIEmailReply,
+    AIReplyStatus,
     EmailAutomationRule,
     EmailSendLog,
     EmailSendStatus,
     GmailAccount,
     GmailAccountStatus,
+    GmailStoreLink,
     InboxEmail,
     InboxEmailStatus,
     OrderTracking,
@@ -136,9 +139,42 @@ class DashboardService:
         has_store = stores_connected > 0
         has_gmail = gmail_connected > 0
 
+        # Gmail for this overview scope must be linked to the store(s), not just any user account
+        if store_id:
+            store_gmail_linked = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(GmailStoreLink)
+                    .join(GmailAccount, GmailAccount.id == GmailStoreLink.gmail_account_id)
+                    .where(
+                        GmailStoreLink.store_id == store_id,
+                        GmailAccount.owner_id == user.id,
+                        GmailAccount.status == GmailAccountStatus.CONNECTED.value,
+                    )
+                )
+                or 0
+            ) > 0
+        else:
+            store_gmail_linked = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(GmailStoreLink)
+                    .join(Store, Store.id == GmailStoreLink.store_id)
+                    .join(GmailAccount, GmailAccount.id == GmailStoreLink.gmail_account_id)
+                    .where(
+                        Store.owner_id == user.id,
+                        GmailAccount.owner_id == user.id,
+                        GmailAccount.status == GmailAccountStatus.CONNECTED.value,
+                    )
+                )
+                or 0
+            ) > 0
+
+        email_apps_ready = store_gmail_linked
+
         orders_synced = 0
         orders_with_tracking = 0
-        emails_sent_week = 0
+        automation_sent_week = 0
         automation_rules_on = 0
         if store_ids:
             orders_synced = (
@@ -161,7 +197,7 @@ class DashboardService:
                 )
                 or 0
             )
-            emails_sent_week = (
+            automation_sent_week = (
                 db.scalar(
                     select(func.count())
                     .select_from(EmailSendLog)
@@ -185,6 +221,25 @@ class DashboardService:
                 or 0
             )
 
+        # AI Email Assistant sends are store-scoped (inbox_emails.store_id).
+        ai_sent_week = 0
+        if store_ids:
+            ai_sent_q = (
+                select(func.count())
+                .select_from(AIEmailReply)
+                .join(InboxEmail, InboxEmail.id == AIEmailReply.inbox_email_id)
+                .where(
+                    AIEmailReply.user_id == user.id,
+                    AIEmailReply.status == AIReplyStatus.SENT.value,
+                    AIEmailReply.sent_at.isnot(None),
+                    AIEmailReply.sent_at >= week_ago,
+                    InboxEmail.store_id.in_(store_ids),
+                )
+            )
+            ai_sent_week = db.scalar(ai_sent_q) or 0
+
+        emails_sent_week = automation_sent_week + ai_sent_week
+
         inbox_q = select(func.count()).select_from(InboxEmail).where(
             InboxEmail.user_id == user.id,
             InboxEmail.status.in_(
@@ -193,11 +248,21 @@ class DashboardService:
         )
         if store_id:
             inbox_q = inbox_q.where(InboxEmail.store_id == store_id)
+        elif store_ids:
+            inbox_q = inbox_q.where(InboxEmail.store_id.in_(store_ids))
+        else:
+            inbox_q = inbox_q.where(InboxEmail.store_id.is_(None))
         inbox_needs_attention = db.scalar(inbox_q) or 0
 
-        ai_settings = db.scalar(
-            select(AIEmailAssistantSettings).where(AIEmailAssistantSettings.user_id == user.id)
+        ai_settings_q = select(AIEmailAssistantSettings).where(
+            AIEmailAssistantSettings.user_id == user.id
         )
+        if store_id:
+            ai_settings_q = ai_settings_q.where(AIEmailAssistantSettings.store_id == store_id)
+        else:
+            # Prefer any store-scoped settings over legacy user-wide rows
+            ai_settings_q = ai_settings_q.where(AIEmailAssistantSettings.store_id.isnot(None))
+        ai_settings = db.scalar(ai_settings_q)
         ai_automation_on = bool(ai_settings and ai_settings.automation_enabled)
 
         tracking_hint = (
@@ -207,13 +272,18 @@ class DashboardService:
             if orders_synced == 0
             else f"{orders_with_tracking} with tracking numbers"
         )
-        email_hint = (
-            "Connect Gmail for automations"
-            if not has_gmail
-            else "No sends this week"
-            if emails_sent_week == 0
-            else "Transactional emails (7 days)"
-        )
+        if not has_gmail and emails_sent_week == 0:
+            email_hint = "Connect Gmail for automations"
+        elif not email_apps_ready and emails_sent_week == 0:
+            email_hint = "Link Gmail to this store in Settings"
+        elif emails_sent_week == 0:
+            email_hint = "No sends this week"
+        elif automation_sent_week and ai_sent_week:
+            email_hint = f"{automation_sent_week} automation · {ai_sent_week} AI replies"
+        elif ai_sent_week:
+            email_hint = "AI Email Assistant replies (7 days)"
+        else:
+            email_hint = "Email Automation sends (7 days)"
 
         metrics = [
             _neutral_metric(
@@ -253,14 +323,14 @@ class DashboardService:
             ModuleHighlight(
                 slug="ai-email",
                 name="AI Email Assistant",
-                status="active" if has_gmail else "setup",
+                status="active" if email_apps_ready else "setup",
                 stat_label="Inbox to review",
                 stat_value=str(inbox_needs_attention),
                 hint=(
                     "Autopilot on"
                     if ai_automation_on
-                    else "Connect Gmail to enable"
-                    if not has_gmail
+                    else "Link Gmail to this store"
+                    if not email_apps_ready
                     else "Autopilot off — open to configure"
                 ),
             ),
@@ -275,12 +345,12 @@ class DashboardService:
             ModuleHighlight(
                 slug="email",
                 name="Email Automation",
-                status="active" if has_gmail else "setup",
+                status="active" if email_apps_ready else "setup",
                 stat_label="Active rules",
                 stat_value=str(automation_rules_on),
                 hint=(
-                    "Connect Gmail to create flows"
-                    if not has_gmail
+                    "Link Gmail to this store"
+                    if not email_apps_ready
                     else "No rules enabled yet"
                     if automation_rules_on == 0
                     else "Shopify event triggers"
@@ -356,11 +426,14 @@ class DashboardService:
             )
             or 0
         ) > 0
-        has_gmail = (
+        has_store_gmail = (
             db.scalar(
                 select(func.count())
-                .select_from(GmailAccount)
+                .select_from(GmailStoreLink)
+                .join(Store, Store.id == GmailStoreLink.store_id)
+                .join(GmailAccount, GmailAccount.id == GmailStoreLink.gmail_account_id)
                 .where(
+                    Store.owner_id == user.id,
                     GmailAccount.owner_id == user.id,
                     GmailAccount.status == GmailAccountStatus.CONNECTED.value,
                 )
@@ -372,9 +445,9 @@ class DashboardService:
             AppModule(
                 id="mod-ai-email",
                 name="AI Email Assistant",
-                description="Gmail auto-replies powered by OpenAI with your business rules.",
+                description="Per-store Gmail auto-replies powered by OpenAI with your business rules.",
                 slug="ai-email",
-                status="active" if has_gmail else "setup",
+                status="active" if has_store_gmail else "setup",
                 icon="sparkles",
             ),
             AppModule(
@@ -388,9 +461,9 @@ class DashboardService:
             AppModule(
                 id="mod-email",
                 name="Email Automation",
-                description="Shopify-triggered transactional email from Gmail.",
+                description="Shopify-triggered transactional email from each store's Gmail.",
                 slug="email",
-                status="active" if has_gmail else "setup",
+                status="active" if has_store_gmail else "setup",
                 icon="mail",
             ),
             AppModule(
