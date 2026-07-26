@@ -309,21 +309,22 @@ export function AIEmailAssistantPage() {
   };
 
   const runFullHistoryScan = async () => {
+    const storeId = activeStore?.id;
     const accId = settings?.gmail_account_id ?? connectedAccount?.id;
-    if (!accId) return;
+    if (!storeId || !accId) return;
     setConfirmFullScanOpen(false);
     setSyncing(true);
     setError("");
     setScanResultMessage("Starting full inbox check…");
     try {
-      await api.aiEmailAssistant.fullHistoryScan(accId, 100, activeStore.id);
+      await api.aiEmailAssistant.fullHistoryScan(accId, 100, storeId);
 
       // Poll status — scan runs in the background to avoid gateway timeouts.
       const started = Date.now();
       const maxWaitMs = 30 * 60 * 1000;
       while (Date.now() - started < maxWaitMs) {
         await new Promise((r) => setTimeout(r, 2000));
-        const status = await api.aiEmailAssistant.fullHistoryScanStatus(activeStore.id);
+        const status = await api.aiEmailAssistant.fullHistoryScanStatus(storeId);
         if (status.message) {
           setScanResultMessage(
             status.status === "running" && status.total
@@ -355,11 +356,16 @@ export function AIEmailAssistantPage() {
   };
 
   const replyAnyway = async (emailId: string) => {
+    const storeId = activeStore?.id;
+    if (!storeId) {
+      setError("Select a store first.");
+      return;
+    }
     setActionId(emailId);
     setError("");
     try {
       await api.aiEmailAssistant.unskipEmail(emailId);
-      const reply = await api.aiEmailAssistant.generateReply(emailId, activeStore.id);
+      const reply = await api.aiEmailAssistant.generateReply(emailId, storeId);
       setDraftEdit(reply.effective_body);
       await loadInbox();
     } catch (err) {
@@ -370,10 +376,15 @@ export function AIEmailAssistantPage() {
   };
 
   const generateDraft = async (emailId: string) => {
+    const storeId = activeStore?.id;
+    if (!storeId) {
+      setError("Select a store first.");
+      return;
+    }
     setActionId(emailId);
     setError("");
     try {
-      const reply = await api.aiEmailAssistant.generateReply(emailId, activeStore.id);
+      const reply = await api.aiEmailAssistant.generateReply(emailId, storeId);
       setDraftEdit(reply.effective_body);
       await loadInbox();
     } catch (err) {
@@ -474,6 +485,11 @@ export function AIEmailAssistantPage() {
 
   const saveSettings = async () => {
     if (!settings) return;
+    const storeId = activeStore?.id;
+    if (!storeId) {
+      setError("Select a store first.");
+      return;
+    }
     setSavingSettings(true);
     setSettingsSaved(false);
     setError("");
@@ -501,7 +517,7 @@ export function AIEmailAssistantPage() {
           verify_gmail_thread_before_reply: settings.verify_gmail_thread_before_reply,
           use_thread_context: settings.use_thread_context,
         },
-        activeStore.id
+        storeId
       );
       await loadSettings();
       setSettingsSaved(true);
@@ -514,10 +530,15 @@ export function AIEmailAssistantPage() {
   };
 
   const runAutomationNow = async () => {
+    const storeId = activeStore?.id;
+    if (!storeId) {
+      setError("Select a store first.");
+      return;
+    }
     setRunningAutomation(true);
     setError("");
     try {
-      const result = await api.aiEmailAssistant.runAutomation(activeStore.id);
+      const result = await api.aiEmailAssistant.runAutomation(storeId);
       await Promise.all([loadInbox(), loadSettings(), loadLogs(), loadStats()]);
       if (result.stopped && result.error) {
         setError(result.error);
@@ -579,8 +600,6 @@ export function AIEmailAssistantPage() {
       </div>
     );
   }
-
-  const storeId = activeStore.id;
 
   return (
     <div className="space-y-6 max-w-6xl">
