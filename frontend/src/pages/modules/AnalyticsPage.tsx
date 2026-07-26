@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowLeft,
+  AlertTriangle,
   BarChart3,
   Calendar,
   Megaphone,
   Package,
   RefreshCw,
   Settings2,
+  ShieldAlert,
   ShoppingBag,
   Store,
   Target,
@@ -379,7 +381,7 @@ export function AnalyticsPage() {
                   value={formatMoney(summary.revenue, currency)}
                   hint={
                     summary.revenue_source === "stripe"
-                      ? `Stripe → ${currency}${summary.stripe_currency && summary.stripe_currency !== currency ? ` from ${summary.stripe_currency}` : ""} · ${summary.stripe_charges ?? 0} charges`
+                      ? `Stripe settlement net (${currency}) · gross ${formatMoney(summary.stripe_revenue_gross || 0, currency)} · ${summary.stripe_charges ?? 0} charges`
                       : `${summary.orders} orders · AOV ${formatMoney(summary.aov, storeCurrency)}`
                   }
                   icon={ShoppingBag}
@@ -437,6 +439,66 @@ export function AnalyticsPage() {
                   icon={Package}
                 />
               </div>
+
+              {summary.chargebacks && dashboard.connections.stripe && (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <ShieldAlert className="h-4 w-4 text-amber-600" />
+                    <h2 className="text-sm font-semibold text-content">Chargebacks &amp; Disputes</h2>
+                    <Badge variant="muted">{currency}</Badge>
+                    {summary.chargebacks.count === 0 && <Badge variant="success">None</Badge>}
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <MetricCard
+                      label="Disputed amount"
+                      value={formatMoney(summary.chargebacks.amount, currency)}
+                      hint={
+                        summary.chargebacks.count > 0
+                          ? `${summary.chargebacks.rate_pct}% of Stripe gross · ${summary.chargebacks.count} dispute(s)`
+                          : "No disputes in this period"
+                      }
+                      icon={ShieldAlert}
+                      accent={
+                        summary.chargebacks.rate_pct >= 1
+                          ? "danger"
+                          : summary.chargebacks.count > 0
+                            ? "warning"
+                            : "default"
+                      }
+                    />
+                    <MetricCard
+                      label="Open"
+                      value={String(summary.chargebacks.open_count)}
+                      hint={formatMoney(summary.chargebacks.open_amount, currency)}
+                      icon={AlertTriangle}
+                      accent={summary.chargebacks.open_count > 0 ? "warning" : "default"}
+                    />
+                    <MetricCard
+                      label="Lost"
+                      value={String(summary.chargebacks.lost_count)}
+                      hint={formatMoney(summary.chargebacks.lost_amount, currency)}
+                      icon={ShieldAlert}
+                      accent={summary.chargebacks.lost_count > 0 ? "danger" : "default"}
+                    />
+                    <MetricCard
+                      label="Won"
+                      value={String(summary.chargebacks.won_count)}
+                      hint={formatMoney(summary.chargebacks.won_amount, currency)}
+                      icon={TrendingUp}
+                      accent={summary.chargebacks.won_count > 0 ? "success" : "default"}
+                    />
+                  </div>
+                  {summary.chargebacks.reasons &&
+                    Object.keys(summary.chargebacks.reasons).length > 0 && (
+                      <p className="text-xs text-content-muted">
+                        Reasons:{" "}
+                        {Object.entries(summary.chargebacks.reasons)
+                          .map(([reason, n]) => `${reason.replace(/_/g, " ")} (${n})`)
+                          .join(" · ")}
+                      </p>
+                    )}
+                </div>
+              )}
 
               {dashboard.mrr && (
                 <div className="space-y-3">

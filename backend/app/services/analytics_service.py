@@ -573,11 +573,18 @@ class AnalyticsService:
         }
 
     async def _stripe_period_totals(
-        self, db: Session, store_id: str, *, since: str, until: str, currency: str | None = None
-    ) -> dict[str, Decimal | int | str | None]:
-        """Sum ALL Stripe charges (subscription + one-time) across MIDs for the date range.
+        self,
+        db: Session,
+        store_id: str,
+        *,
+        since: str,
+        until: str,
+        currency: str | None = None,
+    ) -> dict[str, Decimal | int | str | None | dict]:
+        """Sum Stripe settlement totals (CAD when account settles in CAD) across MIDs.
 
-        Currency is detected from Stripe charge data. `net` already deducts Stripe fees.
+        Prefers settlement currency matching `currency` (store currency). Includes
+        refunds and dispute/chargeback stats for the same window.
         """
         accounts = db.scalars(
             select(AnalyticsStripeAccount).where(
@@ -589,6 +596,7 @@ class AnalyticsService:
             "gross": Decimal("0"),
             "fees": Decimal("0"),
             "net": Decimal("0"),
+            "refunds": Decimal("0"),
             "subscription_gross": Decimal("0"),
             "one_time_gross": Decimal("0"),
             "subscription_net": Decimal("0"),
@@ -596,6 +604,7 @@ class AnalyticsService:
             "charge_count": 0,
             "subscription_count": 0,
             "one_time_count": 0,
+            "refund_count": 0,
             "account_count": 0,
             "currency": None,
             "error": None,
@@ -604,6 +613,19 @@ class AnalyticsService:
             "daily_fees": {},
             "daily_subscription_net": {},
             "daily_one_time_net": {},
+            "disputes": {
+                "count": 0,
+                "open_count": 0,
+                "won_count": 0,
+                "lost_count": 0,
+                "amount": Decimal("0"),
+                "open_amount": Decimal("0"),
+                "won_amount": Decimal("0"),
+                "lost_amount": Decimal("0"),
+                "currency": None,
+                "reasons": {},
+                "rate_pct": 0.0,
+            },
         }
         if not accounts:
             return empty
@@ -618,11 +640,20 @@ class AnalyticsService:
 
         since_ts = int(since_dt.timestamp())
         until_ts = int(until_dt.timestamp())
-        totals_acc = {k: Decimal("0") for k in (
-            "gross", "fees", "net",
-            "subscription_gross", "one_time_gross",
-            "subscription_net", "one_time_net",
-        )}
+        prefer = (currency or "").upper() or None
+        totals_acc = {
+            k: Decimal("0")
+            for k in (
+                "gross",
+                "fees",
+                "net",
+                "refunds",
+                "subscription_gross",
+                "one_time_gross",
+                "subscription_net",
+                "one_time_net",
+            )
+        }
         daily_net: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         daily_gross: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         daily_fees: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
@@ -631,25 +662,47 @@ class AnalyticsService:
         charge_count = 0
         subscription_count = 0
         one_time_count = 0
+        refund_count = 0
         errors: list[str] = []
         detected_currency: str | None = None
+
+        dispute_acc = {
+            "count": 0,
+            "open_count": 0,
+            "won_count": 0,
+            "lost_count": 0,
+            "amount": Decimal("0"),
+            "open_amount": Decimal("0"),
+            "won_amount": Decimal("0"),
+            "lost_amount": Decimal("0"),
+            "currency": None,
+            "reasons": defaultdict(int),
+        }
 
         for acct in accounts:
             try:
                 key = decrypt_value(acct.secret_key_encrypted)
                 client = StripeClient(key)
+                # Prefer store/settlement currency (CAD) — never prefer Billing presentment (GBP)
                 totals = await client.period_charge_totals(
                     since_ts=since_ts,
                     until_ts=until_ts,
-                    currency=currency,
+                    currency=prefer,
+                    limit_pages=500,
                 )
                 for k in totals_acc:
                     totals_acc[k] += Decimal(str(totals.get(k) or 0))
                 charge_count += int(totals.get("charge_count") or 0)
                 subscription_count += int(totals.get("subscription_count") or 0)
                 one_time_count += int(totals.get("one_time_count") or 0)
-                if totals.get("currency") and not detected_currency:
-                    detected_currency = str(totals["currency"]).upper()
+                refund_count += int(totals.get("refund_count") or 0)
+                acct_cur = str(
+                    totals.get("settlement_currency") or totals.get("currency") or ""
+                ).upper() or None
+                if acct_cur and not detected_currency:
+                    detected_currency = acct_cur
+                elif acct_cur and prefer and acct_cur == prefer:
+                    detected_currency = prefer
                 for day, val in (totals.get("daily_net") or {}).items():
                     daily_net[day] += Decimal(str(val))
                 for day, val in (totals.get("daily_gross") or {}).items():
@@ -660,14 +713,50 @@ class AnalyticsService:
                     daily_sub_net[day] += Decimal(str(val))
                 for day, val in (totals.get("daily_one_time_net") or {}).items():
                     daily_one_net[day] += Decimal(str(val))
+
+                try:
+                    disputes = await client.period_dispute_stats(
+                        since_ts=since_ts, until_ts=until_ts
+                    )
+                    for field in (
+                        "count",
+                        "open_count",
+                        "won_count",
+                        "lost_count",
+                    ):
+                        dispute_acc[field] += int(disputes.get(field) or 0)
+                    for field in ("amount", "open_amount", "won_amount", "lost_amount"):
+                        dispute_acc[field] += Decimal(str(disputes.get(field) or 0))
+                    if disputes.get("currency") and not dispute_acc["currency"]:
+                        dispute_acc["currency"] = str(disputes["currency"]).upper()
+                    for reason, n in (disputes.get("reasons") or {}).items():
+                        dispute_acc["reasons"][reason] += int(n)
+                    if disputes.get("error"):
+                        errors.append(f"{acct.label} disputes: {disputes['error']}")
+                except Exception as de:
+                    errors.append(f"{acct.label} disputes: {de}")
             except Exception as e:
                 errors.append(f"{acct.label}: {e}")
+
+        if prefer and detected_currency != prefer:
+            # Settlement should match store when account pays out in store currency
+            detected_currency = detected_currency or prefer
+
+        gross_for_rate = totals_acc["gross"]
+        rate_pct = 0.0
+        if gross_for_rate > 0 and dispute_acc["amount"] > 0:
+            rate_pct = float(
+                (dispute_acc["amount"] / gross_for_rate * 100).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+            )
 
         return {
             **totals_acc,
             "charge_count": charge_count,
             "subscription_count": subscription_count,
             "one_time_count": one_time_count,
+            "refund_count": refund_count,
             "account_count": len(accounts),
             "currency": detected_currency,
             "error": "; ".join(errors) if errors else None,
@@ -676,6 +765,19 @@ class AnalyticsService:
             "daily_fees": {k: str(v) for k, v in daily_fees.items()},
             "daily_subscription_net": {k: str(v) for k, v in daily_sub_net.items()},
             "daily_one_time_net": {k: str(v) for k, v in daily_one_net.items()},
+            "disputes": {
+                "count": dispute_acc["count"],
+                "open_count": dispute_acc["open_count"],
+                "won_count": dispute_acc["won_count"],
+                "lost_count": dispute_acc["lost_count"],
+                "amount": dispute_acc["amount"],
+                "open_amount": dispute_acc["open_amount"],
+                "won_amount": dispute_acc["won_amount"],
+                "lost_amount": dispute_acc["lost_amount"],
+                "currency": dispute_acc["currency"] or detected_currency,
+                "reasons": dict(dispute_acc["reasons"]),
+                "rate_pct": rate_pct,
+            },
         }
 
     async def test_meta_connection(
@@ -1108,15 +1210,16 @@ class AnalyticsService:
         elif meta_configured:
             meta_error = "Could not decrypt Meta credentials — re-save your access token."
 
-        # --- Stripe period revenue: ALL charges (subscription + one-time) ---
-        stripe_currency_hint = (settings_row.mrr_currency or None)
+        # --- Stripe period revenue: settlement currency (usually CAD) ---
+        store_currency = currency
         stripe_totals = await self._stripe_period_totals(
-            db, store_id, since=since, until=until, currency=stripe_currency_hint
+            db, store_id, since=since, until=until, currency=store_currency
         )
-        # Native Stripe amounts (e.g. GBP)
+        # Settlement-native amounts (balance_transaction currency — CAD for this MID)
         stripe_gross_native = Decimal(str(stripe_totals["gross"]))
         stripe_fees_native = Decimal(str(stripe_totals["fees"]))
         stripe_net_native = Decimal(str(stripe_totals["net"]))
+        stripe_refunds_native = Decimal(str(stripe_totals.get("refunds") or 0))
         stripe_sub_net_native = Decimal(str(stripe_totals.get("subscription_net") or 0))
         stripe_one_time_net_native = Decimal(str(stripe_totals.get("one_time_net") or 0))
         stripe_sub_gross_native = Decimal(str(stripe_totals.get("subscription_gross") or 0))
@@ -1124,17 +1227,22 @@ class AnalyticsService:
         stripe_charge_count = int(stripe_totals["charge_count"] or 0)
         stripe_sub_count = int(stripe_totals.get("subscription_count") or 0)
         stripe_one_time_count = int(stripe_totals.get("one_time_count") or 0)
+        stripe_refund_count = int(stripe_totals.get("refund_count") or 0)
         stripe_currency = (
-            str(stripe_totals.get("currency") or settings_row.mrr_currency or "").upper() or None
+            str(stripe_totals.get("currency") or store_currency or "").upper() or None
         )
         stripe_error = stripe_totals.get("error")
         stripe_connected = int(stripe_totals.get("account_count") or 0) > 0
 
-        if stripe_currency and settings_row.mrr_currency != stripe_currency:
-            settings_row.mrr_currency = stripe_currency
-            db.commit()
+        disputes_raw = stripe_totals.get("disputes") or {}
+        dispute_currency = str(
+            disputes_raw.get("currency") or stripe_currency or store_currency or ""
+        ).upper() or store_currency
+        dispute_amount_native = Decimal(str(disputes_raw.get("amount") or 0))
+        dispute_open_amount_native = Decimal(str(disputes_raw.get("open_amount") or 0))
+        dispute_won_amount_native = Decimal(str(disputes_raw.get("won_amount") or 0))
+        dispute_lost_amount_native = Decimal(str(disputes_raw.get("lost_amount") or 0))
 
-        store_currency = currency
         pnl_currency = store_currency  # P&L always in store currency (CAD)
         ad_spend_native = ad_spend
         ad_spend_currency = store_currency  # Meta stays in store currency — never GBP
@@ -1156,14 +1264,19 @@ class AnalyticsService:
             d: Decimal(str(v)) for d, v in (stripe_totals.get("daily_gross") or {}).items()
         }
 
-        # Start as native; convert to CAD with historical daily FX when currencies differ
+        # Settlement totals are already usually CAD — only FX when settlement ≠ store
         stripe_net = stripe_net_native
         stripe_gross = stripe_gross_native
         stripe_fees = stripe_fees_native
+        stripe_refunds = stripe_refunds_native
         stripe_sub_net = stripe_sub_net_native
         stripe_one_time_net = stripe_one_time_net_native
         stripe_sub_gross = stripe_sub_gross_native
         stripe_one_time_gross = stripe_one_time_gross_native
+        dispute_amount = dispute_amount_native
+        dispute_open_amount = dispute_open_amount_native
+        dispute_won_amount = dispute_won_amount_native
+        dispute_lost_amount = dispute_lost_amount_native
         stripe_fx_note: str | None = None
         daily_stripe_cad: dict[str, Decimal] = dict(daily_stripe_native)
 
@@ -1209,8 +1322,24 @@ class AnalyticsService:
                     since=since,
                     until=until,
                 )
+                stripe_sub_gross = await convert_amount(
+                    stripe_sub_gross_native,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                )
+                stripe_one_time_gross = await convert_amount(
+                    stripe_one_time_gross_native,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                )
+                stripe_refunds = await convert_amount(
+                    stripe_refunds_native,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                )
                 stripe_fx_note = (
-                    f"Stripe {stripe_currency} → {store_currency} using historical daily FX rates"
+                    f"Stripe settlement {stripe_currency} → {store_currency} "
+                    f"using historical daily FX rates"
                 )
             except FxError as e:
                 stripe_error = (
@@ -1218,6 +1347,47 @@ class AnalyticsService:
                     f"FX {stripe_currency}→{store_currency} failed: {e}"
                 )
                 stripe_fx_note = None
+        elif stripe_connected and stripe_currency == store_currency:
+            stripe_fx_note = (
+                f"Stripe settles in {store_currency} — charge presentment may differ "
+                f"(e.g. GBP/USD) but P&L uses Stripe balance amounts"
+            )
+
+        # Dispute amounts may be in presentment currency (GBP) even when settlement is CAD
+        if dispute_currency and dispute_currency != store_currency and dispute_amount_native > 0:
+            try:
+                dispute_amount = await convert_amount(
+                    dispute_amount_native,
+                    from_currency=dispute_currency,
+                    to_currency=store_currency,
+                )
+                dispute_open_amount = await convert_amount(
+                    dispute_open_amount_native,
+                    from_currency=dispute_currency,
+                    to_currency=store_currency,
+                )
+                dispute_won_amount = await convert_amount(
+                    dispute_won_amount_native,
+                    from_currency=dispute_currency,
+                    to_currency=store_currency,
+                )
+                dispute_lost_amount = await convert_amount(
+                    dispute_lost_amount_native,
+                    from_currency=dispute_currency,
+                    to_currency=store_currency,
+                )
+            except FxError:
+                pass
+
+        dispute_rate_pct = 0.0
+        if stripe_gross > 0 and dispute_amount > 0:
+            dispute_rate_pct = float(
+                (dispute_amount / stripe_gross * 100).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+            )
+        elif disputes_raw.get("rate_pct"):
+            dispute_rate_pct = float(disputes_raw.get("rate_pct") or 0)
 
         # --- Revenue (P&L in store currency; Meta spend never converted to GBP) ---
         shopify_revenue = revenue
@@ -1434,10 +1604,34 @@ class AnalyticsService:
                     "title": "Currency conversion",
                     "message": (
                         f"{stripe_fx_note}. "
-                        f"Native Stripe total: {stripe_currency} {_money(stripe_net_native)}. "
-                        f"Meta ad spend remains in {store_currency} (not converted to {stripe_currency})."
+                        f"Settlement net: {stripe_currency} {_money(stripe_net_native)}. "
+                        f"Meta ad spend remains in {store_currency}."
                     ),
                     "action": None,
+                },
+            )
+
+        dispute_count = int(disputes_raw.get("count") or 0)
+        if dispute_count > 0:
+            level = "danger" if dispute_rate_pct >= 1 else "warning" if dispute_rate_pct >= 0.5 else "info"
+            insights.insert(
+                0 if level == "danger" else 1,
+                {
+                    "level": level,
+                    "title": "Chargebacks / disputes",
+                    "message": (
+                        f"{dispute_count} dispute(s) this period · "
+                        f"{store_currency} {_money(dispute_amount)} "
+                        f"({dispute_rate_pct:.2f}% of Stripe gross). "
+                        f"Open {int(disputes_raw.get('open_count') or 0)}, "
+                        f"lost {int(disputes_raw.get('lost_count') or 0)}, "
+                        f"won {int(disputes_raw.get('won_count') or 0)}."
+                    ),
+                    "action": (
+                        "Respond to open disputes within Stripe’s deadline and tighten billing descriptors / fulfillment SLAs."
+                        if int(disputes_raw.get("open_count") or 0) > 0
+                        else "Review lost dispute reasons and update checkout / product claims."
+                    ),
                 },
             )
 
@@ -1446,7 +1640,8 @@ class AnalyticsService:
             store_id,
             settings_row,
             store_currency=store_currency,
-            stripe_native_currency=stripe_currency,
+            # MRR is billed in presentment currency (often GBP) — not settlement CAD
+            stripe_native_currency=(settings_row.mrr_currency or None),
         )
         if mrr_block:
             if not mrr_block.get("currency"):
@@ -1521,12 +1716,28 @@ class AnalyticsService:
                 "stripe_subscription_net": _money(stripe_sub_net),
                 "stripe_one_time_net": _money(stripe_one_time_net),
                 "stripe_fees": _money(stripe_fees),
+                "stripe_refunds": _money(stripe_refunds),
                 "stripe_charges": stripe_charge_count,
                 "stripe_subscription_charges": stripe_sub_count,
                 "stripe_one_time_charges": stripe_one_time_count,
+                "stripe_refund_count": stripe_refund_count,
                 "stripe_currency": stripe_currency,
                 "stripe_fx_note": stripe_fx_note,
                 "fees_already_net": fees_already_net,
+                "chargebacks": {
+                    "count": int(disputes_raw.get("count") or 0),
+                    "open_count": int(disputes_raw.get("open_count") or 0),
+                    "won_count": int(disputes_raw.get("won_count") or 0),
+                    "lost_count": int(disputes_raw.get("lost_count") or 0),
+                    "amount": _money(dispute_amount),
+                    "open_amount": _money(dispute_open_amount),
+                    "won_amount": _money(dispute_won_amount),
+                    "lost_amount": _money(dispute_lost_amount),
+                    "currency": store_currency,
+                    "native_currency": dispute_currency,
+                    "rate_pct": dispute_rate_pct,
+                    "reasons": disputes_raw.get("reasons") or {},
+                },
                 "approx_revenue": _money(approx_revenue),
                 "meta_approx_revenue": _money(meta_approx_revenue),
                 "revenue_source": revenue_source,

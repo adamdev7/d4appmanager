@@ -167,45 +167,53 @@ class StripeClient:
                 return cur
         return ""
 
+    @staticmethod
+    def _empty_money_bucket() -> dict[str, Any]:
+        return {
+            "gross": Decimal("0"),
+            "fees": Decimal("0"),
+            "net": Decimal("0"),
+            "refunds": Decimal("0"),
+            "subscription_gross": Decimal("0"),
+            "one_time_gross": Decimal("0"),
+            "subscription_net": Decimal("0"),
+            "one_time_net": Decimal("0"),
+            "charge_count": 0,
+            "subscription_count": 0,
+            "one_time_count": 0,
+            "refund_count": 0,
+            "customers": set(),
+            "daily_net": defaultdict(lambda: Decimal("0")),
+            "daily_gross": defaultdict(lambda: Decimal("0")),
+            "daily_fees": defaultdict(lambda: Decimal("0")),
+            "daily_subscription_net": defaultdict(lambda: Decimal("0")),
+            "daily_one_time_net": defaultdict(lambda: Decimal("0")),
+        }
+
     async def period_charge_totals(
         self,
         *,
         since_ts: int,
         until_ts: int,
         currency: str | None = None,
-        limit_pages: int = 100,
+        limit_pages: int = 200,
     ) -> dict[str, Any]:
         """
-        Total Stripe revenue for a period = ALL successful charges (subscriptions + one-time).
+        Period revenue from Stripe in **settlement currency** (balance_transaction).
 
-        Returns native-currency totals plus `daily` maps (YYYY-MM-DD → amount) so callers
-        can convert to store currency with historical per-day FX rates.
+        Charge presentment may be GBP/USD while the account settles to CAD — gross,
+        fees, and net are always taken from the balance transaction so they share one
+        currency. Refunds in the window are applied from their own settlement BTs.
         """
         preferred = _norm_currency(currency)
-        buckets: dict[str, dict[str, Any]] = defaultdict(
-            lambda: {
-                "gross": Decimal("0"),
-                "fees": Decimal("0"),
-                "net": Decimal("0"),
-                "subscription_gross": Decimal("0"),
-                "one_time_gross": Decimal("0"),
-                "subscription_net": Decimal("0"),
-                "one_time_net": Decimal("0"),
-                "charge_count": 0,
-                "subscription_count": 0,
-                "one_time_count": 0,
-                "customers": set(),
-                "daily_net": defaultdict(lambda: Decimal("0")),
-                "daily_gross": defaultdict(lambda: Decimal("0")),
-                "daily_fees": defaultdict(lambda: Decimal("0")),
-                "daily_subscription_net": defaultdict(lambda: Decimal("0")),
-                "daily_one_time_net": defaultdict(lambda: Decimal("0")),
-            }
-        )
-        currency_counts: dict[str, int] = defaultdict(int)
-        starting_after: str | None = None
+        buckets: dict[str, dict[str, Any]] = defaultdict(self._empty_money_bucket)
+        settlement_counts: dict[str, int] = defaultdict(int)
+        presentment_counts: dict[str, int] = defaultdict(int)
+        # charge_id → settlement currency / whether subscription (for refund attribution)
+        charge_meta: dict[str, dict[str, Any]] = {}
 
         async with httpx.AsyncClient(timeout=120) as client:
+            starting_after: str | None = None
             for _ in range(limit_pages):
                 params: list[tuple[str, str | int]] = [
                     ("limit", 100),
@@ -229,51 +237,60 @@ class StripeClient:
                     if ch.get("captured") is False:
                         continue
 
-                    cur = _norm_currency(ch.get("currency"))
-                    if not cur:
-                        continue
-                    currency_counts[cur] += 1
+                    presentment = _norm_currency(ch.get("currency"))
+                    if presentment:
+                        presentment_counts[presentment] += 1
 
                     created = int(ch.get("created") or since_ts)
                     day_key = datetime.utcfromtimestamp(created).strftime("%Y-%m-%d")
-
-                    amt = from_stripe_amount(ch.get("amount"), cur)
-                    refunded = from_stripe_amount(ch.get("amount_refunded"), cur)
-                    effective_gross = amt - refunded
-                    bt = ch.get("balance_transaction")
-                    if isinstance(bt, dict):
-                        bt_cur = _norm_currency(bt.get("currency")) or cur
-                        fee = from_stripe_amount(bt.get("fee"), bt_cur)
-                        n = from_stripe_amount(bt.get("net"), bt_cur)
-                        if amt > 0 and refunded > 0:
-                            remaining_ratio = effective_gross / amt
-                            n = n * remaining_ratio
-                            fee = fee * remaining_ratio
-                    else:
-                        fee = Decimal("0")
-                        n = effective_gross
-
                     is_subscription = bool(ch.get("invoice"))
-                    b = buckets[cur]
-                    b["gross"] += effective_gross
+                    bt = ch.get("balance_transaction")
+
+                    if isinstance(bt, dict):
+                        settle_cur = _norm_currency(bt.get("currency")) or presentment
+                        gross = from_stripe_amount(bt.get("amount"), settle_cur)
+                        fee = from_stripe_amount(bt.get("fee"), settle_cur)
+                        net = from_stripe_amount(bt.get("net"), settle_cur)
+                    else:
+                        # No BT yet (rare) — keep presentment amounts consistent
+                        settle_cur = presentment
+                        if not settle_cur:
+                            continue
+                        amt = from_stripe_amount(ch.get("amount"), settle_cur)
+                        refunded = from_stripe_amount(ch.get("amount_refunded"), settle_cur)
+                        gross = amt - refunded
+                        fee = Decimal("0")
+                        net = gross
+
+                    if not settle_cur:
+                        continue
+
+                    settlement_counts[settle_cur] += 1
+                    charge_id = str(ch.get("id") or "")
+                    if charge_id:
+                        charge_meta[charge_id] = {
+                            "settle_cur": settle_cur,
+                            "is_subscription": is_subscription,
+                        }
+
+                    b = buckets[settle_cur]
+                    b["gross"] += gross
                     b["fees"] += fee
-                    b["net"] += n
-                    b["daily_net"][day_key] += n
-                    b["daily_gross"][day_key] += effective_gross
+                    b["net"] += net
+                    b["daily_net"][day_key] += net
+                    b["daily_gross"][day_key] += gross
                     b["daily_fees"][day_key] += fee
                     if is_subscription:
-                        b["subscription_gross"] += effective_gross
-                        b["subscription_net"] += n
-                        b["daily_subscription_net"][day_key] += n
-                        if effective_gross > 0:
-                            b["subscription_count"] += 1
+                        b["subscription_gross"] += gross
+                        b["subscription_net"] += net
+                        b["daily_subscription_net"][day_key] += net
+                        b["subscription_count"] += 1
                     else:
-                        b["one_time_gross"] += effective_gross
-                        b["one_time_net"] += n
-                        b["daily_one_time_net"][day_key] += n
-                        if effective_gross > 0:
-                            b["one_time_count"] += 1
-                    if ch.get("paid") and effective_gross > 0:
+                        b["one_time_gross"] += gross
+                        b["one_time_net"] += net
+                        b["daily_one_time_net"][day_key] += net
+                        b["one_time_count"] += 1
+                    if gross > 0 or net != 0:
                         b["charge_count"] += 1
                     cust_key = self._customer_key(ch)
                     if cust_key:
@@ -285,30 +302,106 @@ class StripeClient:
                 if not starting_after:
                     break
 
-        chosen = _pick_majority_currency(dict(currency_counts), preferred)
+            # Refunds post separate settlement BTs — subtract them so net matches Stripe.
+            starting_after = None
+            for _ in range(limit_pages):
+                params = [
+                    ("limit", 100),
+                    ("created[gte]", int(since_ts)),
+                    ("created[lte]", int(until_ts)),
+                    ("expand[]", "data.balance_transaction"),
+                    ("expand[]", "data.charge"),
+                ]
+                if starting_after:
+                    params.append(("starting_after", starting_after))
+                resp = await client.get(
+                    f"{STRIPE_API_BASE}/refunds",
+                    params=params,
+                    auth=(self.secret_key, ""),
+                )
+                if resp.status_code == 403:
+                    break
+                resp.raise_for_status()
+                payload = resp.json()
+                batch = list(payload.get("data") or [])
+                for rf in batch:
+                    status = (rf.get("status") or "").lower()
+                    if status not in ("succeeded", "pending"):
+                        continue
+                    bt = rf.get("balance_transaction")
+                    created = int(rf.get("created") or since_ts)
+                    day_key = datetime.utcfromtimestamp(created).strftime("%Y-%m-%d")
+
+                    charge_ref = rf.get("charge")
+                    charge_id = (
+                        charge_ref.get("id")
+                        if isinstance(charge_ref, dict)
+                        else (str(charge_ref) if charge_ref else "")
+                    )
+                    meta = charge_meta.get(charge_id) or {}
+                    is_subscription = bool(meta.get("is_subscription"))
+
+                    if isinstance(bt, dict):
+                        settle_cur = _norm_currency(bt.get("currency")) or meta.get(
+                            "settle_cur"
+                        )
+                        # Refund BT amount/net are typically negative
+                        gross_delta = from_stripe_amount(bt.get("amount"), settle_cur)
+                        fee_delta = from_stripe_amount(bt.get("fee"), settle_cur)
+                        net_delta = from_stripe_amount(bt.get("net"), settle_cur)
+                        refund_abs = abs(gross_delta)
+                    else:
+                        settle_cur = _norm_currency(rf.get("currency")) or meta.get(
+                            "settle_cur"
+                        )
+                        if not settle_cur:
+                            continue
+                        refund_abs = from_stripe_amount(rf.get("amount"), settle_cur)
+                        gross_delta = -refund_abs
+                        fee_delta = Decimal("0")
+                        net_delta = -refund_abs
+
+                    if not settle_cur:
+                        continue
+
+                    settlement_counts[settle_cur] += 1
+                    b = buckets[settle_cur]
+                    b["gross"] += gross_delta
+                    b["fees"] += fee_delta
+                    b["net"] += net_delta
+                    b["refunds"] += refund_abs
+                    b["refund_count"] += 1
+                    b["daily_net"][day_key] += net_delta
+                    b["daily_gross"][day_key] += gross_delta
+                    b["daily_fees"][day_key] += fee_delta
+                    if is_subscription:
+                        b["subscription_gross"] += gross_delta
+                        b["subscription_net"] += net_delta
+                        b["daily_subscription_net"][day_key] += net_delta
+                    else:
+                        b["one_time_gross"] += gross_delta
+                        b["one_time_net"] += net_delta
+                        b["daily_one_time_net"][day_key] += net_delta
+
+                if not payload.get("has_more") or not batch:
+                    break
+                starting_after = batch[-1].get("id")
+                if not starting_after:
+                    break
+
+        chosen = _pick_majority_currency(dict(settlement_counts), preferred)
         if not chosen:
-            acct = await self.account_default_currency()
-            chosen = acct
+            chosen = await self.account_default_currency()
         cur_key = _norm_currency(chosen)
-        empty_b = {
-            "gross": Decimal("0"),
-            "fees": Decimal("0"),
-            "net": Decimal("0"),
-            "subscription_gross": Decimal("0"),
-            "one_time_gross": Decimal("0"),
-            "subscription_net": Decimal("0"),
-            "one_time_net": Decimal("0"),
-            "charge_count": 0,
-            "subscription_count": 0,
-            "one_time_count": 0,
-            "customers": set(),
-            "daily_net": {},
-            "daily_gross": {},
-            "daily_fees": {},
-            "daily_subscription_net": {},
-            "daily_one_time_net": {},
-        }
-        b = buckets.get(cur_key) or empty_b
+        b = buckets.get(cur_key) or self._empty_money_bucket()
+
+        # If preferred settlement (e.g. CAD) has volume, use it; otherwise sum all
+        # settlement buckets that match chosen. When multiple settlement currencies
+        # exist, prefer the preferred/store currency bucket only.
+        if preferred and preferred in buckets and buckets[preferred]["charge_count"] > 0:
+            cur_key = preferred
+            b = buckets[preferred]
+            chosen = preferred.upper()
 
         def _plain(d: Any) -> dict[str, str]:
             if not d:
@@ -319,6 +412,7 @@ class StripeClient:
             "gross": b["gross"],
             "fees": b["fees"],
             "net": b["net"],
+            "refunds": b["refunds"],
             "subscription_gross": b["subscription_gross"],
             "one_time_gross": b["one_time_gross"],
             "subscription_net": b["subscription_net"],
@@ -326,15 +420,104 @@ class StripeClient:
             "charge_count": int(b["charge_count"]),
             "subscription_count": int(b["subscription_count"]),
             "one_time_count": int(b["one_time_count"]),
+            "refund_count": int(b["refund_count"]),
             "unique_sources": len(b["customers"]),
-            "currency": chosen.upper() if chosen else None,
-            "currencies_seen": ",".join(sorted(c.upper() for c in currency_counts)),
+            "currency": (chosen.upper() if chosen else None),
+            "settlement_currency": (chosen.upper() if chosen else None),
+            "currencies_seen": ",".join(sorted(c.upper() for c in presentment_counts)),
+            "settlement_currencies_seen": ",".join(
+                sorted(c.upper() for c in settlement_counts)
+            ),
             "daily_net": _plain(b.get("daily_net")),
             "daily_gross": _plain(b.get("daily_gross")),
             "daily_fees": _plain(b.get("daily_fees")),
             "daily_subscription_net": _plain(b.get("daily_subscription_net")),
             "daily_one_time_net": _plain(b.get("daily_one_time_net")),
         }
+
+    async def period_dispute_stats(
+        self,
+        *,
+        since_ts: int,
+        until_ts: int,
+        limit_pages: int = 50,
+    ) -> dict[str, Any]:
+        """Chargeback / dispute stats for the period (amounts in dispute currency)."""
+        open_statuses = frozenset(
+            {
+                "warning_needs_response",
+                "warning_under_review",
+                "needs_response",
+                "under_review",
+            }
+        )
+        stats: dict[str, Any] = {
+            "count": 0,
+            "open_count": 0,
+            "won_count": 0,
+            "lost_count": 0,
+            "amount": Decimal("0"),
+            "open_amount": Decimal("0"),
+            "won_amount": Decimal("0"),
+            "lost_amount": Decimal("0"),
+            "currency": None,
+            "currency_counts": defaultdict(int),
+            "reasons": defaultdict(int),
+        }
+        starting_after: str | None = None
+        async with httpx.AsyncClient(timeout=60) as client:
+            for _ in range(limit_pages):
+                params: list[tuple[str, str | int]] = [
+                    ("limit", 100),
+                    ("created[gte]", int(since_ts)),
+                    ("created[lte]", int(until_ts)),
+                ]
+                if starting_after:
+                    params.append(("starting_after", starting_after))
+                resp = await client.get(
+                    f"{STRIPE_API_BASE}/disputes",
+                    params=params,
+                    auth=(self.secret_key, ""),
+                )
+                if resp.status_code == 403:
+                    stats["error"] = "Stripe key lacks disputes read permission"
+                    break
+                resp.raise_for_status()
+                payload = resp.json()
+                batch = list(payload.get("data") or [])
+                for d in batch:
+                    cur = _norm_currency(d.get("currency"))
+                    if not cur:
+                        continue
+                    amt = from_stripe_amount(d.get("amount"), cur)
+                    status = (d.get("status") or "").lower()
+                    reason = (d.get("reason") or "unknown").lower()
+                    stats["count"] += 1
+                    stats["amount"] += amt
+                    stats["currency_counts"][cur] += 1
+                    stats["reasons"][reason] += 1
+                    if status in open_statuses:
+                        stats["open_count"] += 1
+                        stats["open_amount"] += amt
+                    elif status == "won":
+                        stats["won_count"] += 1
+                        stats["won_amount"] += amt
+                    elif status in ("lost", "charge_refunded"):
+                        stats["lost_count"] += 1
+                        stats["lost_amount"] += amt
+                if not payload.get("has_more") or not batch:
+                    break
+                starting_after = batch[-1].get("id")
+                if not starting_after:
+                    break
+
+        chosen = _pick_majority_currency(dict(stats["currency_counts"]))
+        stats["currency"] = chosen
+        stats["reasons"] = dict(stats["reasons"])
+        stats["currency_counts"] = {
+            k.upper(): v for k, v in dict(stats["currency_counts"]).items()
+        }
+        return stats
 
     async def compute_mrr(
         self, *, currency: str | None = None

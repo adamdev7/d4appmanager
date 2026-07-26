@@ -93,12 +93,28 @@ export type AnalyticsDashboard = {
     stripe_subscription_net?: number;
     stripe_one_time_net?: number;
     stripe_fees?: number;
+    stripe_refunds?: number;
     stripe_charges?: number;
     stripe_subscription_charges?: number;
     stripe_one_time_charges?: number;
+    stripe_refund_count?: number;
     stripe_currency?: string | null;
     stripe_fx_note?: string | null;
     fees_already_net?: boolean;
+    chargebacks?: {
+      count: number;
+      open_count: number;
+      won_count: number;
+      lost_count: number;
+      amount: number;
+      open_amount: number;
+      won_amount: number;
+      lost_amount: number;
+      currency: string;
+      native_currency?: string | null;
+      rate_pct: number;
+      reasons?: Record<string, number>;
+    };
     approx_revenue: number;
     meta_approx_revenue: number;
     revenue_source: "shopify" | "stripe" | "stripe_mrr" | "meta_approx" | "none";

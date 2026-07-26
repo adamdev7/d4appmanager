@@ -283,6 +283,10 @@ export function ProfitBreakdown({
     summary.fees_already_net && (summary.stripe_fees || 0) > 0
       ? `Stripe fees of ${money(summary.stripe_fees || 0, currency)} are already removed from revenue — not deducted again.`
       : null;
+  const stripeGrossNote =
+    summary.revenue_source === "stripe" && (summary.stripe_revenue_gross || 0) > 0
+      ? `Stripe settlement gross ${money(summary.stripe_revenue_gross || 0, currency)} · refunds ${money(summary.stripe_refunds || 0, currency)} (${summary.stripe_refund_count ?? 0})`
+      : null;
   const stripeBreakdownNote =
     summary.revenue_source === "stripe"
       ? [
@@ -296,22 +300,31 @@ export function ProfitBreakdown({
           .filter(Boolean)
           .join(" · ")
       : null;
+  const cb = summary.chargebacks;
+  const chargebackNote =
+    cb && cb.count > 0
+      ? `Chargebacks: ${cb.count} · ${money(cb.amount, currency)} (${cb.rate_pct}% of gross) · open ${cb.open_count} / lost ${cb.lost_count} / won ${cb.won_count}`
+      : null;
 
   return (
     <Card padding="lg">
       <CardHeader>
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
-          P&amp;L is in store currency. Stripe charges are converted with historical daily FX when
-          needed; Meta ad spend is never converted to pounds. MRR is shown in store currency using
-          the latest FX rate.
+          P&amp;L is in store currency (CAD). Stripe revenue uses settlement balance amounts —
+          FX only when settlement currency differs. Meta ad spend stays in store currency. MRR
+          converts with the latest spot rate.
         </CardDescription>
       </CardHeader>
 
       {startNote && <p className="mb-3 text-xs text-content-muted">{startNote}</p>}
+      {stripeGrossNote && <p className="mb-3 text-xs text-content-muted">{stripeGrossNote}</p>}
       {feeNote && <p className="mb-3 text-xs text-content-muted">{feeNote}</p>}
       {stripeBreakdownNote && (
         <p className="mb-3 text-xs text-content-muted">Stripe mix: {stripeBreakdownNote}</p>
+      )}
+      {chargebackNote && (
+        <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">{chargebackNote}</p>
       )}
 
       <div className="space-y-2">
