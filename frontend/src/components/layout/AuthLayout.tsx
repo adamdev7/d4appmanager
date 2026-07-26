@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
 import { Layers } from "lucide-react";
 import type { ReactNode } from "react";
+import { SiteFooter } from "./SiteFooter";
 
 export function AuthLayout({
   children,
@@ -31,7 +32,7 @@ export function AuthLayout({
               Email flows, order tracking, and multi-store management — built for scale.
             </p>
           </div>
-          <p className="text-sm text-brand-200/60">© {new Date().getFullYear()} App Manager</p>
+          <SiteFooter variant="auth" />
         </div>
         <div className="absolute -bottom-32 -right-32 h-96 w-96 rounded-full bg-brand-500/10 blur-3xl" />
       </div>
@@ -56,6 +57,7 @@ export function AuthLayout({
           <div className="rounded-2xl border border-border bg-surface p-6 sm:p-8 shadow-card">
             {children}
           </div>
+          <SiteFooter className="mt-8 lg:hidden" />
         </motion.div>
       </div>
     </div>

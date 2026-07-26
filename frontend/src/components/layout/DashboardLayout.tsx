@@ -3,6 +3,7 @@ import { Outlet } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Sidebar } from "./Sidebar";
 import { TopNavbar } from "./TopNavbar";
+import { SiteFooter } from "./SiteFooter";
 import { cn } from "@/lib/cn";
 
 export function DashboardLayout() {
@@ -74,6 +75,9 @@ export function DashboardLayout() {
         >
           <Outlet />
         </motion.main>
+        <div className="px-4 sm:px-6 pb-6">
+          <SiteFooter />
+        </div>
       </div>
     </div>
   );

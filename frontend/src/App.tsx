@@ -18,6 +18,8 @@ import { ModulePlaceholderPage } from "@/pages/modules/ModulePlaceholderPage";
 import { TrackingPage } from "@/pages/modules/TrackingPage";
 import { AnalyticsPage } from "@/pages/modules/AnalyticsPage";
 import { AdsPage } from "@/pages/modules/AdsPage";
+import { PrivacyPage } from "@/pages/legal/PrivacyPage";
+import { TermsPage } from "@/pages/legal/TermsPage";
 
 export default function App() {
   return (
@@ -31,6 +33,8 @@ export default function App() {
               <Route path="/register" element={<RegisterPage />} />
               <Route path="/forgot-password" element={<ForgotPasswordPage />} />
               <Route path="/verify-email" element={<VerifyEmailPage />} />
+              <Route path="/privacy" element={<PrivacyPage />} />
+              <Route path="/terms" element={<TermsPage />} />
 
               <Route
                 element={

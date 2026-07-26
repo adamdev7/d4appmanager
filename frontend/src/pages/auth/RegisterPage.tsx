@@ -58,6 +58,17 @@ export function RegisterPage() {
           required
         />
         {error && <p className="text-sm text-red-500">{error}</p>}
+        <p className="text-xs text-content-muted leading-relaxed">
+          By creating an account, you agree to our{" "}
+          <Link to="/terms" className="font-medium text-brand-600 hover:text-brand-700">
+            Terms of Service
+          </Link>{" "}
+          and{" "}
+          <Link to="/privacy" className="font-medium text-brand-600 hover:text-brand-700">
+            Privacy Policy
+          </Link>
+          .
+        </p>
         <Button type="submit" className="w-full" size="lg" isLoading={loading}>
           Create account
         </Button>
