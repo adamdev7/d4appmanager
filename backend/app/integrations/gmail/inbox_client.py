@@ -284,6 +284,85 @@ class GmailInboxClient:
             )
         return parts
 
+    async def get_customer_history(
+        self,
+        account: GmailAccount,
+        customer_email: str,
+        *,
+        max_messages: int = 20,
+        exclude_thread_id: str | None = None,
+    ) -> list[ThreadMessagePart]:
+        """Every email exchanged with one customer address, across all conversations.
+
+        Gmail threads split when subjects change, so a single thread is often only part of
+        the relationship. This searches both directions (from and to the customer) including
+        Sent mail, and returns the most recent messages oldest → newest.
+        """
+        customer_email = (customer_email or "").strip()
+        if not customer_email:
+            return []
+
+        token = await self._token(account)
+        if not token:
+            return []
+
+        query = f"(from:{customer_email} OR to:{customer_email}) -in:chats"
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(
+                f"{GMAIL_API}/messages",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"q": query, "maxResults": min(max(max_messages * 2, 20), 100)},
+            )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Could not search history for %s: %s", customer_email, resp.status_code
+                )
+                return []
+            refs = resp.json().get("messages") or []
+            if not refs:
+                return []
+
+            sem = asyncio.Semaphore(8)
+
+            async def _load(ref: dict) -> tuple[int, ThreadMessagePart] | None:
+                async with sem:
+                    try:
+                        detail = await client.get(
+                            f"{GMAIL_API}/messages/{ref['id']}",
+                            headers={"Authorization": f"Bearer {token}"},
+                            params={"format": "full"},
+                        )
+                        detail.raise_for_status()
+                        data = detail.json()
+                    except Exception:
+                        logger.debug("Skipping history message %s", ref.get("id"), exc_info=True)
+                        return None
+
+                if exclude_thread_id and data.get("threadId") == exclude_thread_id:
+                    return None
+
+                headers = {
+                    h["name"].lower(): h["value"]
+                    for h in data.get("payload", {}).get("headers", [])
+                }
+                from_header = headers.get("from", "Unknown")
+                body = self._extract_body(data.get("payload", {})) or data.get("snippet", "")
+                return (
+                    int(data.get("internalDate") or 0),
+                    ThreadMessagePart(
+                        message_id=data.get("id", ref["id"]),
+                        from_header=from_header,
+                        body_text=body,
+                        is_from_business=account.email.lower() in from_header.lower(),
+                    ),
+                )
+
+            loaded = await asyncio.gather(*[_load(r) for r in refs])
+
+        dated = [item for item in loaded if item]
+        dated.sort(key=lambda item: item[0])
+        return [part for _, part in dated[-max_messages:]]
+
     async def get_message(self, account: GmailAccount, message_id: str) -> GmailMessageSummary | None:
         token = await self._token(account)
         if not token:
@@ -423,6 +502,22 @@ class GmailInboxClient:
             return False
 
         async with httpx.AsyncClient(timeout=30) as client:
+            # One API call clears UNREAD on the whole thread (needs gmail.modify scope).
+            resp = await client.post(
+                f"{GMAIL_API}/threads/{thread_id}/modify",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"removeLabelIds": ["UNREAD"]},
+            )
+            if resp.status_code < 400:
+                return True
+
+            logger.warning(
+                "Gmail threads.modify mark-read failed for %s: %s %s — falling back to per-message",
+                thread_id,
+                resp.status_code,
+                resp.text[:200],
+            )
+
             thread_resp = await client.get(
                 f"{GMAIL_API}/threads/{thread_id}",
                 headers={"Authorization": f"Bearer {token}"},
@@ -440,6 +535,12 @@ class GmailInboxClient:
                     json={"removeLabelIds": ["UNREAD"]},
                 )
                 if mod.status_code >= 400:
+                    logger.warning(
+                        "Gmail mark_as_read failed for %s: %s %s",
+                        msg_id,
+                        mod.status_code,
+                        mod.text[:200],
+                    )
                     ok = False
             return ok
 
@@ -460,7 +561,10 @@ class GmailInboxClient:
             return "UNREAD" in (resp.json().get("labelIds") or [])
 
     async def mark_as_read(self, account: GmailAccount, message_id: str) -> bool:
-        """Remove the UNREAD label so the message stays read in Gmail."""
+        """Remove the UNREAD label so the message stays read in Gmail.
+
+        Requires the gmail.modify OAuth scope (reconnect Gmail if mark-as-read fails).
+        """
         token = await self._token(account)
         if not token:
             return False

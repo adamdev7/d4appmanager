@@ -72,8 +72,8 @@ class Settings(BaseSettings):
     google_client_secret: str = ""
     google_scopes: str = (
         "openid email profile "
-        "https://www.googleapis.com/auth/gmail.send "
-        "https://www.googleapis.com/auth/gmail.readonly"
+        "https://www.googleapis.com/auth/gmail.modify "
+        "https://www.googleapis.com/auth/gmail.send"
     )
 
     # OpenAI (AI Email Assistant — server-side only)

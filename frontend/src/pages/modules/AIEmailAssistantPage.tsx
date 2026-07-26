@@ -1291,7 +1291,8 @@ export function AIEmailAssistantPage() {
                 Gmail account
               </CardTitle>
               <CardDescription>
-                Inbox sync and sending use this connected account.
+                Inbox sync and sending use this connected account. If emails stay unread after
+                the bot replies, disconnect and reconnect Gmail so mark-as-read permission is granted.
               </CardDescription>
             </CardHeader>
             <div className="space-y-3">

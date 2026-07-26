@@ -44,7 +44,7 @@ FAQ / knowledge base:
 {faq_block}
 
 Instructions:
-- Always read the full conversation thread when provided before writing — the latest message alone may be short (e.g. "thank you") but the history explains the situation.
+- Always read the full history with this customer when provided before writing — it may include earlier, separate conversations plus the current thread. The latest message alone may be short (e.g. "thank you") but the history explains the situation.
 - Check whether the business already answered this customer's issue earlier in the thread. If the latest message only confirms or thanks you and needs no further help, keep the reply to a brief warm closing (or the filter may skip sending entirely).
 - If the latest message raises a new question or says the prior answer did not help, address that new point — do not repeat the entire old reply unless needed.
 - Read the customer's email and understand their intent (refund, order update, cancellation, complaint, thank-you, general question, etc.).
@@ -58,7 +58,7 @@ Instructions:
     thread_block = ""
     if thread_context and thread_context.strip():
         thread_block = f"""
-Conversation thread (oldest to newest):
+Full email history with this customer:
 {thread_context.strip()}
 
 """

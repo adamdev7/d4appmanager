@@ -12,7 +12,7 @@ from app.ai_email_assistant.duplicate_guard import (
     mark_thread_siblings_handled,
 )
 from app.ai_email_assistant.email_filter import config_from_settings, evaluate_email_filter
-from app.ai_email_assistant.thread_context import format_thread_conversation
+from app.ai_email_assistant.thread_context import format_customer_relationship
 from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_exception
 from app.ai_email_assistant.prompt_builder import BusinessContext
 from app.config import settings
@@ -200,22 +200,41 @@ class AIEmailAssistantService:
         db.commit()
         return self.get_settings_response(db, user, store_id)
 
-    async def _fetch_thread_context(
+    async def _fetch_customer_context(
         self,
         db: Session,
         settings_row: AIEmailAssistantSettings,
         account: GmailAccount,
-        thread_id: str,
+        email: InboxEmail,
         *,
         force: bool = False,
     ) -> str | None:
+        """Everything exchanged with this customer address, not just the current thread."""
         if not force and not settings_row.use_thread_context:
             return None
+
         client = GmailInboxClient(db)
-        messages = await client.get_thread_conversation(account, thread_id)
-        if not messages:
-            return None
-        return format_thread_conversation(messages)
+        thread_messages = await client.get_thread_conversation(account, email.thread_id)
+
+        earlier: list = []
+        if email.sender_email:
+            try:
+                earlier = await client.get_customer_history(
+                    account,
+                    email.sender_email,
+                    exclude_thread_id=email.thread_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not load full history for %s", email.sender_email, exc_info=True
+                )
+
+        combined = format_customer_relationship(
+            earlier,
+            thread_messages,
+            customer_email=email.sender_email or "",
+        )
+        return combined or None
 
     async def _duplicate_skip_reason(
         self,
@@ -246,20 +265,25 @@ class AIEmailAssistantService:
         email: InboxEmail,
         account: GmailAccount | None = None,
         *,
-        entire_thread: bool = False,
+        entire_thread: bool = True,
     ) -> None:
-        """Remove UNREAD in Gmail so the bot (and the Gmail UI) will not see it again."""
+        """Remove UNREAD in Gmail so the bot (and the Gmail UI) will not see it again.
+
+        Always clears the specific message, and by default the whole thread too —
+        including filtered spam/newsletter mail the AI decided not to answer.
+        """
         acct = account or db.get(GmailAccount, email.gmail_account_id)
         if not acct:
             return
         client = GmailInboxClient(db)
+        msg_ok = await client.mark_as_read(acct, email.gmail_message_id)
+        thread_ok = True
         if entire_thread and email.thread_id:
-            ok = await client.mark_thread_as_read(acct, email.thread_id)
-        else:
-            ok = await client.mark_as_read(acct, email.gmail_message_id)
-        if not ok:
+            thread_ok = await client.mark_thread_as_read(acct, email.thread_id)
+        if not msg_ok and not thread_ok:
             logger.warning(
-                "Failed to mark Gmail message %s as read (account=%s)",
+                "Failed to mark Gmail message %s as read (account=%s). "
+                "Reconnect Gmail so the app has the gmail.modify scope.",
                 email.gmail_message_id,
                 acct.id,
             )
@@ -357,8 +381,8 @@ class AIEmailAssistantService:
         thread_context: str | None = None
         account = db.get(GmailAccount, email.gmail_account_id)
         if account:
-            thread_context = await self._fetch_thread_context(
-                db, settings_row, account, email.thread_id, force=True
+            thread_context = await self._fetch_customer_context(
+                db, settings_row, account, email, force=True
             )
 
         config = config_from_settings(settings_row)
@@ -395,7 +419,15 @@ class AIEmailAssistantService:
             email.filter_category = result.category
             email.processed_at = datetime.now(UTC)
             db.commit()
+            # Spam / automated / already_resolved / etc. — always clear UNREAD in Gmail
+            # so filtered mail does not sit unread in the mailbox.
             await self._mark_email_read_in_gmail(db, email, account)
+            logger.info(
+                "Filtered inbox %s (%s): %s — marked read in Gmail",
+                email.id,
+                result.category or "other",
+                (result.reason or "")[:120],
+            )
 
     def list_inbox(
         self, db: Session, user: User, *, store_id: str | None = None, limit: int = 50
@@ -447,7 +479,11 @@ class AIEmailAssistantService:
                 # Already handled (filtered / drafted / replied) — clear UNREAD so Gmail
                 # and the next sync do not keep surfacing the same message.
                 if exists.status != InboxEmailStatus.NEW.value:
-                    await client.mark_as_read(account, msg_id)
+                    thread_id = item.get("threadId") or exists.thread_id
+                    if thread_id:
+                        await client.mark_thread_as_read(account, thread_id)
+                    else:
+                        await client.mark_as_read(account, msg_id)
                 continue
 
             detail = await client.get_message(account, msg_id)
@@ -458,9 +494,9 @@ class AIEmailAssistantService:
             # AI classification (with full history) decides reply vs ignore + mark as read.
             if settings_row.verify_gmail_thread_before_reply:
                 if await client.we_sent_last_in_thread(account, detail.thread_id):
-                    # We already replied last — leave this unread message as read so it
-                    # is not scanned again on every autopilot cycle.
-                    await client.mark_as_read(account, msg_id)
+                    # We already replied last — mark the whole thread read so leftover
+                    # unread messages in that conversation do not stick in Gmail.
+                    await client.mark_thread_as_read(account, detail.thread_id)
                     continue
 
             sender_email = client.parse_sender_email(detail.sender)
@@ -486,10 +522,24 @@ class AIEmailAssistantService:
         db.commit()
         for row in synced:
             db.refresh(row)
+            # Safety: filtered/skipped mail must never stay unread in Gmail.
+            if row.status == InboxEmailStatus.SKIPPED.value:
+                await self._mark_email_read_in_gmail(db, row, account)
 
         await self.process_pending_replies(
             db, user, settings_row, store_id=store_id, limit=max_results
         )
+
+        # After replies, clear UNREAD again for anything that ended as skipped/processed.
+        for row in synced:
+            db.refresh(row)
+            if row.status in (
+                InboxEmailStatus.SKIPPED.value,
+                InboxEmailStatus.PROCESSED.value,
+                InboxEmailStatus.REPLIED.value,
+                InboxEmailStatus.DRAFT_PENDING.value,
+            ):
+                await self._mark_email_read_in_gmail(db, row, account)
 
         all_recent = self.list_inbox(db, user, store_id=store_id, limit=max_results)
         return all_recent
@@ -912,8 +962,8 @@ class AIEmailAssistantService:
 
         thread_context = None
         if account:
-            thread_context = await self._fetch_thread_context(
-                db, settings_row, account, email.thread_id, force=True
+            thread_context = await self._fetch_customer_context(
+                db, settings_row, account, email, force=True
             )
 
         try:

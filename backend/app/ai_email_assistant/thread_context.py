@@ -36,3 +36,28 @@ def format_thread_conversation(
         total += len(block)
 
     return "\n".join(parts).strip()
+
+
+def format_customer_relationship(
+    earlier_messages: list[ThreadMessagePart],
+    thread_messages: list[ThreadMessagePart],
+    *,
+    customer_email: str = "",
+) -> str:
+    """Full history with one customer: earlier conversations, then the current thread."""
+    sections: list[str] = []
+
+    if earlier_messages:
+        earlier = format_thread_conversation(earlier_messages, max_chars=6000)
+        if earlier:
+            who = f" with {customer_email}" if customer_email else ""
+            sections.append(
+                f"EARLIER EMAILS{who} (separate conversations, oldest to newest):\n{earlier}"
+            )
+
+    if thread_messages:
+        current = format_thread_conversation(thread_messages, max_chars=10000)
+        if current:
+            sections.append(f"CURRENT CONVERSATION (oldest to newest):\n{current}")
+
+    return "\n\n".join(sections).strip()

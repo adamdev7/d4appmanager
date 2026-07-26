@@ -93,7 +93,8 @@ class AIService:
         custom_block = custom_skip_rules.strip() or "None specified."
         system_message = f"""You classify incoming emails for a {business_type or "business"} named "{business_name or "the business"}".
 
-You receive the FULL email conversation (oldest → newest) when available, plus the latest message.
+You receive the FULL email history with this customer when available — earlier separate conversations
+plus the current thread (oldest → newest) — along with the latest message.
 Read the entire history before deciding. Identify what the customer asked, whether the business already
 answered that issue, and whether the latest message raises anything new.
 
@@ -126,8 +127,8 @@ Respond with JSON only, no markdown:
 
         thread_block = ""
         if thread_context and thread_context.strip():
-            thread_block = f"""Conversation thread (oldest to newest):
-{thread_context.strip()[:10000]}
+            thread_block = f"""Full email history with this customer:
+{thread_context.strip()[:12000]}
 
 """
 
