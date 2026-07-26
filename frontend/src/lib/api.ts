@@ -647,8 +647,20 @@ export const api = {
     },
   },
   analytics: {
-    overview: (storeId: string, period: AnalyticsPeriod = "30d") =>
-      request<AnalyticsDashboard>(`/analytics/stores/${storeId}/overview?period=${period}`),
+    overview: (
+      storeId: string,
+      period: AnalyticsPeriod = "30d",
+      options: { since?: string; until?: string } = {}
+    ) => {
+      const params = new URLSearchParams({ period });
+      if (period === "custom" && options.since && options.until) {
+        params.set("since", options.since);
+        params.set("until", options.until);
+      }
+      return request<AnalyticsDashboard>(
+        `/analytics/stores/${storeId}/overview?${params}`
+      );
+    },
     getSettings: (storeId: string) =>
       request<AnalyticsSettings>(`/analytics/stores/${storeId}/settings`),
     updateSettings: (storeId: string, data: object) =>
@@ -686,15 +698,25 @@ export const api = {
         currency: string;
         mrr_native?: number;
         stripe_currency?: string;
+        fx_rate?: number;
         errors: string[];
         accounts: unknown[];
       }>(`/analytics/stores/${storeId}/mrr/sync-stripe`, { method: "POST" }),
   },
   ads: {
-    overview: (storeId: string, period: AdsPeriod = "30d", runScheduled = false) =>
-      request<AdsDashboard>(
-        `/ads/stores/${storeId}/overview?period=${period}${runScheduled ? "&run_scheduled=true" : ""}`
-      ),
+    overview: (
+      storeId: string,
+      period: AdsPeriod = "30d",
+      options: { runScheduled?: boolean; since?: string; until?: string } = {}
+    ) => {
+      const params = new URLSearchParams({ period });
+      if (options.runScheduled) params.set("run_scheduled", "true");
+      if (period === "custom" && options.since && options.until) {
+        params.set("since", options.since);
+        params.set("until", options.until);
+      }
+      return request<AdsDashboard>(`/ads/stores/${storeId}/overview?${params}`);
+    },
     getSettings: (storeId: string) => request<AdsSettings>(`/ads/stores/${storeId}/settings`),
     updateSettings: (storeId: string, data: object) =>
       request<AdsSettings>(`/ads/stores/${storeId}/settings`, {
@@ -710,7 +732,7 @@ export const api = {
       request<AdsAiReport[]>(`/ads/stores/${storeId}/reports`),
     generateReport: (
       storeId: string,
-      data: { report_type?: string; period?: AdsPeriod } = {}
+      data: { report_type?: string; period?: Exclude<AdsPeriod, "custom"> } = {}
     ) =>
       request<AdsAiReport>(`/ads/stores/${storeId}/reports/generate`, {
         method: "POST",

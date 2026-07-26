@@ -21,11 +21,15 @@ _service = AnalyticsService()
 @router.get("/stores/{store_id}/overview")
 async def analytics_overview(
     store_id: str,
-    period: str = Query("30d", pattern="^(7d|30d|90d|all)$"),
+    period: str = Query("30d", pattern="^(7d|30d|90d|all|custom)$"),
+    since: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    until: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
-    return await _service.get_dashboard(db, user, store_id, period)
+    return await _service.get_dashboard(
+        db, user, store_id, period, custom_since=since, custom_until=until
+    )
 
 
 @router.get("/stores/{store_id}/settings")

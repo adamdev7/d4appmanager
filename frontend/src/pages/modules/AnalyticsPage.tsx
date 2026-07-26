@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowLeft,
   BarChart3,
+  Calendar,
   Megaphone,
   Package,
   RefreshCw,
@@ -21,6 +22,7 @@ import { formatMoney } from "@/lib/formatMoney";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
+import { Input } from "@/components/ui/Input";
 import { MetricCard } from "@/components/analytics/MetricCard";
 import { OrdersChart, ProfitChart, RevenueSpendChart } from "@/components/analytics/AnalyticsCharts";
 import {
@@ -40,12 +42,36 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof BarChart3 }> = [
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
 
-const PERIODS: Array<{ id: AnalyticsPeriod; label: string }> = [
+const PERIODS: Array<{ id: Exclude<AnalyticsPeriod, "custom">; label: string }> = [
   { id: "7d", label: "7 days" },
   { id: "30d", label: "30 days" },
   { id: "90d", label: "90 days" },
   { id: "all", label: "All time" },
 ];
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysAgoISO(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+function formatRangeLabel(since: string, until: string) {
+  try {
+    const fmt = (s: string) =>
+      new Date(s + "T12:00:00").toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    return `${fmt(since)} – ${fmt(until)}`;
+  } catch {
+    return `${since} – ${until}`;
+  }
+}
 
 export function AnalyticsPage() {
   const { activeStore, stores } = useStore();
@@ -53,6 +79,12 @@ export function AnalyticsPage() {
 
   const [tab, setTab] = useState<Tab>("dashboard");
   const [period, setPeriod] = useState<AnalyticsPeriod>("30d");
+  const [customSince, setCustomSince] = useState(daysAgoISO(29));
+  const [customUntil, setCustomUntil] = useState(todayISO());
+  const [appliedSince, setAppliedSince] = useState(daysAgoISO(29));
+  const [appliedUntil, setAppliedUntil] = useState(todayISO());
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const calendarRef = useRef<HTMLDivElement>(null);
   const [dashboard, setDashboard] = useState<AnalyticsDashboard | null>(null);
   const [settings, setSettings] = useState<AnalyticsSettings | null>(null);
   const [loading, setLoading] = useState(true);
@@ -64,10 +96,17 @@ export function AnalyticsPage() {
       setLoading(false);
       return;
     }
+    if (period === "custom" && (!appliedSince || !appliedUntil)) {
+      setLoading(false);
+      return;
+    }
     setError("");
     try {
       const [dash, sett] = await Promise.all([
-        api.analytics.overview(storeId, period),
+        api.analytics.overview(storeId, period, {
+          since: period === "custom" ? appliedSince : undefined,
+          until: period === "custom" ? appliedUntil : undefined,
+        }),
         api.analytics.getSettings(storeId),
       ]);
       setDashboard(dash);
@@ -78,16 +117,55 @@ export function AnalyticsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [storeId, period]);
+  }, [storeId, period, appliedSince, appliedUntil]);
 
   useEffect(() => {
     setLoading(true);
     load();
   }, [load]);
 
+  useEffect(() => {
+    if (!calendarOpen) return;
+    const onPointer = (e: MouseEvent) => {
+      if (calendarRef.current && !calendarRef.current.contains(e.target as Node)) {
+        setCalendarOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCalendarOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [calendarOpen]);
+
   const refresh = async () => {
     setRefreshing(true);
     await load();
+  };
+
+  const selectPreset = (id: Exclude<AnalyticsPeriod, "custom">) => {
+    setPeriod(id);
+    setCalendarOpen(false);
+  };
+
+  const applyCustomRange = () => {
+    if (!customSince || !customUntil) {
+      setError("Pick both a start and end date");
+      return;
+    }
+    if (customSince > customUntil) {
+      setError("Start date must be on or before end date");
+      return;
+    }
+    setError("");
+    setAppliedSince(customSince);
+    setAppliedUntil(customUntil);
+    setPeriod("custom");
+    setCalendarOpen(false);
   };
 
   if (!storeId) {
@@ -112,6 +190,12 @@ export function AnalyticsPage() {
   const storeCurrency = dashboard?.store_currency ?? settings?.currency ?? currency;
   const mrrCurrency = dashboard?.mrr?.currency || storeCurrency || currency;
   const summary = dashboard?.summary;
+  const rangeHint =
+    period === "custom"
+      ? formatRangeLabel(appliedSince, appliedUntil)
+      : dashboard?.date_range
+        ? formatRangeLabel(dashboard.date_range.since, dashboard.date_range.until)
+        : null;
 
   return (
     <div className="space-y-6 pb-10">
@@ -130,10 +214,8 @@ export function AnalyticsPage() {
             Triple Whale-style profitability dashboard — Shopify revenue and Meta ad spend in one
             place, with real net profit tracking.
           </p>
-          {dashboard?.date_range && (
-            <p className="text-xs text-content-subtle mt-2">
-              {dashboard.date_range.since} → {dashboard.date_range.until}
-            </p>
+          {rangeHint && (
+            <p className="text-xs text-content-subtle mt-2">{rangeHint}</p>
           )}
         </div>
 
@@ -199,12 +281,12 @@ export function AnalyticsPage() {
       {tab === "dashboard" && (
         <>
           {/* Period selector */}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {PERIODS.map((p) => (
               <button
                 key={p.id}
                 type="button"
-                onClick={() => setPeriod(p.id)}
+                onClick={() => selectPreset(p.id)}
                 className={cn(
                   "px-4 py-2 rounded-lg text-sm font-medium border transition-colors",
                   period === p.id
@@ -215,6 +297,52 @@ export function AnalyticsPage() {
                 {p.label}
               </button>
             ))}
+            <div className="relative" ref={calendarRef}>
+              <button
+                type="button"
+                onClick={() => {
+                  setCustomSince(period === "custom" ? appliedSince : daysAgoISO(29));
+                  setCustomUntil(period === "custom" ? appliedUntil : todayISO());
+                  setCalendarOpen((o) => !o);
+                }}
+                title="Custom date range"
+                aria-label="Custom date range"
+                aria-expanded={calendarOpen}
+                className={cn(
+                  "inline-flex h-9 w-9 items-center justify-center rounded-lg border transition-colors",
+                  period === "custom" || calendarOpen
+                    ? "bg-brand-600 text-white border-brand-600"
+                    : "border-border text-content-muted hover:border-border-strong hover:text-content"
+                )}
+              >
+                <Calendar className="h-4 w-4" />
+              </button>
+              {calendarOpen && (
+                <div className="absolute left-0 z-30 mt-2 w-72 rounded-xl border border-border bg-surface p-4 shadow-elevated sm:left-auto sm:right-0">
+                  <p className="text-sm font-medium text-content mb-3">Custom range</p>
+                  <div className="space-y-3">
+                    <Input
+                      label="From"
+                      type="date"
+                      value={customSince}
+                      max={customUntil || todayISO()}
+                      onChange={(e) => setCustomSince(e.target.value)}
+                    />
+                    <Input
+                      label="To"
+                      type="date"
+                      value={customUntil}
+                      min={customSince}
+                      max={todayISO()}
+                      onChange={(e) => setCustomUntil(e.target.value)}
+                    />
+                    <Button className="w-full" onClick={applyCustomRange}>
+                      Apply range
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {loading ? (
@@ -312,12 +440,27 @@ export function AnalyticsPage() {
 
               {dashboard.mrr && (
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <Repeat className="h-4 w-4 text-brand-600" />
                     <h2 className="text-sm font-semibold text-content">Subscription MRR (Stripe)</h2>
                     <Badge variant="muted">{dashboard.mrr.source}</Badge>
                     <Badge variant="muted">{mrrCurrency}</Badge>
                   </div>
+                  {dashboard.mrr.mrr_native != null &&
+                    dashboard.mrr.native_currency &&
+                    dashboard.mrr.native_currency !== mrrCurrency &&
+                    dashboard.mrr.fx_rate != null && (
+                      <p className="text-xs text-content-muted">
+                        {formatMoney(dashboard.mrr.mrr_native, dashboard.mrr.native_currency)}{" "}
+                        {dashboard.mrr.native_currency} → {formatMoney(dashboard.mrr.mrr, mrrCurrency)}{" "}
+                        {mrrCurrency} at FX {dashboard.mrr.fx_rate.toFixed(4)}
+                      </p>
+                    )}
+                  {dashboard.mrr.fx_error && (
+                    <p className="text-xs text-amber-700 dark:text-amber-400">
+                      FX conversion failed — showing native Stripe amount. {dashboard.mrr.fx_error}
+                    </p>
+                  )}
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                     <MetricCard
                       label="MRR"
@@ -325,7 +468,10 @@ export function AnalyticsPage() {
                       hint={
                         dashboard.mrr.mrr_delta !== 0
                           ? `${dashboard.mrr.mrr_delta >= 0 ? "+" : ""}${formatMoney(dashboard.mrr.mrr_delta, mrrCurrency)} vs last snapshot`
-                          : "From Stripe Billing / charges"
+                          : dashboard.mrr.native_currency &&
+                              dashboard.mrr.native_currency !== mrrCurrency
+                            ? `Converted from ${dashboard.mrr.native_currency} at latest FX`
+                            : "From Stripe Billing / charges"
                       }
                       icon={Repeat}
                       accent="brand"

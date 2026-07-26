@@ -2,17 +2,86 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 import httpx
 
+logger = logging.getLogger(__name__)
+
 _rate_cache: dict[str, Decimal] = {}
 _range_cache: dict[str, dict[str, Decimal]] = {}
 
 
+class FxError(RuntimeError):
+    """Raised when no FX provider returns a usable rate."""
+
+
 def _norm(code: str | None) -> str:
     return (code or "").upper().strip()
+
+
+def _parse_rate(data: dict, dst: str) -> Decimal | None:
+    rates = data.get("rates") or {}
+    raw = rates.get(dst) or rates.get(dst.lower())
+    if raw is None:
+        return None
+    rate = Decimal(str(raw))
+    return rate if rate > 0 else None
+
+
+async def _fetch_frankfurter(
+    client: httpx.AsyncClient, src: str, dst: str, day: str
+) -> Decimal | None:
+    if day == "latest":
+        urls = [
+            ("https://api.frankfurter.app/latest", {"from": src, "to": dst}),
+            ("https://api.frankfurter.dev/v1/latest", {"base": src, "symbols": dst}),
+        ]
+        for url, params in urls:
+            resp = await client.get(url, params=params)
+            if resp.status_code != 200:
+                continue
+            rate = _parse_rate(resp.json(), dst)
+            if rate:
+                return rate
+        return None
+
+    for host in ("https://api.frankfurter.app", "https://api.frankfurter.dev/v1"):
+        resp = await client.get(f"{host}/{day}", params={"from": src, "to": dst})
+        if resp.status_code == 404:
+            for back in range(1, 8):
+                d = datetime.strptime(day, "%Y-%m-%d").date() - timedelta(days=back)
+                resp = await client.get(
+                    f"{host}/{d.isoformat()}",
+                    params={"from": src, "to": dst},
+                )
+                if resp.status_code == 200:
+                    break
+        if resp.status_code != 200:
+            # frankfurter.dev uses base/symbols
+            resp = await client.get(
+                f"{host}/{day}", params={"base": src, "symbols": dst}
+            )
+        if resp.status_code == 200:
+            rate = _parse_rate(resp.json(), dst)
+            if rate:
+                return rate
+    return None
+
+
+async def _fetch_open_er_api(client: httpx.AsyncClient, src: str, dst: str) -> Decimal | None:
+    """Spot rates only (no historical). Free, no API key."""
+    resp = await client.get(f"https://open.er-api.com/v6/latest/{src}")
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    if str(data.get("result") or "").lower() not in ("success", "true", ""):
+        # Some responses omit result; still try rates
+        if "rates" not in data:
+            return None
+    return _parse_rate(data, dst)
 
 
 async def get_rate(
@@ -23,6 +92,9 @@ async def get_rate(
 
     `on_date` is YYYY-MM-DD. Weekends/holidays fall back to the nearest prior
     business day (Frankfurter behaviour).
+
+    Raises FxError when currencies differ and no provider returns a rate
+    (never silently returns 1.0 — that would leave GBP amounts labeled as CAD).
     """
     src = _norm(from_currency)
     dst = _norm(to_currency)
@@ -34,34 +106,47 @@ async def get_rate(
     if key in _rate_cache:
         return _rate_cache[key]
 
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            if day == "latest":
-                url = "https://api.frankfurter.app/latest"
-                params = {"from": src, "to": dst}
-            else:
-                url = f"https://api.frankfurter.app/{day}"
-                params = {"from": src, "to": dst}
-            resp = await client.get(url, params=params)
-            # Historical date may be weekend — Frankfurter returns 404; try back a few days
-            if resp.status_code == 404 and day != "latest":
-                for back in range(1, 8):
-                    d = datetime.strptime(day, "%Y-%m-%d").date() - timedelta(days=back)
-                    resp = await client.get(
-                        f"https://api.frankfurter.app/{d.isoformat()}",
-                        params={"from": src, "to": dst},
+    errors: list[str] = []
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            rate = await _fetch_frankfurter(client, src, dst, day)
+            if rate:
+                _rate_cache[key] = rate
+                return rate
+            errors.append("frankfurter: no rate")
+        except Exception as e:
+            errors.append(f"frankfurter: {e}")
+
+        # Historical date unavailable → still try latest spot
+        if day != "latest":
+            try:
+                rate = await _fetch_frankfurter(client, src, dst, "latest")
+                if rate:
+                    logger.warning(
+                        "FX historical %s→%s on %s unavailable; using latest %s",
+                        src,
+                        dst,
+                        day,
+                        rate,
                     )
-                    if resp.status_code == 200:
-                        break
-            resp.raise_for_status()
-            data = resp.json()
-            rate = Decimal(str((data.get("rates") or {}).get(dst) or 0))
-            if rate <= 0:
-                return Decimal("1")
-            _rate_cache[key] = rate
-            return rate
-    except Exception:
-        return Decimal("1")
+                    _rate_cache[key] = rate
+                    return rate
+            except Exception as e:
+                errors.append(f"frankfurter-latest: {e}")
+
+        try:
+            rate = await _fetch_open_er_api(client, src, dst)
+            if rate:
+                logger.info("FX %s→%s via open.er-api: %s", src, dst, rate)
+                _rate_cache[key] = rate
+                return rate
+            errors.append("open.er-api: no rate")
+        except Exception as e:
+            errors.append(f"open.er-api: {e}")
+
+    msg = f"No FX rate for {src}→{dst} ({day}): {'; '.join(errors)}"
+    logger.error(msg)
+    raise FxError(msg)
 
 
 async def get_rates_range(
@@ -96,10 +181,9 @@ async def get_rates_range(
                 r = Decimal(str(day_rates.get(dst) or 0))
                 if r > 0:
                     rates[day] = r
-    except Exception:
-        # Fall back to single latest rate applied to the whole range
+    except Exception as e:
+        logger.warning("FX range fetch failed (%s→%s): %s — using latest spot", src, dst, e)
         latest = await get_rate(src, dst)
-        rates = {}
         try:
             start = datetime.strptime(since_d, "%Y-%m-%d").date()
             end = datetime.strptime(until_d, "%Y-%m-%d").date()
@@ -116,7 +200,6 @@ async def get_rates_range(
             start = datetime.strptime(since_d, "%Y-%m-%d").date()
             end = datetime.strptime(until_d, "%Y-%m-%d").date()
             last: Decimal | None = None
-            # Seed last from earliest available before/on start
             for d in sorted(rates.keys()):
                 last = rates[d]
                 break
@@ -145,12 +228,29 @@ async def convert_amount(
     on_date: str | None = None,
 ) -> Decimal:
     """Convert a single amount. Uses historical rate when `on_date` is set."""
+    converted, _rate = await convert_amount_with_rate(
+        amount,
+        from_currency=from_currency,
+        to_currency=to_currency,
+        on_date=on_date,
+    )
+    return converted
+
+
+async def convert_amount_with_rate(
+    amount: Decimal,
+    *,
+    from_currency: str,
+    to_currency: str,
+    on_date: str | None = None,
+) -> tuple[Decimal, Decimal]:
+    """Convert amount and return (converted_amount, fx_rate_used)."""
     src = _norm(from_currency)
     dst = _norm(to_currency)
     if not src or not dst or src == dst or amount == 0:
-        return amount
+        return amount, Decimal("1")
     rate = await get_rate(src, dst, on_date=on_date)
-    return (amount * rate).quantize(Decimal("0.01"))
+    return (amount * rate).quantize(Decimal("0.01")), rate
 
 
 async def convert_daily_map(

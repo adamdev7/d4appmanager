@@ -208,18 +208,47 @@ class AdsService:
         return {"ok": ok, "message": message, "account_name": name}
 
     def _parse_range(
-        self, period: str, analytics_start: str | None = None
+        self,
+        period: str,
+        analytics_start: str | None = None,
+        *,
+        store: Store | None = None,
+        custom_since: str | None = None,
+        custom_until: str | None = None,
     ) -> tuple[datetime, datetime, str, str]:
         now = datetime.now(UTC)
         end = now.replace(hour=23, minute=59, second=59, microsecond=0)
-        if period == "7d":
+
+        if period == "custom":
+            if not custom_since or not custom_until:
+                raise HTTPException(
+                    status_code=400, detail="Custom range requires since and until dates"
+                )
+            try:
+                start = datetime.strptime(custom_since[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+                end = datetime.strptime(custom_until[:10], "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59, microsecond=0, tzinfo=UTC
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail="Invalid date format (use YYYY-MM-DD)") from e
+            if start > end:
+                raise HTTPException(status_code=400, detail="Start date must be on or before end date")
+        elif period == "all":
+            if store and store.created_at:
+                start = store.created_at
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=UTC)
+            else:
+                start = datetime(2010, 1, 1, tzinfo=UTC)
+        elif period == "7d":
             start = end - timedelta(days=6)
         elif period == "90d":
             start = end - timedelta(days=89)
         else:
             start = end - timedelta(days=29)
+
         start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-        if analytics_start:
+        if analytics_start and period != "custom":
             try:
                 clip = datetime.strptime(analytics_start[:10], "%Y-%m-%d").replace(tzinfo=UTC)
                 if clip > start:
@@ -430,12 +459,25 @@ class AdsService:
         return unique[:12]
 
     async def get_dashboard(
-        self, db: Session, user: User, store_id: str, period: str = "30d"
+        self,
+        db: Session,
+        user: User,
+        store_id: str,
+        period: str = "30d",
+        *,
+        custom_since: str | None = None,
+        custom_until: str | None = None,
     ) -> dict:
         store = self._ensure_store(db, user, store_id)
         analytics = self.get_or_create_analytics_settings(db, store_id)
         ads_settings = self.get_or_create_ads_settings(db, store_id)
-        start_dt, end_dt, since, until = self._parse_range(period, analytics.analytics_start_date)
+        start_dt, end_dt, since, until = self._parse_range(
+            period,
+            analytics.analytics_start_date,
+            store=store,
+            custom_since=custom_since,
+            custom_until=custom_until,
+        )
         currency = (store.currency or "USD").upper()
         meta_configured = bool(
             analytics.meta_access_token_encrypted and analytics.meta_ad_account_id
@@ -453,6 +495,7 @@ class AdsService:
                 orders = await shopify.list_all_orders_in_range(
                     created_at_min=start_dt.isoformat(),
                     created_at_max=end_dt.isoformat(),
+                    max_pages=100 if period == "all" else 20,
                 )
                 for order in orders:
                     if order.get("cancelled_at"):
@@ -509,15 +552,36 @@ class AdsService:
             "link_clicks": 0.0,
         }
 
+        use_meta_maximum = period == "all" and not analytics.analytics_start_date
+
         client = self._meta_client(analytics)
         if client:
             try:
-                total_rows = await client.get_account_insights_all(
-                    since=since, until=until, time_increment="all_days", rich=True
-                )
-                daily_rows = await client.get_account_insights_all(
-                    since=since, until=until, time_increment=1, rich=True
-                )
+                if use_meta_maximum:
+                    total_rows = await client.get_account_insights_all(
+                        date_preset="maximum", time_increment="all_days", rich=True
+                    )
+                    daily_rows = await client.get_account_insights_all(
+                        date_preset="maximum", time_increment=1, rich=True
+                    )
+                    campaign_rows = await client.get_campaign_insights(
+                        date_preset="maximum", rich=True
+                    )
+                    adset_rows = await client.get_adset_insights(date_preset="maximum")
+                    ad_rows = await client.get_ad_insights(date_preset="maximum")
+                else:
+                    total_rows = await client.get_account_insights_all(
+                        since=since, until=until, time_increment="all_days", rich=True
+                    )
+                    daily_rows = await client.get_account_insights_all(
+                        since=since, until=until, time_increment=1, rich=True
+                    )
+                    campaign_rows = await client.get_campaign_insights(
+                        since=since, until=until, rich=True
+                    )
+                    adset_rows = await client.get_adset_insights(since=since, until=until)
+                    ad_rows = await client.get_ad_insights(since=since, until=until)
+
                 for row in total_rows:
                     totals["spend"] += parse_meta_float(row, "spend")
                     totals["impressions"] += parse_meta_float(row, "impressions")
@@ -541,6 +605,8 @@ class AdsService:
                 for row in daily_rows:
                     day = (row.get("date_start") or "")[:10]
                     if not day:
+                        continue
+                    if analytics.analytics_start_date and day < analytics.analytics_start_date:
                         continue
                     spend = parse_meta_float(row, "spend")
                     impressions = parse_meta_float(row, "impressions")
@@ -567,24 +633,21 @@ class AdsService:
                         }
                     )
                 daily.sort(key=lambda d: d["date"])
+                if period == "all" and daily and not analytics.analytics_start_date:
+                    since = daily[0]["date"]
 
-                campaign_rows = await client.get_campaign_insights(
-                    since=since, until=until, rich=True
-                )
                 campaigns = [
                     self._summarize_insight_row(r, name_keys=("campaign_name",))
                     for r in campaign_rows
                 ]
                 campaigns.sort(key=lambda c: c["spend"], reverse=True)
 
-                adset_rows = await client.get_adset_insights(since=since, until=until)
                 adsets = [
                     self._summarize_insight_row(r, name_keys=("adset_name", "campaign_name"))
                     for r in adset_rows
                 ]
                 adsets.sort(key=lambda a: a["spend"], reverse=True)
 
-                ad_rows = await client.get_ad_insights(since=since, until=until)
                 ads = [
                     self._summarize_insight_row(r, name_keys=("ad_name", "adset_name"))
                     for r in ad_rows
@@ -592,9 +655,14 @@ class AdsService:
                 ads.sort(key=lambda a: a["spend"], reverse=True)
 
                 try:
-                    attr_rows = await client.get_account_insights_attribution(
-                        since=since, until=until
-                    )
+                    if use_meta_maximum:
+                        attr_rows = await client.get_account_insights_attribution(
+                            date_preset="maximum"
+                        )
+                    else:
+                        attr_rows = await client.get_account_insights_attribution(
+                            since=since, until=until
+                        )
                     if attr_rows:
                         # When attribution windows are requested, Meta returns action values
                         # with per-window breakdowns inside each action entry.

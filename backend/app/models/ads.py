@@ -18,4 +18,4 @@ class AdsMetaTestRequest(BaseModel):
 
 class AdsReportGenerateRequest(BaseModel):
     report_type: str = Field(default="on_demand", pattern="^(daily|weekly|on_demand)$")
-    period: str = Field(default="7d", pattern="^(7d|30d|90d)$")
+    period: str = Field(default="7d", pattern="^(7d|30d|90d|all)$")

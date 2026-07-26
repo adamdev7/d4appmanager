@@ -180,7 +180,7 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
               res.stripe_currency &&
               res.mrr_native != null &&
               res.stripe_currency !== res.currency
-                ? ` · from ${formatMoney(res.mrr_native, res.stripe_currency)}`
+                ? ` · from ${formatMoney(res.mrr_native, res.stripe_currency)} @ FX ${(res.fx_rate ?? 0).toFixed(4)}`
                 : ""
             }`
           : `Partial sync. Errors: ${res.errors.join("; ")}`

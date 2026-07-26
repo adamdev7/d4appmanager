@@ -23,7 +23,7 @@ from app.db.models import (
     StoreStatus,
     User,
 )
-from app.integrations.fx import convert_amount, convert_daily_map
+from app.integrations.fx import FxError, convert_amount, convert_amount_with_rate, convert_daily_map
 from app.integrations.meta.client import (
     MetaAdsClient,
     parse_meta_funnel,
@@ -301,30 +301,6 @@ class AnalyticsService:
             )
         db.commit()
 
-    async def _convert_mrr_snapshots(
-        self,
-        db: Session,
-        store_id: str,
-        *,
-        from_currency: str,
-        to_currency: str,
-    ) -> None:
-        """Convert stored snapshot MRR amounts with the latest FX rate."""
-        src = (from_currency or "").upper()
-        dst = (to_currency or "").upper()
-        if not src or not dst or src == dst:
-            return
-        rows = db.scalars(select(MrrSnapshot).where(MrrSnapshot.store_id == store_id)).all()
-        for row in rows:
-            amount = _d(row.mrr)
-            if amount == 0:
-                continue
-            converted = await convert_amount(
-                amount, from_currency=src, to_currency=dst
-            )
-            row.mrr = str(converted)
-        db.commit()
-
     async def add_stripe_account(
         self, db: Session, user: User, store_id: str, body: dict
     ) -> dict:
@@ -402,41 +378,44 @@ class AnalyticsService:
 
         stripe_currency = (stripe_currency or store.currency or "USD").upper()
         store_currency = (store.currency or "USD").upper()
-        previous_currency = (settings.mrr_currency or stripe_currency).upper()
-        # MRR is a run-rate KPI — convert with the latest FX into store currency (CAD).
+        # Keep stored MRR in Stripe's native currency (e.g. GBP). Convert for the API
+        # response / dashboard with the latest FX — never relabel without multiplying.
         native_mrr = total_mrr
-        if stripe_currency != store_currency and total_mrr > 0:
-            total_mrr = await convert_amount(
-                total_mrr,
-                from_currency=stripe_currency,
-                to_currency=store_currency,
-            )
-        # Rewrite older snapshots still in Stripe currency so history stays comparable in CAD.
-        if previous_currency != store_currency:
-            await self._convert_mrr_snapshots(
-                db, store_id, from_currency=previous_currency, to_currency=store_currency
-            )
+        display_mrr = native_mrr
+        fx_rate = Decimal("1")
+        if stripe_currency != store_currency and native_mrr > 0:
+            try:
+                display_mrr, fx_rate = await convert_amount_with_rate(
+                    native_mrr,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                )
+            except FxError as e:
+                errors.append(f"FX conversion {stripe_currency}→{store_currency} failed: {e}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"Could not convert MRR from {stripe_currency} to {store_currency}. "
+                        f"Native MRR is {_money(native_mrr)} {stripe_currency}. {e}"
+                    ),
+                ) from e
+
         settings.mrr_source = "multi_stripe"
         settings.mrr_enabled = True
-        settings.mrr_manual_amount = str(total_mrr)
+        settings.mrr_manual_amount = str(native_mrr)
         settings.mrr_manual_subscribers = total_subs
-        settings.mrr_currency = store_currency
+        settings.mrr_currency = stripe_currency
         settings.mrr_last_synced_at = datetime.now(UTC)
         db.commit()
 
-        note = f"Synced from {len(accounts)} Stripe account(s)"
+        note = f"Synced from {len(accounts)} Stripe account(s) · {_money(native_mrr)} {stripe_currency}"
         if stripe_currency != store_currency:
-            note += (
-                f" · {_money(native_mrr)} {stripe_currency} → "
-                f"{_money(total_mrr)} {store_currency} at latest FX"
-            )
-        else:
-            note += f" in {store_currency}"
+            note += f" → {_money(display_mrr)} {store_currency} @ {fx_rate}"
 
         self._upsert_mrr_snapshot(
             db,
             store_id,
-            mrr=total_mrr,
+            mrr=native_mrr,
             subscribers=total_subs,
             churn_pct=_d(settings.mrr_manual_churn_pct),
             source="multi_stripe",
@@ -444,11 +423,12 @@ class AnalyticsService:
         )
         return {
             "ok": len(errors) == 0,
-            "mrr": _money(total_mrr),
+            "mrr": _money(display_mrr),
             "subscribers": total_subs,
             "currency": store_currency,
             "mrr_native": _money(native_mrr),
             "stripe_currency": stripe_currency,
+            "fx_rate": float(fx_rate),
             "errors": errors,
             "accounts": self._list_stripe_accounts(db, store_id),
         }
@@ -501,19 +481,44 @@ class AnalyticsService:
         settings_row: StoreAnalyticsSettings,
         *,
         store_currency: str | None = None,
+        stripe_native_currency: str | None = None,
     ) -> dict | None:
         if not settings_row.mrr_enabled:
             return None
-        mrr = _d(settings_row.mrr_manual_amount)
+        # Stored amount is always Stripe-native (e.g. GBP). Never trust a CAD label
+        # that was applied without multiplying by FX.
+        native_mrr = _d(settings_row.mrr_manual_amount)
         subscribers = int(settings_row.mrr_manual_subscribers or 0)
         churn = float(_d(settings_row.mrr_manual_churn_pct))
-        src_currency = (settings_row.mrr_currency or store_currency or "USD").upper()
-        dst_currency = (store_currency or src_currency or "USD").upper()
-        # Existing syncs may still be in Stripe currency — convert with latest spot FX.
-        if src_currency != dst_currency and mrr > 0:
-            mrr = await convert_amount(
-                mrr, from_currency=src_currency, to_currency=dst_currency
-            )
+        dst_currency = (store_currency or "USD").upper()
+        labeled = (settings_row.mrr_currency or "").upper() or None
+        stripe_cur = (stripe_native_currency or "").upper() or None
+
+        native_currency = labeled or stripe_cur or dst_currency
+        # Recovery: earlier bug labeled GBP amounts as CAD without converting.
+        if (
+            stripe_cur
+            and stripe_cur != dst_currency
+            and labeled == dst_currency
+        ):
+            native_currency = stripe_cur
+
+        mrr = native_mrr
+        fx_rate = Decimal("1")
+        fx_error: str | None = None
+        if native_currency != dst_currency and native_mrr > 0:
+            try:
+                mrr, fx_rate = await convert_amount_with_rate(
+                    native_mrr,
+                    from_currency=native_currency,
+                    to_currency=dst_currency,
+                )
+            except FxError as e:
+                fx_error = str(e)
+                # Do not return unconverted GBP under a CAD label
+                mrr = native_mrr
+
+        display_currency = dst_currency if not fx_error else native_currency
         arpu = _money(mrr / _d(subscribers)) if subscribers > 0 else 0
         snapshots = db.scalars(
             select(MrrSnapshot)
@@ -523,11 +528,17 @@ class AnalyticsService:
         ).all()
         history = []
         for s in reversed(snapshots):
-            snap_mrr = _d(s.mrr)
-            if src_currency != dst_currency and snap_mrr > 0:
-                snap_mrr = await convert_amount(
-                    snap_mrr, from_currency=src_currency, to_currency=dst_currency
-                )
+            snap_native = _d(s.mrr)
+            snap_mrr = snap_native
+            if native_currency != dst_currency and snap_native > 0 and not fx_error:
+                try:
+                    snap_mrr = await convert_amount(
+                        snap_native,
+                        from_currency=native_currency,
+                        to_currency=dst_currency,
+                    )
+                except FxError:
+                    snap_mrr = snap_native
             history.append(
                 {
                     "date": s.snapshot_date,
@@ -549,7 +560,11 @@ class AnalyticsService:
             "arpu": arpu,
             "churn_pct": churn,
             "mrr_delta": mrr_delta,
-            "currency": dst_currency,
+            "currency": display_currency,
+            "mrr_native": _money(native_mrr),
+            "native_currency": native_currency,
+            "fx_rate": float(fx_rate) if not fx_error else None,
+            "fx_error": fx_error,
             "last_synced_at": (
                 settings_row.mrr_last_synced_at.isoformat() if settings_row.mrr_last_synced_at else None
             ),
@@ -760,11 +775,35 @@ class AnalyticsService:
         return {"ok": True, "updated": len(items)}
 
     def _parse_range(
-        self, period: str, store: Store | None = None, analytics_start: str | None = None
+        self,
+        period: str,
+        store: Store | None = None,
+        analytics_start: str | None = None,
+        *,
+        custom_since: str | None = None,
+        custom_until: str | None = None,
     ) -> tuple[datetime, datetime, str, str]:
         now = datetime.now(UTC)
         end = now.replace(hour=23, minute=59, second=59, microsecond=0)
-        if period == "all":
+        if period == "custom":
+            if not custom_since or not custom_until:
+                raise HTTPException(
+                    status_code=400, detail="Custom range requires since and until dates"
+                )
+            try:
+                start = datetime.strptime(custom_since[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+                end = datetime.strptime(custom_until[:10], "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59, microsecond=0, tzinfo=UTC
+                )
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=400, detail="Invalid date format (use YYYY-MM-DD)"
+                ) from e
+            if start > end:
+                raise HTTPException(
+                    status_code=400, detail="Start date must be on or before end date"
+                )
+        elif period == "all":
             if store and store.created_at:
                 start = store.created_at
                 if start.tzinfo is None:
@@ -780,7 +819,8 @@ class AnalyticsService:
         start = start.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # Clip to Shopify launch / analytics start so pre-Shopify Meta spend is ignored
-        if analytics_start:
+        # (custom ranges are exact — do not clip)
+        if analytics_start and period != "custom":
             try:
                 clip = datetime.strptime(analytics_start[:10], "%Y-%m-%d").replace(tzinfo=UTC)
                 if clip > start:
@@ -795,12 +835,23 @@ class AnalyticsService:
         return f"{day[:7]}-01"
 
     async def get_dashboard(
-        self, db: Session, user: User, store_id: str, period: str = "30d"
+        self,
+        db: Session,
+        user: User,
+        store_id: str,
+        period: str = "30d",
+        *,
+        custom_since: str | None = None,
+        custom_until: str | None = None,
     ) -> dict:
         store = self._ensure_store(db, user, store_id)
         settings_row = get_or_create_analytics_settings(db, store_id)
         start_dt, end_dt, since, until = self._parse_range(
-            period, store, settings_row.analytics_start_date
+            period,
+            store,
+            settings_row.analytics_start_date,
+            custom_since=custom_since,
+            custom_until=custom_until,
         )
         currency = (store.currency or "USD").upper()
 
@@ -1122,44 +1173,51 @@ class AnalyticsService:
             and stripe_currency != store_currency
             and (stripe_net_native != 0 or stripe_gross_native > 0)
         ):
-            stripe_net, daily_stripe_cad = await convert_daily_map(
-                daily_stripe_native,
-                from_currency=stripe_currency,
-                to_currency=store_currency,
-                since=since,
-                until=until,
-            )
-            stripe_fees, _ = await convert_daily_map(
-                daily_fees_native_map,
-                from_currency=stripe_currency,
-                to_currency=store_currency,
-                since=since,
-                until=until,
-            )
-            stripe_sub_net, _ = await convert_daily_map(
-                daily_sub_native,
-                from_currency=stripe_currency,
-                to_currency=store_currency,
-                since=since,
-                until=until,
-            )
-            stripe_one_time_net, _ = await convert_daily_map(
-                daily_one_native,
-                from_currency=stripe_currency,
-                to_currency=store_currency,
-                since=since,
-                until=until,
-            )
-            stripe_gross, _ = await convert_daily_map(
-                daily_gross_native,
-                from_currency=stripe_currency,
-                to_currency=store_currency,
-                since=since,
-                until=until,
-            )
-            stripe_fx_note = (
-                f"Stripe {stripe_currency} → {store_currency} using historical daily FX rates"
-            )
+            try:
+                stripe_net, daily_stripe_cad = await convert_daily_map(
+                    daily_stripe_native,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                    since=since,
+                    until=until,
+                )
+                stripe_fees, _ = await convert_daily_map(
+                    daily_fees_native_map,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                    since=since,
+                    until=until,
+                )
+                stripe_sub_net, _ = await convert_daily_map(
+                    daily_sub_native,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                    since=since,
+                    until=until,
+                )
+                stripe_one_time_net, _ = await convert_daily_map(
+                    daily_one_native,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                    since=since,
+                    until=until,
+                )
+                stripe_gross, _ = await convert_daily_map(
+                    daily_gross_native,
+                    from_currency=stripe_currency,
+                    to_currency=store_currency,
+                    since=since,
+                    until=until,
+                )
+                stripe_fx_note = (
+                    f"Stripe {stripe_currency} → {store_currency} using historical daily FX rates"
+                )
+            except FxError as e:
+                stripe_error = (
+                    f"{stripe_error + '; ' if stripe_error else ''}"
+                    f"FX {stripe_currency}→{store_currency} failed: {e}"
+                )
+                stripe_fx_note = None
 
         # --- Revenue (P&L in store currency; Meta spend never converted to GBP) ---
         shopify_revenue = revenue
@@ -1384,7 +1442,11 @@ class AnalyticsService:
             )
 
         mrr_block = await self._mrr_block(
-            db, store_id, settings_row, store_currency=store_currency
+            db,
+            store_id,
+            settings_row,
+            store_currency=store_currency,
+            stripe_native_currency=stripe_currency,
         )
         if mrr_block:
             if not mrr_block.get("currency"):

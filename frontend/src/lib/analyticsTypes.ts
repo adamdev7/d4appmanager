@@ -1,4 +1,4 @@
-export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all";
+export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all" | "custom";
 
 export type AnalyticsStripeAccount = {
   id: string;
@@ -196,6 +196,10 @@ export type AnalyticsDashboard = {
     churn_pct: number;
     mrr_delta: number;
     currency?: string | null;
+    mrr_native?: number | null;
+    native_currency?: string | null;
+    fx_rate?: number | null;
+    fx_error?: string | null;
     last_synced_at: string | null;
     history: Array<{
       date: string;
