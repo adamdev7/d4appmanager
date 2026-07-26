@@ -4,7 +4,6 @@ import { AuthLayout } from "@/components/layout/AuthLayout";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useAuth } from "@/context/AuthContext";
-import { ApiError } from "@/lib/api";
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -19,13 +18,21 @@ export function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      await login(email, password);
-      navigate("/dashboard");
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 403) {
-        navigate(`/verify-email?email=${encodeURIComponent(email)}`);
+      const result = await login(email, password);
+      if (result.status === "requires_2fa") {
+        navigate(
+          `/verify-email?email=${encodeURIComponent(result.email)}&purpose=login`
+        );
         return;
       }
+      if (result.status === "requires_verification") {
+        navigate(
+          `/verify-email?email=${encodeURIComponent(result.email)}&purpose=register`
+        );
+        return;
+      }
+      navigate("/dashboard");
+    } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in");
     } finally {
       setLoading(false);
@@ -33,7 +40,10 @@ export function LoginPage() {
   };
 
   return (
-    <AuthLayout title="Welcome back" subtitle="Sign in to your App Manager account">
+    <AuthLayout
+      title="Welcome back"
+      subtitle="Sign in with your password, then confirm the 6-digit code emailed to you."
+    >
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
           label="Email"
@@ -64,7 +74,7 @@ export function LoginPage() {
         </div>
         {error && <p className="text-sm text-red-500">{error}</p>}
         <Button type="submit" className="w-full" size="lg" isLoading={loading}>
-          Sign in
+          Continue
         </Button>
       </form>
       <p className="mt-6 text-center text-sm text-content-muted">

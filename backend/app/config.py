@@ -57,6 +57,11 @@ class Settings(BaseSettings):
 
     verification_code_expire_minutes: int = 15
     verification_code_length: int = 6
+    verification_code_max_attempts: int = 5
+    # Auth rate limits (per IP / email window)
+    auth_login_rate_limit: int = 10
+    auth_otp_rate_limit: int = 8
+    auth_rate_window_seconds: int = 60
 
     # Shopify
     shopify_client_id: str = ""

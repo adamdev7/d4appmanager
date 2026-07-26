@@ -20,7 +20,7 @@ export function RegisterPage() {
     setLoading(true);
     try {
       const { email: registeredEmail } = await register(email, password, fullName);
-      navigate(`/verify-email?email=${encodeURIComponent(registeredEmail)}`, {
+      navigate(`/verify-email?email=${encodeURIComponent(registeredEmail)}&purpose=register`, {
         state: { devHint: true },
       });
     } catch (err) {

@@ -576,6 +576,32 @@ def _migrate_sync_delivered_to_shopify_column() -> None:
             )
 
 
+def _migrate_verification_code_attempts() -> None:
+    """Track failed OTP guesses so codes can be locked after too many attempts."""
+    insp = inspect(engine)
+    table = "verification_codes"
+    if table not in insp.get_table_names():
+        return
+
+    cols = {c["name"] for c in insp.get_columns(table)}
+    if "attempt_count" in cols:
+        return
+
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN attempt_count INTEGER DEFAULT 0 NOT NULL")
+            )
+        elif dialect == "postgresql":
+            conn.execute(
+                text(
+                    f"ALTER TABLE {table} "
+                    "ADD COLUMN IF NOT EXISTS attempt_count INTEGER DEFAULT 0 NOT NULL"
+                )
+            )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -588,3 +614,4 @@ def init_db() -> None:
     _migrate_analytics_balance_columns()
     _migrate_analytics_mrr_columns()
     _migrate_sync_delivered_to_shopify_column()
+    _migrate_verification_code_attempts()

@@ -8,13 +8,20 @@ import {
 } from "react";
 import { api, type AuthUser } from "@/lib/api";
 
+export type LoginResult =
+  | { status: "authenticated" }
+  | { status: "requires_2fa"; email: string }
+  | { status: "requires_verification"; email: string };
+
 interface AuthContextValue {
   user: AuthUser | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<LoginResult>;
   register: (email: string, password: string, fullName: string) => Promise<{ email: string }>;
   verifyEmail: (email: string, code: string) => Promise<void>;
+  verifyLogin: (email: string, code: string) => Promise<void>;
   resendVerification: (email: string) => Promise<void>;
+  resendLoginCode: (email: string) => Promise<void>;
   logout: () => void;
   isAuthenticated: boolean;
 }
@@ -54,10 +61,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loadMe();
   }, [loadMe]);
 
-  const login = useCallback(async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string): Promise<LoginResult> => {
     const res = await api.auth.login(email, password);
-    persistSession(res.access_token, res.user);
-    setUser(res.user);
+    if (res.requires_verification) {
+      return { status: "requires_verification", email: res.email || email };
+    }
+    if (res.requires_2fa) {
+      return { status: "requires_2fa", email: res.email || email };
+    }
+    if (res.access_token && res.user) {
+      persistSession(res.access_token, res.user);
+      setUser(res.user);
+      return { status: "authenticated" };
+    }
+    throw new Error(res.message || "Unable to sign in");
   }, []);
 
   const register = useCallback(async (email: string, password: string, fullName: string) => {
@@ -71,8 +88,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(res.user);
   }, []);
 
+  const verifyLogin = useCallback(async (email: string, code: string) => {
+    const res = await api.auth.verifyLogin(email, code);
+    persistSession(res.access_token, res.user);
+    setUser(res.user);
+  }, []);
+
   const resendVerification = useCallback(async (email: string) => {
     await api.auth.resendVerification(email);
+  }, []);
+
+  const resendLoginCode = useCallback(async (email: string) => {
+    await api.auth.resendLoginCode(email);
   }, []);
 
   const logout = useCallback(() => {
@@ -89,7 +116,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         register,
         verifyEmail,
+        verifyLogin,
         resendVerification,
+        resendLoginCode,
         logout,
         isAuthenticated: !!user?.is_verified,
       }}

@@ -73,3 +73,24 @@ async def send_verification_email(to: str, code: str, full_name: str) -> None:
     </div>
     """
     await send_email(to, subject, html, text)
+
+
+async def send_login_code_email(to: str, code: str, full_name: str) -> None:
+    subject = f"{settings.app_name} — your sign-in code"
+    text = (
+        f"Hi {full_name},\n\n"
+        f"Your App Manager sign-in code is: {code}\n\n"
+        f"This code expires in {settings.verification_code_expire_minutes} minutes.\n\n"
+        f"If you did not try to sign in, change your password and contact support.\n"
+    )
+    html = f"""
+    <div style="font-family:system-ui,sans-serif;max-width:480px">
+      <h2>Sign-in verification</h2>
+      <p>Hi {full_name},</p>
+      <p>Enter this 6-digit code to finish signing in to App Manager:</p>
+      <p style="font-size:28px;font-weight:bold;letter-spacing:4px">{code}</p>
+      <p style="color:#64748b">Expires in {settings.verification_code_expire_minutes} minutes.</p>
+      <p style="color:#64748b">If this wasn't you, ignore this email and secure your account.</p>
+    </div>
+    """
+    await send_email(to, subject, html, text)

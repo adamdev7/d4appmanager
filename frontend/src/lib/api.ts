@@ -176,7 +176,16 @@ export type TrackOrderResult = {
 export const api = {
   auth: {
     login: (email: string, password: string) =>
-      request<{ access_token: string; token_type: string; user: AuthUser }>("/auth/login", {
+      request<{
+        access_token?: string;
+        token_type?: string;
+        user?: AuthUser;
+        requires_2fa?: boolean;
+        requires_verification?: boolean;
+        email?: string;
+        message?: string;
+        dev_hint?: string;
+      }>("/auth/login", {
         method: "POST",
         body: JSON.stringify({ email, password }),
       }),
@@ -194,8 +203,18 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ email, code }),
       }),
+    verifyLogin: (email: string, code: string) =>
+      request<{ access_token: string; token_type: string; user: AuthUser }>("/auth/verify-login", {
+        method: "POST",
+        body: JSON.stringify({ email, code }),
+      }),
     resendVerification: (email: string) =>
       request<{ message: string }>("/auth/resend-verification", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }),
+    resendLoginCode: (email: string) =>
+      request<{ message: string }>("/auth/resend-login-code", {
         method: "POST",
         body: JSON.stringify({ email }),
       }),

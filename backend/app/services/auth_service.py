@@ -2,13 +2,15 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
-
-logger = logging.getLogger(__name__)
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.email import generate_verification_code, send_verification_email
+from app.core.email import (
+    generate_verification_code,
+    send_login_code_email,
+    send_verification_email,
+)
 from app.core.security import (
     create_access_token,
     hash_code,
@@ -18,6 +20,8 @@ from app.core.security import (
 )
 from app.db.models import User, VerificationCode, VerificationPurpose
 from app.models.user import UserCreate, UserLogin
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -36,28 +40,149 @@ class AuthService:
             "user": self._user_response(user),
         }
 
+    def _normalize_email(self, email: str) -> str:
+        return email.lower().strip()
+
+    def _aware(self, dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=UTC)
+        return dt
+
+    def _invalidate_unused_codes(self, db: Session, user_id: str, purpose: str) -> None:
+        db.execute(
+            update(VerificationCode)
+            .where(
+                VerificationCode.user_id == user_id,
+                VerificationCode.purpose == purpose,
+                VerificationCode.used_at.is_(None),
+            )
+            .values(used_at=datetime.now(UTC))
+        )
+
+    async def _send_code(
+        self,
+        db: Session,
+        user: User,
+        purpose: str,
+    ) -> None:
+        self._invalidate_unused_codes(db, user.id, purpose)
+        code = generate_verification_code()
+        expires = datetime.now(UTC) + timedelta(minutes=settings.verification_code_expire_minutes)
+        db.add(
+            VerificationCode(
+                user_id=user.id,
+                code_hash=hash_code(code),
+                purpose=purpose,
+                expires_at=expires,
+                attempt_count=0,
+            )
+        )
+        db.commit()
+
+        try:
+            if purpose == VerificationPurpose.LOGIN_2FA.value:
+                await send_login_code_email(user.email, code, user.full_name)
+            else:
+                await send_verification_email(user.email, code, user.full_name)
+        except Exception as exc:
+            logger.exception("Failed to send %s email to %s", purpose, user.email)
+            if not settings.debug:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Could not send verification email. Check SMTP settings or try again later.",
+                ) from exc
+
+        if settings.debug:
+            label = "LOGIN 2FA" if purpose == VerificationPurpose.LOGIN_2FA.value else "VERIFICATION"
+            print(f"\n>>> {label} CODE for {user.email}: {code} <<<\n")
+
+    def _consume_code(self, db: Session, user: User, purpose: str, code: str) -> None:
+        row = db.scalar(
+            select(VerificationCode)
+            .where(
+                VerificationCode.user_id == user.id,
+                VerificationCode.purpose == purpose,
+                VerificationCode.used_at.is_(None),
+            )
+            .order_by(VerificationCode.created_at.desc())
+        )
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No active verification code. Request a new one.",
+            )
+
+        if self._aware(row.expires_at) < datetime.now(UTC):
+            row.used_at = datetime.now(UTC)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Code expired. Request a new one.",
+            )
+
+        if row.attempt_count >= settings.verification_code_max_attempts:
+            row.used_at = datetime.now(UTC)
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Too many incorrect attempts. Request a new code.",
+            )
+
+        cleaned = "".join(ch for ch in code.strip() if ch.isdigit())
+        if len(cleaned) != settings.verification_code_length or not verify_code(
+            cleaned, row.code_hash
+        ):
+            row.attempt_count = int(row.attempt_count or 0) + 1
+            if row.attempt_count >= settings.verification_code_max_attempts:
+                row.used_at = datetime.now(UTC)
+                db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Too many incorrect attempts. Request a new code.",
+                )
+            db.commit()
+            remaining = settings.verification_code_max_attempts - row.attempt_count
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid verification code. {remaining} attempt(s) remaining.",
+            )
+
+        row.used_at = datetime.now(UTC)
+        db.commit()
+
     async def register(self, db: Session, data: UserCreate) -> dict:
-        existing = db.scalar(select(User).where(User.email == data.email.lower()))
+        email = self._normalize_email(data.email)
+        existing = db.scalar(select(User).where(User.email == email))
         if existing:
             if not existing.is_verified:
-                await self._send_verification(db, existing)
+                # Require password ownership before re-sending codes for an unverified account
+                if not verify_password(data.password, existing.password_hash):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Email already registered",
+                    )
+                await self._send_code(db, existing, VerificationPurpose.EMAIL_VERIFY.value)
                 return {
                     "message": "Account exists but is not verified. A new code was sent to your email.",
                     "requires_verification": True,
                     "email": existing.email,
                 }
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered",
+            )
 
         user = User(
-            email=data.email.lower().strip(),
+            email=email,
             password_hash=hash_password(data.password),
             full_name=data.full_name.strip(),
             is_verified=False,
+            is_active=True,
         )
         db.add(user)
         db.commit()
         db.refresh(user)
-        await self._send_verification(db, user)
+        await self._send_code(db, user, VerificationPurpose.EMAIL_VERIFY.value)
         payload = {
             "message": "Verification code sent to your email.",
             "requires_verification": True,
@@ -70,89 +195,103 @@ class AuthService:
             )
         return payload
 
-    async def _send_verification(self, db: Session, user: User) -> None:
-        code = generate_verification_code()
-        expires = datetime.now(UTC) + timedelta(minutes=settings.verification_code_expire_minutes)
-        db.add(
-            VerificationCode(
-                user_id=user.id,
-                code_hash=hash_code(code),
-                purpose=VerificationPurpose.EMAIL_VERIFY.value,
-                expires_at=expires,
-            )
-        )
-        db.commit()
-        try:
-            await send_verification_email(user.email, code, user.full_name)
-        except Exception as exc:
-            logger.exception("Failed to send verification email to %s", user.email)
-            if not settings.debug:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Could not send verification email. Check SMTP settings or try again later.",
-                ) from exc
-
-        if settings.debug:
-            print(f"\n>>> VERIFICATION CODE for {user.email}: {code} <<<\n")
-
     async def verify_email(self, db: Session, email: str, code: str) -> dict:
-        user = db.scalar(select(User).where(User.email == email.lower().strip()))
+        user = db.scalar(select(User).where(User.email == self._normalize_email(email)))
         if not user:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-
-        if user.is_verified:
-            return self._token_response(user)
-
-        row = db.scalar(
-            select(VerificationCode)
-            .where(
-                VerificationCode.user_id == user.id,
-                VerificationCode.purpose == VerificationPurpose.EMAIL_VERIFY.value,
-                VerificationCode.used_at.is_(None),
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code",
             )
-            .order_by(VerificationCode.created_at.desc())
-        )
-        if not row:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No active verification code")
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is disabled",
+            )
+        if user.is_verified:
+            # Do NOT issue a token without proving a fresh code / password.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email is already verified. Sign in to continue.",
+            )
 
-        expires = row.expires_at
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=UTC)
-        if expires < datetime.now(UTC):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Code expired. Request a new one.")
-
-        if not verify_code(code.strip(), row.code_hash):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid verification code")
-
-        row.used_at = datetime.now(UTC)
+        self._consume_code(db, user, VerificationPurpose.EMAIL_VERIFY.value, code)
         user.is_verified = True
         db.commit()
         db.refresh(user)
         return self._token_response(user)
 
     async def resend_verification(self, db: Session, email: str) -> dict:
-        user = db.scalar(select(User).where(User.email == email.lower().strip()))
-        if not user:
-            return {"message": "If an account exists, a verification code was sent."}
-        if user.is_verified:
-            return {"message": "Account is already verified. You can sign in."}
-        await self._send_verification(db, user)
-        return {"message": "Verification code sent."}
+        user = db.scalar(select(User).where(User.email == self._normalize_email(email)))
+        # Anti-enumeration: same message whether or not the account exists
+        generic = {"message": "If an account needs verification, a code was sent."}
+        if not user or user.is_verified or not user.is_active:
+            return generic
+        await self._send_code(db, user, VerificationPurpose.EMAIL_VERIFY.value)
+        return {"message": "If an account needs verification, a code was sent."}
 
     async def login(self, db: Session, data: UserLogin) -> dict:
-        user = db.scalar(select(User).where(User.email == data.email.lower().strip()))
+        email = self._normalize_email(data.email)
+        user = db.scalar(select(User).where(User.email == email))
         if not user or not verify_password(data.password, user.password_hash):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
-        if not user.is_verified:
-            await self._send_verification(db, user)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password",
+            )
+        if not user.is_active:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Email not verified. A new code was sent to your email.",
+                detail="Account is disabled",
             )
+        if not user.is_verified:
+            await self._send_code(db, user, VerificationPurpose.EMAIL_VERIFY.value)
+            return {
+                "requires_verification": True,
+                "requires_2fa": False,
+                "email": user.email,
+                "message": "Email not verified. A new code was sent to your email.",
+            }
+
+        await self._send_code(db, user, VerificationPurpose.LOGIN_2FA.value)
+        payload = {
+            "requires_2fa": True,
+            "requires_verification": False,
+            "email": user.email,
+            "message": "Enter the 6-digit code we sent to your email to finish signing in.",
+        }
+        if settings.debug:
+            payload["dev_hint"] = (
+                "If you do not see an email, open the API server terminal — "
+                "your login code is printed there while DEBUG=true."
+            )
+        return payload
+
+    async def verify_login(self, db: Session, email: str, code: str) -> dict:
+        user = db.scalar(select(User).where(User.email == self._normalize_email(email)))
+        if not user or not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code",
+            )
+        if not user.is_verified:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email not verified. Complete registration first.",
+            )
+
+        self._consume_code(db, user, VerificationPurpose.LOGIN_2FA.value, code)
         return self._token_response(user)
 
+    async def resend_login_code(self, db: Session, email: str) -> dict:
+        user = db.scalar(select(User).where(User.email == self._normalize_email(email)))
+        generic = {"message": "If your account can sign in, a new code was sent."}
+        if not user or not user.is_active or not user.is_verified:
+            return generic
+        await self._send_code(db, user, VerificationPurpose.LOGIN_2FA.value)
+        return generic
+
     async def request_password_reset(self, db: Session, email: str) -> dict:
-        # Phase 2: send reset code
+        # Phase 2: send reset code (keep anti-enumeration response)
+        _ = db, email
         return {"message": "If an account exists, a reset link has been sent."}
 
     def get_user(self, user: User) -> dict:

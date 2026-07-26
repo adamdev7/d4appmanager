@@ -8,7 +8,8 @@ import { useAuth } from "@/context/AuthContext";
 export function VerifyEmailPage() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const { verifyEmail, resendVerification } = useAuth();
+  const { verifyEmail, verifyLogin, resendVerification, resendLoginCode } = useAuth();
+  const purpose = params.get("purpose") === "login" ? "login" : "register";
   const [email, setEmail] = useState(params.get("email") ?? "");
   const [code, setCode] = useState("");
   const [loading, setLoading] = useState(false);
@@ -16,12 +17,18 @@ export function VerifyEmailPage() {
   const [error, setError] = useState("");
   const [resent, setResent] = useState(false);
 
+  const isLogin2fa = purpose === "login";
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      await verifyEmail(email, code);
+      if (isLogin2fa) {
+        await verifyLogin(email, code);
+      } else {
+        await verifyEmail(email, code);
+      }
       navigate("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
@@ -34,7 +41,11 @@ export function VerifyEmailPage() {
     setResendLoading(true);
     setError("");
     try {
-      await resendVerification(email);
+      if (isLogin2fa) {
+        await resendLoginCode(email);
+      } else {
+        await resendVerification(email);
+      }
       setResent(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not resend code");
@@ -45,8 +56,12 @@ export function VerifyEmailPage() {
 
   return (
     <AuthLayout
-      title="Verify your email"
-      subtitle="Enter the 6-digit code we sent to your inbox."
+      title={isLogin2fa ? "Check your email" : "Verify your email"}
+      subtitle={
+        isLogin2fa
+          ? "Enter the 6-digit sign-in code we just sent to finish logging in."
+          : "Enter the 6-digit code we sent to your inbox."
+      }
     >
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
@@ -57,7 +72,7 @@ export function VerifyEmailPage() {
           required
         />
         <Input
-          label="Verification code"
+          label={isLogin2fa ? "Sign-in code" : "Verification code"}
           value={code}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
           placeholder="123456"
@@ -70,7 +85,7 @@ export function VerifyEmailPage() {
           <p className="text-sm text-brand-600">A new code was sent. Check your email.</p>
         )}
         <Button type="submit" className="w-full" size="lg" isLoading={loading}>
-          Verify and continue
+          {isLogin2fa ? "Verify and sign in" : "Verify and continue"}
         </Button>
       </form>
       <div className="mt-4 flex flex-col gap-2 text-center text-sm">
@@ -90,7 +105,9 @@ export function VerifyEmailPage() {
         <p className="font-medium text-content mb-1">Didn&apos;t get the email?</p>
         <ul className="list-disc list-inside space-y-0.5">
           <li>Check spam / promotions</li>
-          <li>Click <strong>Resend code</strong> above</li>
+          <li>
+            Click <strong>Resend code</strong> above
+          </li>
           <li>
             With the API running, check the <strong>App Manager API</strong> terminal window —
             the code is printed there when <code className="text-[10px]">DEBUG=true</code>

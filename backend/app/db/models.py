@@ -32,6 +32,7 @@ class User(Base):
 
 class VerificationPurpose(str, enum.Enum):
     EMAIL_VERIFY = "email_verify"
+    LOGIN_2FA = "login_2fa"
     PASSWORD_RESET = "password_reset"
 
 
@@ -44,6 +45,7 @@ class VerificationCode(Base):
     purpose: Mapped[str] = mapped_column(String(32), default=VerificationPurpose.EMAIL_VERIFY.value)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="verification_codes")
