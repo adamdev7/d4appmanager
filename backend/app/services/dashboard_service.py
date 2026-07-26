@@ -286,6 +286,30 @@ class DashboardService:
                     else "Shopify event triggers"
                 ),
             ),
+            ModuleHighlight(
+                slug="analytics",
+                name="Analytics",
+                status="active" if has_store else "setup",
+                stat_label="Data source",
+                stat_value="Shopify" if has_store else "—",
+                hint=(
+                    "Connect a store to unlock P&L"
+                    if not has_store
+                    else "Profit, ROAS, and Meta spend"
+                ),
+            ),
+            ModuleHighlight(
+                slug="ads",
+                name="Ads",
+                status="active" if has_store else "setup",
+                stat_label="Meta ads",
+                stat_value="Ready" if has_store else "—",
+                hint=(
+                    "Connect a store to open Ads"
+                    if not has_store
+                    else "Creative health, MER, AI reports"
+                ),
+            ),
         ]
 
         return DashboardOverviewResponse(

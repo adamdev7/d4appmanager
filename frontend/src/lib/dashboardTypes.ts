@@ -34,9 +34,7 @@ export const EMPTY_DASHBOARD_OVERVIEW: DashboardOverview = {
     { label: "Orders synced", value: "0", change: "Connect a Shopify store to sync orders", trend: "neutral" },
     { label: "Emails sent (7d)", value: "0", change: "Connect Gmail for automations", trend: "neutral" },
   ],
-  setup_steps: [
-    { id: "store", label: "Connect Shopify store", done: false, href: "/settings/stores" },
-    { id: "gmail", label: "Connect Gmail", done: false, href: "/settings/gmail" },
-  ],
+  // Empty while unknown — never treat as "setup incomplete" before the API responds
+  setup_steps: [],
   highlights: [],
 };
