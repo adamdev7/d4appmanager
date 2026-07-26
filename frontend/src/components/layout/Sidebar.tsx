@@ -12,6 +12,7 @@ import {
   Layers,
   ChevronLeft,
   X,
+  Megaphone,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { StoreSwitcher } from "@/components/stores/StoreSwitcher";
@@ -22,6 +23,7 @@ const mainNav = [
   { to: "/modules/email", icon: Mail, label: "Email Automation" },
   { to: "/modules/tracking", icon: Package, label: "Tracking" },
   { to: "/modules/analytics", icon: BarChart3, label: "Analytics" },
+  { to: "/modules/ads", icon: Megaphone, label: "Ads" },
   { to: "/modules/sms", icon: MessageSquare, label: "SMS" },
   { to: "/modules/support", icon: Headphones, label: "Support" },
 ];

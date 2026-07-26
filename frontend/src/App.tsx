@@ -17,6 +17,7 @@ import { AIEmailAssistantPage } from "@/pages/modules/AIEmailAssistantPage";
 import { ModulePlaceholderPage } from "@/pages/modules/ModulePlaceholderPage";
 import { TrackingPage } from "@/pages/modules/TrackingPage";
 import { AnalyticsPage } from "@/pages/modules/AnalyticsPage";
+import { AdsPage } from "@/pages/modules/AdsPage";
 
 export default function App() {
   return (
@@ -46,6 +47,7 @@ export default function App() {
                 <Route path="/modules/email" element={<EmailAutomationPage />} />
                 <Route path="/modules/tracking" element={<TrackingPage />} />
                 <Route path="/modules/analytics" element={<AnalyticsPage />} />
+                <Route path="/modules/ads" element={<AdsPage />} />
                 <Route path="/modules/:slug" element={<ModulePlaceholderPage />} />
               </Route>
 

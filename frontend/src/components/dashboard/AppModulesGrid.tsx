@@ -9,6 +9,7 @@ import {
   Headphones,
   ArrowRight,
   Sparkles,
+  Megaphone,
 } from "lucide-react";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
@@ -22,6 +23,7 @@ const ICON_MAP: Record<string, typeof Mail> = {
   message: MessageSquare,
   headphones: Headphones,
   sparkles: Sparkles,
+  megaphone: Megaphone,
 };
 
 const statusBadge = (s: string) => {
@@ -40,7 +42,8 @@ const statusLabel = (s: string) => {
 function moduleHref(mod: AppModule): string {
   if (mod.status === "coming_soon") return "#";
   if (mod.status === "setup") {
-    if (mod.slug === "tracking") return "/settings/stores";
+    if (mod.slug === "tracking" || mod.slug === "analytics" || mod.slug === "ads")
+      return "/settings/stores";
     if (mod.slug === "email" || mod.slug === "ai-email") return "/settings/gmail";
   }
   return `/modules/${mod.slug}`;

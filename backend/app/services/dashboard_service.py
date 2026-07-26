@@ -378,6 +378,14 @@ class DashboardService:
                 icon="chart",
             ),
             AppModule(
+                id="mod-ads",
+                name="Ads",
+                description="Live Meta ads dashboard with creative health, MER, and AI reports.",
+                slug="ads",
+                status="active" if has_store else "setup",
+                icon="megaphone",
+            ),
+            AppModule(
                 id="mod-sms",
                 name="SMS Notifications",
                 description="Order updates and marketing via SMS.",

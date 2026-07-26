@@ -301,6 +301,30 @@ class AnalyticsService:
             )
         db.commit()
 
+    async def _convert_mrr_snapshots(
+        self,
+        db: Session,
+        store_id: str,
+        *,
+        from_currency: str,
+        to_currency: str,
+    ) -> None:
+        """Convert stored snapshot MRR amounts with the latest FX rate."""
+        src = (from_currency or "").upper()
+        dst = (to_currency or "").upper()
+        if not src or not dst or src == dst:
+            return
+        rows = db.scalars(select(MrrSnapshot).where(MrrSnapshot.store_id == store_id)).all()
+        for row in rows:
+            amount = _d(row.mrr)
+            if amount == 0:
+                continue
+            converted = await convert_amount(
+                amount, from_currency=src, to_currency=dst
+            )
+            row.mrr = str(converted)
+        db.commit()
+
     async def add_stripe_account(
         self, db: Session, user: User, store_id: str, body: dict
     ) -> dict:
@@ -377,13 +401,37 @@ class AnalyticsService:
                 errors.append(f"{acct.label}: {e}")
 
         stripe_currency = (stripe_currency or store.currency or "USD").upper()
+        store_currency = (store.currency or "USD").upper()
+        previous_currency = (settings.mrr_currency or stripe_currency).upper()
+        # MRR is a run-rate KPI — convert with the latest FX into store currency (CAD).
+        native_mrr = total_mrr
+        if stripe_currency != store_currency and total_mrr > 0:
+            total_mrr = await convert_amount(
+                total_mrr,
+                from_currency=stripe_currency,
+                to_currency=store_currency,
+            )
+        # Rewrite older snapshots still in Stripe currency so history stays comparable in CAD.
+        if previous_currency != store_currency:
+            await self._convert_mrr_snapshots(
+                db, store_id, from_currency=previous_currency, to_currency=store_currency
+            )
         settings.mrr_source = "multi_stripe"
         settings.mrr_enabled = True
         settings.mrr_manual_amount = str(total_mrr)
         settings.mrr_manual_subscribers = total_subs
-        settings.mrr_currency = stripe_currency
+        settings.mrr_currency = store_currency
         settings.mrr_last_synced_at = datetime.now(UTC)
         db.commit()
+
+        note = f"Synced from {len(accounts)} Stripe account(s)"
+        if stripe_currency != store_currency:
+            note += (
+                f" · {_money(native_mrr)} {stripe_currency} → "
+                f"{_money(total_mrr)} {store_currency} at latest FX"
+            )
+        else:
+            note += f" in {store_currency}"
 
         self._upsert_mrr_snapshot(
             db,
@@ -392,13 +440,15 @@ class AnalyticsService:
             subscribers=total_subs,
             churn_pct=_d(settings.mrr_manual_churn_pct),
             source="multi_stripe",
-            note=f"Synced from {len(accounts)} Stripe account(s) in {stripe_currency}",
+            note=note,
         )
         return {
             "ok": len(errors) == 0,
             "mrr": _money(total_mrr),
             "subscribers": total_subs,
-            "currency": stripe_currency,
+            "currency": store_currency,
+            "mrr_native": _money(native_mrr),
+            "stripe_currency": stripe_currency,
             "errors": errors,
             "accounts": self._list_stripe_accounts(db, store_id),
         }
@@ -444,12 +494,26 @@ class AnalyticsService:
         )
         return {"ok": True, "mrr": _money(mrr), "subscribers": subscribers}
 
-    def _mrr_block(self, db: Session, store_id: str, settings_row: StoreAnalyticsSettings) -> dict | None:
+    async def _mrr_block(
+        self,
+        db: Session,
+        store_id: str,
+        settings_row: StoreAnalyticsSettings,
+        *,
+        store_currency: str | None = None,
+    ) -> dict | None:
         if not settings_row.mrr_enabled:
             return None
         mrr = _d(settings_row.mrr_manual_amount)
         subscribers = int(settings_row.mrr_manual_subscribers or 0)
         churn = float(_d(settings_row.mrr_manual_churn_pct))
+        src_currency = (settings_row.mrr_currency or store_currency or "USD").upper()
+        dst_currency = (store_currency or src_currency or "USD").upper()
+        # Existing syncs may still be in Stripe currency — convert with latest spot FX.
+        if src_currency != dst_currency and mrr > 0:
+            mrr = await convert_amount(
+                mrr, from_currency=src_currency, to_currency=dst_currency
+            )
         arpu = _money(mrr / _d(subscribers)) if subscribers > 0 else 0
         snapshots = db.scalars(
             select(MrrSnapshot)
@@ -457,16 +521,22 @@ class AnalyticsService:
             .order_by(MrrSnapshot.snapshot_date.desc())
             .limit(12)
         ).all()
-        history = [
-            {
-                "date": s.snapshot_date,
-                "mrr": float(_d(s.mrr)),
-                "subscribers": int(s.subscribers or 0),
-                "churn_pct": float(_d(s.churn_pct)),
-                "source": s.source,
-            }
-            for s in reversed(snapshots)
-        ]
+        history = []
+        for s in reversed(snapshots):
+            snap_mrr = _d(s.mrr)
+            if src_currency != dst_currency and snap_mrr > 0:
+                snap_mrr = await convert_amount(
+                    snap_mrr, from_currency=src_currency, to_currency=dst_currency
+                )
+            history.append(
+                {
+                    "date": s.snapshot_date,
+                    "mrr": float(snap_mrr),
+                    "subscribers": int(s.subscribers or 0),
+                    "churn_pct": float(_d(s.churn_pct)),
+                    "source": s.source,
+                }
+            )
         mrr_delta = 0.0
         if len(history) >= 2:
             mrr_delta = _money(_d(history[-1]["mrr"]) - _d(history[-2]["mrr"]))
@@ -479,7 +549,7 @@ class AnalyticsService:
             "arpu": arpu,
             "churn_pct": churn,
             "mrr_delta": mrr_delta,
-            "currency": (settings_row.mrr_currency or None),
+            "currency": dst_currency,
             "last_synced_at": (
                 settings_row.mrr_last_synced_at.isoformat() if settings_row.mrr_last_synced_at else None
             ),
@@ -1313,10 +1383,12 @@ class AnalyticsService:
                 },
             )
 
-        mrr_block = self._mrr_block(db, store_id, settings_row)
+        mrr_block = await self._mrr_block(
+            db, store_id, settings_row, store_currency=store_currency
+        )
         if mrr_block:
             if not mrr_block.get("currency"):
-                mrr_block["currency"] = stripe_currency or pnl_currency or currency
+                mrr_block["currency"] = store_currency or pnl_currency or currency
             if mrr_block["mrr"] > 0 and ad_spend > 0:
                 months_to_recover = float(ad_spend) / mrr_block["mrr"] if mrr_block["mrr"] else 0
                 insights.append(
@@ -1324,7 +1396,7 @@ class AnalyticsService:
                         "level": "info",
                         "title": "MRR vs ad spend this period",
                         "message": (
-                            f"MRR is {currency} {mrr_block['mrr']:,.2f} "
+                            f"MRR is {mrr_block.get('currency') or currency} {mrr_block['mrr']:,.2f} "
                             f"({mrr_block['subscribers']} subscribers). "
                             f"This period's ad spend equals ~{months_to_recover:.1f} months of MRR."
                         ),
@@ -1348,8 +1420,8 @@ class AnalyticsService:
                         "level": "success",
                         "title": "MRR growing",
                         "message": (
-                            f"MRR up {currency} {mrr_block['mrr_delta']:,.2f} vs last snapshot "
-                            f"(ARR {currency} {mrr_block['arr']:,.2f})."
+                            f"MRR up {mrr_block.get('currency') or currency} {mrr_block['mrr_delta']:,.2f} vs last snapshot "
+                            f"(ARR {mrr_block.get('currency') or currency} {mrr_block['arr']:,.2f})."
                         ),
                         "action": "Scale acquisition into offers that renew — protect approval rates on rebills.",
                     }

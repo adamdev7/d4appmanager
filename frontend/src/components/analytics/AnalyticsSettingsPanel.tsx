@@ -176,7 +176,13 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
       setStripeAccounts(res.accounts as AnalyticsStripeAccount[]);
       setMessage(
         res.ok
-          ? `Synced ${res.subscribers.toLocaleString()} subscribers · MRR ${formatMoney(res.mrr, res.currency)} (${res.currency})`
+          ? `Synced ${res.subscribers.toLocaleString()} subscribers · MRR ${formatMoney(res.mrr, res.currency)} (${res.currency})${
+              res.stripe_currency &&
+              res.mrr_native != null &&
+              res.stripe_currency !== res.currency
+                ? ` · from ${formatMoney(res.mrr_native, res.stripe_currency)}`
+                : ""
+            }`
           : `Partial sync. Errors: ${res.errors.join("; ")}`
       );
       onSaved();
@@ -210,8 +216,8 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
             <CardTitle>MRR / Subscriptions</CardTitle>
           </div>
           <CardDescription>
-            Recurring revenue from Stripe uses Stripe&apos;s own currency (e.g. GBP), even if your
-            Shopify store is CAD. Sync pulls unique subscribers and MRR from Billing subscriptions,
+            MRR is converted into your Shopify store currency (e.g. CAD) with the latest FX rate —
+            Stripe may bill in GBP. Sync pulls unique subscribers and MRR from Billing subscriptions,
             or trailing 30-day net charges for charge-only MIDs.
           </CardDescription>
         </CardHeader>

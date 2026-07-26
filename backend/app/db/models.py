@@ -443,7 +443,7 @@ class StoreAnalyticsSettings(Base):
     mrr_manual_amount: Mapped[str] = mapped_column(String(16), default="0")
     mrr_manual_subscribers: Mapped[int] = mapped_column(Integer, default=0)
     mrr_manual_churn_pct: Mapped[str] = mapped_column(String(8), default="0")
-    # ISO currency of last Stripe MRR sync (e.g. GBP) — may differ from store currency
+    # ISO currency of stored MRR amounts (store currency after FX conversion)
     mrr_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     mrr_webhook_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     mrr_webhook_secret_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
@@ -518,3 +518,42 @@ class ProductCost(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class StoreAdsSettings(Base):
+    """Per-store Ads module preferences (Meta credentials live on StoreAnalyticsSettings)."""
+
+    __tablename__ = "store_ads_settings"
+    __table_args__ = (UniqueConstraint("store_id", name="uq_store_ads_settings_store"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    # Client must opt in before we use their OpenAI key for ads reports
+    ai_reports_consent: Mapped[bool] = mapped_column(Boolean, default=False)
+    daily_ai_reports: Mapped[bool] = mapped_column(Boolean, default=False)
+    weekly_ai_reports: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_daily_report_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_weekly_report_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AdsAiReport(Base):
+    """Generated AI analysis of Meta ads performance (daily / weekly / on-demand)."""
+
+    __tablename__ = "ads_ai_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    report_type: Mapped[str] = mapped_column(String(16), default="on_demand")  # daily | weekly | on_demand
+    period: Mapped[str] = mapped_column(String(8), default="7d")
+    title: Mapped[str] = mapped_column(String(255), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    body_markdown: Mapped[str] = mapped_column(Text, default="")
+    model_used: Mapped[str] = mapped_column(String(64), default="")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

@@ -110,8 +110,7 @@ export function AnalyticsPage() {
 
   const currency = dashboard?.currency ?? settings?.currency ?? "USD";
   const storeCurrency = dashboard?.store_currency ?? settings?.currency ?? currency;
-  const mrrCurrency =
-    dashboard?.mrr?.currency || dashboard?.stripe_currency || settings?.mrr_currency || currency;
+  const mrrCurrency = dashboard?.mrr?.currency || storeCurrency || currency;
   const summary = dashboard?.summary;
 
   return (

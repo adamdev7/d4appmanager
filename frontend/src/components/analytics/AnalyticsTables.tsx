@@ -303,7 +303,8 @@ export function ProfitBreakdown({
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
           P&amp;L is in store currency. Stripe charges are converted with historical daily FX when
-          needed; Meta ad spend is never converted to pounds. MRR stays in Stripe&apos;s currency.
+          needed; Meta ad spend is never converted to pounds. MRR is shown in store currency using
+          the latest FX rate.
         </CardDescription>
       </CardHeader>
 

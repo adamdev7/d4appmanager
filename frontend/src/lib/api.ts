@@ -6,8 +6,15 @@ import type {
   AnalyticsSettings,
   AnalyticsProduct,
 } from "@/lib/analyticsTypes";
+import type {
+  AdsAiReport,
+  AdsDashboard,
+  AdsPeriod,
+  AdsSettings,
+} from "@/lib/adsTypes";
 
 export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
+export type { AdsAiReport, AdsDashboard, AdsPeriod, AdsSettings };
 
 const API_BASE = "/api/v1";
 
@@ -677,8 +684,37 @@ export const api = {
         mrr: number;
         subscribers: number;
         currency: string;
+        mrr_native?: number;
+        stripe_currency?: string;
         errors: string[];
         accounts: unknown[];
       }>(`/analytics/stores/${storeId}/mrr/sync-stripe`, { method: "POST" }),
+  },
+  ads: {
+    overview: (storeId: string, period: AdsPeriod = "30d", runScheduled = false) =>
+      request<AdsDashboard>(
+        `/ads/stores/${storeId}/overview?period=${period}${runScheduled ? "&run_scheduled=true" : ""}`
+      ),
+    getSettings: (storeId: string) => request<AdsSettings>(`/ads/stores/${storeId}/settings`),
+    updateSettings: (storeId: string, data: object) =>
+      request<AdsSettings>(`/ads/stores/${storeId}/settings`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    testMeta: (storeId: string, data: object) =>
+      request<{ ok: boolean; message: string; account_name: string | null }>(
+        `/ads/stores/${storeId}/test-meta`,
+        { method: "POST", body: JSON.stringify(data) }
+      ),
+    listReports: (storeId: string) =>
+      request<AdsAiReport[]>(`/ads/stores/${storeId}/reports`),
+    generateReport: (
+      storeId: string,
+      data: { report_type?: string; period?: AdsPeriod } = {}
+    ) =>
+      request<AdsAiReport>(`/ads/stores/${storeId}/reports/generate`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
   },
 };
