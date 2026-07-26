@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
-import { Layers } from "lucide-react";
 import type { ReactNode } from "react";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 import { SiteFooter } from "./SiteFooter";
 
 export function LegalLayout({
@@ -16,10 +16,8 @@ export function LegalLayout({
     <div className="min-h-screen bg-surface-muted flex flex-col">
       <header className="border-b border-border bg-surface">
         <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-4">
-          <Link to="/login" className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white">
-              <Layers className="h-5 w-5" />
-            </div>
+          <Link to="/" className="flex items-center gap-2.5">
+            <BrandLogo size="sm" />
             <span className="font-semibold tracking-tight text-content">App Manager</span>
           </Link>
           <Link

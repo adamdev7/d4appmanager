@@ -20,6 +20,7 @@ import { AnalyticsPage } from "@/pages/modules/AnalyticsPage";
 import { AdsPage } from "@/pages/modules/AdsPage";
 import { PrivacyPage } from "@/pages/legal/PrivacyPage";
 import { TermsPage } from "@/pages/legal/TermsPage";
+import { HomePage } from "@/pages/HomePage";
 
 export default function App() {
   return (
@@ -28,7 +29,7 @@ export default function App() {
         <StoreProvider>
           <BrowserRouter>
             <Routes>
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/" element={<HomePage />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="/register" element={<RegisterPage />} />
               <Route path="/forgot-password" element={<ForgotPasswordPage />} />

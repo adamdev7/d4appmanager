@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { Link } from "react-router-dom";
-import { Layers } from "lucide-react";
 import type { ReactNode } from "react";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 import { SiteFooter } from "./SiteFooter";
 
 export function AuthLayout({
@@ -18,10 +18,8 @@ export function AuthLayout({
       <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-gradient-to-br from-brand-900 via-brand-800 to-slate-900">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-brand-500/20 via-transparent to-transparent" />
         <div className="relative z-10 flex flex-col justify-between p-12 text-white">
-          <Link to="/" className="flex items-center gap-2.5">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/10 backdrop-blur">
-              <Layers className="h-5 w-5" />
-            </div>
+          <Link to="/" className="flex items-center gap-3">
+            <BrandLogo size="md" />
             <span className="text-lg font-semibold tracking-tight">App Manager</span>
           </Link>
           <div className="max-w-md">
@@ -38,11 +36,11 @@ export function AuthLayout({
       </div>
 
       <div className="flex flex-1 flex-col justify-center px-6 py-12 lg:px-16 bg-surface-muted">
-        <div className="lg:hidden mb-8 flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white">
-            <Layers className="h-5 w-5" />
-          </div>
-          <span className="font-semibold text-content">App Manager</span>
+        <div className="lg:hidden mb-8">
+          <Link to="/" className="inline-flex items-center gap-2.5">
+            <BrandLogo size="sm" />
+            <span className="font-semibold text-content">App Manager</span>
+          </Link>
         </div>
         <motion.div
           initial={{ opacity: 0, y: 12 }}

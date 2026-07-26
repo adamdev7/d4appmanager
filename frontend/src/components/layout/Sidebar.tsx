@@ -9,12 +9,12 @@ import {
   Headphones,
   Settings,
   Store,
-  Layers,
   ChevronLeft,
   X,
   Megaphone,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { BrandLogo } from "@/components/brand/BrandLogo";
 import { StoreSwitcher } from "@/components/stores/StoreSwitcher";
 
 const mainNav = [
@@ -61,9 +61,7 @@ export function Sidebar({
       )}
     >
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-600 text-white">
-          <Layers className="h-4 w-4" />
-        </div>
+        <BrandLogo size="sm" className="shrink-0" />
         {showLabels && (
           <span className="font-semibold text-content tracking-tight flex-1 truncate">
             App Manager

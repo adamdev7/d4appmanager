@@ -29,10 +29,12 @@ export function PrivacyPage() {
             configure.
           </li>
           <li>
-            <strong className="text-content">Email and Gmail data</strong> — when you
-            connect Gmail, we access mailbox metadata and message content needed to
-            operate Email Automation and the AI Email Assistant (for example, reading
-            threads, drafting replies, and sending messages you authorize).
+            <strong className="text-content">Email and Gmail (Google user) data</strong> —
+            when you connect a Google account, we access Google user data through Google
+            OAuth, including your Google account email/profile identifiers and Gmail data
+            needed for the Service (message metadata, message content, labels/read state,
+            and the ability to send mail). This is used for Email Automation and the AI
+            Email Assistant.
           </li>
           <li>
             <strong className="text-content">Advertising data</strong> — when you connect
@@ -77,7 +79,50 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>4. AI processing</h2>
+        <h2>4. Google user data</h2>
+        <p>
+          App Manager’s use of information received from Google APIs adheres to the{" "}
+          <a
+            href="https://developers.google.com/terms/api-services-user-data-policy"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Google API Services User Data Policy
+          </a>
+          , including the Limited Use requirements.
+        </p>
+        <p>
+          When you authorize Google access, App Manager may request scopes that allow us
+          to:
+        </p>
+        <ul>
+          <li>Identify your Google account (openid, email, profile)</li>
+          <li>
+            Read and modify Gmail messages as needed to triage customer mail, draft/send
+            replies, and update read/handled state (
+            <code className="text-content text-sm">gmail.modify</code>)
+          </li>
+          <li>
+            Send email from your connected Gmail account (
+            <code className="text-content text-sm">gmail.send</code>)
+          </li>
+        </ul>
+        <p>
+          We access, use, store, and share Google user data only to provide and improve
+          user-facing features of App Manager that you enable (Email Automation and AI
+          Email Assistant). We do not sell Google user data. We do not use Google user
+          data for serving advertisements. We do not allow humans to read Google user data
+          unless you give us permission, it is necessary for security/compliance, or we
+          are required to by law — and then only with limited access controls.
+        </p>
+        <p>
+          You can revoke App Manager’s access at any time in your Google Account
+          permissions and/or by disconnecting Gmail in App Manager Settings.
+        </p>
+      </section>
+
+      <section className="space-y-3">
+        <h2>5. AI processing</h2>
         <p>
           Certain features, including the AI Email Assistant and AI-assisted ads or
           reporting tools, send relevant content (such as email text, business rules you
@@ -90,7 +135,7 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>5. How we share information</h2>
+        <h2>6. How we share information</h2>
         <p>We may share information with:</p>
         <ul>
           <li>
@@ -120,7 +165,7 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>6. Data retention</h2>
+        <h2>7. Data retention</h2>
         <p>
           We retain account, store, email, tracking, and analytics data for as long as
           needed to provide the Service and for legitimate business purposes such as
@@ -131,7 +176,7 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>7. Security</h2>
+        <h2>8. Security</h2>
         <p>
           We use administrative, technical, and organizational measures designed to
           protect information, including encrypted transport (HTTPS), hashed passwords, and
@@ -141,7 +186,7 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>8. Your choices and rights</h2>
+        <h2>9. Your choices and rights</h2>
         <p>Depending on your location, you may have rights to:</p>
         <ul>
           <li>Access, correct, or delete personal information we hold about you</li>
@@ -157,7 +202,7 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>9. International transfers</h2>
+        <h2>10. International transfers</h2>
         <p>
           We may process and store information in countries other than where you are
           located. Where required, we use appropriate safeguards for cross-border
@@ -166,7 +211,7 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>10. Children’s privacy</h2>
+        <h2>11. Children’s privacy</h2>
         <p>
           App Manager is intended for business users. We do not knowingly collect personal
           information from children under 16.
@@ -174,7 +219,7 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>11. Changes to this policy</h2>
+        <h2>12. Changes to this policy</h2>
         <p>
           We may update this Privacy Policy from time to time. We will post the revised
           version on this page and update the “Last updated” date. Continued use of the
@@ -184,7 +229,7 @@ export function PrivacyPage() {
       </section>
 
       <section className="space-y-3">
-        <h2>12. Contact</h2>
+        <h2>13. Contact</h2>
         <p>
           For privacy questions or requests, contact D4TECH regarding App Manager. You can
           also reach us through your account settings or the support channels provided in

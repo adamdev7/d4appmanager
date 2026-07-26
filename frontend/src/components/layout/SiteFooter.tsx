@@ -6,16 +6,19 @@ export function SiteFooter({
   variant = "default",
 }: {
   className?: string;
-  variant?: "default" | "auth" | "legal";
+  variant?: "default" | "auth" | "legal" | "home";
 }) {
   const year = new Date().getFullYear();
   const isAuth = variant === "auth";
+  const isHome = variant === "home";
 
   return (
     <footer
       className={cn(
         "flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between text-sm",
-        isAuth ? "text-brand-200/60" : "text-content-subtle border-t border-border pt-6",
+        isAuth && "text-brand-200/60",
+        isHome && "text-white/45",
+        !isAuth && !isHome && "text-content-subtle border-t border-border pt-6",
         className
       )}
     >
@@ -25,9 +28,9 @@ export function SiteFooter({
           to="/privacy"
           className={cn(
             "transition-colors",
-            isAuth
-              ? "hover:text-brand-100"
-              : "text-content-muted hover:text-brand-600"
+            isAuth && "hover:text-brand-100",
+            isHome && "text-white/60 hover:text-[#9FE870]",
+            !isAuth && !isHome && "text-content-muted hover:text-brand-600"
           )}
         >
           Privacy Policy
@@ -36,9 +39,9 @@ export function SiteFooter({
           to="/terms"
           className={cn(
             "transition-colors",
-            isAuth
-              ? "hover:text-brand-100"
-              : "text-content-muted hover:text-brand-600"
+            isAuth && "hover:text-brand-100",
+            isHome && "text-white/60 hover:text-[#9FE870]",
+            !isAuth && !isHome && "text-content-muted hover:text-brand-600"
           )}
         >
           Terms of Service

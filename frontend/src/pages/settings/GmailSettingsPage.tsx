@@ -115,14 +115,16 @@ export function GmailSettingsPage() {
             <Mail className="h-6 w-6 text-red-500" />
           </div>
           <div className="flex-1">
-            <CardTitle>Connect Gmail</CardTitle>
+            <CardTitle>Connect Gmail with Google</CardTitle>
             <CardDescription>
-              Authorize Google to send emails. You will be redirected to Google sign-in.
+              App Manager uses Google OAuth so it can send and manage business email from
+              your Gmail account for Email Automation and the AI Email Assistant. You will
+              be redirected to Google to review and approve access.
             </CardDescription>
           </div>
           <Button onClick={handleConnectGmail} isLoading={connecting}>
             <Plus className="h-4 w-4" />
-            Connect Gmail
+            Connect with Google
           </Button>
         </div>
       </Card>
