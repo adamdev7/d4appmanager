@@ -3,6 +3,7 @@ import base64
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from email.utils import parseaddr
 
@@ -271,15 +272,24 @@ class GmailInboxClient:
                 for h in msg.get("payload", {}).get("headers", [])
             }
             from_header = headers.get("from", "Unknown")
-            body = self._extract_body(msg.get("payload", {})) or msg.get("snippet", "")
+            snippet = msg.get("snippet", "") or ""
+            body = self._extract_body(msg.get("payload", {})) or snippet
             from_lower = from_header.lower()
             is_ours = our_email in from_lower
+            internal_ms = int(msg.get("internalDate") or 0)
+            sent_at = (
+                datetime.fromtimestamp(internal_ms / 1000, tz=UTC).isoformat()
+                if internal_ms
+                else None
+            )
             parts.append(
                 ThreadMessagePart(
                     message_id=msg_id,
                     from_header=from_header,
                     body_text=body,
                     is_from_business=is_ours,
+                    sent_at=sent_at,
+                    snippet=snippet,
                 )
             )
         return parts
@@ -346,14 +356,23 @@ class GmailInboxClient:
                     for h in data.get("payload", {}).get("headers", [])
                 }
                 from_header = headers.get("from", "Unknown")
-                body = self._extract_body(data.get("payload", {})) or data.get("snippet", "")
+                snippet = data.get("snippet", "") or ""
+                body = self._extract_body(data.get("payload", {})) or snippet
+                internal_ms = int(data.get("internalDate") or 0)
+                sent_at = (
+                    datetime.fromtimestamp(internal_ms / 1000, tz=UTC).isoformat()
+                    if internal_ms
+                    else None
+                )
                 return (
-                    int(data.get("internalDate") or 0),
+                    internal_ms,
                     ThreadMessagePart(
                         message_id=data.get("id", ref["id"]),
                         from_header=from_header,
                         body_text=body,
                         is_from_business=account.email.lower() in from_header.lower(),
+                        sent_at=sent_at,
+                        snippet=snippet,
                     ),
                 )
 

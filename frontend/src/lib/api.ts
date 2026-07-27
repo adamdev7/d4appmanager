@@ -485,6 +485,46 @@ export const api = {
           } | null;
         }>
       >(`/ai-email-assistant/inbox${storeId ? `?store_id=${storeId}` : ""}`),
+    inboxThread: (inboxEmailId: string) =>
+      request<{
+        inbox_email: {
+          id: string;
+          gmail_message_id: string;
+          thread_id: string;
+          sender: string;
+          sender_email: string;
+          subject: string;
+          body_text: string;
+          detected_intent: string | null;
+          skip_reason: string | null;
+          filter_category: string | null;
+          status: string;
+          received_at: string;
+          latest_reply: {
+            id: string;
+            inbox_email_id: string;
+            generated_body: string;
+            edited_body: string | null;
+            effective_body: string;
+            status: string;
+            model_used: string;
+            detected_intent: string | null;
+            error_message: string | null;
+            created_at: string;
+            sent_at: string | null;
+          } | null;
+        };
+        messages: Array<{
+          message_id: string;
+          from_header: string;
+          body_text: string;
+          is_from_business: boolean;
+          sent_at: string | null;
+          snippet: string;
+        }>;
+        message_count: number;
+        assistant_note: string | null;
+      }>(`/ai-email-assistant/inbox/${inboxEmailId}/thread`),
     runAutomation: (storeId?: string) =>
       request<{
         ok: boolean;

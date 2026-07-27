@@ -71,6 +71,26 @@ class InboxEmailResponse(BaseModel):
     latest_reply: "AIReplyResponse | None" = None
 
 
+class ThreadMessageResponse(BaseModel):
+    """One message in a Gmail conversation thread (customer or business)."""
+
+    message_id: str
+    from_header: str
+    body_text: str
+    is_from_business: bool
+    sent_at: str | None = None
+    snippet: str = ""
+
+
+class InboxThreadResponse(BaseModel):
+    """Full conversation for the inbox detail view (mailbox + AI monitoring)."""
+
+    inbox_email: InboxEmailResponse
+    messages: list[ThreadMessageResponse] = []
+    message_count: int = 0
+    assistant_note: str | None = None
+
+
 class AIReplyResponse(BaseModel):
     id: str
     inbox_email_id: str

@@ -13,6 +13,7 @@ from app.models.ai_email_assistant import (
     AutomationRunResponse,
     FullHistoryScanRequest,
     FullHistoryScanResponse,
+    InboxThreadResponse,
     OpenAIKeyStatusResponse,
     SetOpenAIKeyBody,
     SyncInboxRequest,
@@ -74,6 +75,16 @@ async def list_inbox(
     db: Session = Depends(get_db),
 ):
     return _service.list_inbox(db, user, store_id=store_id, limit=limit)
+
+
+@router.get("/inbox/{inbox_email_id}/thread", response_model=InboxThreadResponse)
+async def get_inbox_thread(
+    inbox_email_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    """Full Gmail conversation for mailbox-style monitoring of the assistant."""
+    return await _service.get_inbox_thread(db, user, inbox_email_id)
 
 
 @router.post("/automation/run", response_model=AutomationRunResponse)

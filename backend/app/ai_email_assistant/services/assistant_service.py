@@ -44,10 +44,12 @@ from app.models.ai_email_assistant import (
     AIReplyResponse,
     FullHistoryScanResponse,
     InboxEmailResponse,
+    InboxThreadResponse,
     NamedCount,
     OpenAIKeyStatusResponse,
     PeriodStats,
     SetOpenAIKeyBody,
+    ThreadMessageResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -481,6 +483,93 @@ class AIEmailAssistantService:
             .limit(limit)
         ).all()
         return [self._serialize_inbox(e) for e in emails]
+
+    def _assistant_note_for_email(self, email: InboxEmail) -> str:
+        """Short monitoring note explaining what the assistant did / will do."""
+        if email.status == InboxEmailStatus.SKIPPED.value:
+            reason = email.skip_reason or "left unread as not needing a reply"
+            return f"Assistant filtered this conversation — {reason}"
+        if email.status == InboxEmailStatus.REPLIED.value:
+            return "Assistant already replied in this thread via Gmail."
+        if email.status == InboxEmailStatus.DRAFT_PENDING.value:
+            return "Assistant drafted a reply — review it below before sending."
+        if email.status == InboxEmailStatus.NEW.value:
+            return "Waiting on the assistant — open Write AI reply or let autopilot handle it."
+        return f"Assistant status: {email.status}"
+
+    async def get_inbox_thread(
+        self, db: Session, user: User, inbox_email_id: str
+    ) -> InboxThreadResponse:
+        """Load the Gmail conversation for mailbox-style monitoring."""
+        email = db.get(InboxEmail, inbox_email_id)
+        if not email or email.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        messages: list[ThreadMessageResponse] = []
+        account = db.get(GmailAccount, email.gmail_account_id)
+        if account and account.status == GmailAccountStatus.CONNECTED.value:
+            client = GmailInboxClient(db)
+            parts = await client.get_thread_conversation(
+                account, email.thread_id, max_messages=40
+            )
+            messages = [
+                ThreadMessageResponse(
+                    message_id=p.message_id,
+                    from_header=p.from_header,
+                    body_text=p.body_text,
+                    is_from_business=p.is_from_business,
+                    sent_at=p.sent_at,
+                    snippet=p.snippet or (p.body_text[:160] if p.body_text else ""),
+                )
+                for p in parts
+            ]
+
+        # Fallback when Gmail thread can't be loaded — still show the stored message
+        if not messages and email.body_text:
+            messages = [
+                ThreadMessageResponse(
+                    message_id=email.gmail_message_id,
+                    from_header=email.sender or email.sender_email,
+                    body_text=email.body_text,
+                    is_from_business=False,
+                    sent_at=email.received_at.isoformat() if email.received_at else None,
+                    snippet=email.body_text[:160],
+                )
+            ]
+
+        # Surface a pending AI draft as a provisional bubble for monitoring
+        latest_reply = None
+        if email.replies:
+            latest_reply = sorted(email.replies, key=lambda r: r.created_at, reverse=True)[0]
+
+        if latest_reply and latest_reply.status == AIReplyStatus.DRAFT.value:
+            draft_body = latest_reply.edited_body or latest_reply.generated_body
+            if draft_body:
+                last = messages[-1] if messages else None
+                already_shown = (
+                    last
+                    and last.is_from_business
+                    and (last.body_text or "").strip() == draft_body.strip()
+                )
+                if not already_shown:
+                    messages = [
+                        *messages,
+                        ThreadMessageResponse(
+                            message_id=f"draft:{latest_reply.id}",
+                            from_header="AI Assistant (draft)",
+                            body_text=draft_body,
+                            is_from_business=True,
+                            sent_at=None,
+                            snippet=draft_body[:160],
+                        ),
+                    ]
+
+        return InboxThreadResponse(
+            inbox_email=self._serialize_inbox(email),
+            messages=messages,
+            message_count=len(messages),
+            assistant_note=self._assistant_note_for_email(email),
+        )
 
     async def sync_inbox(
         self,

@@ -23,6 +23,9 @@ import {
   Users,
   ShieldCheck,
   TrendingUp,
+  Eye,
+  MessageSquare,
+  UserRound,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api } from "@/lib/api";
@@ -35,6 +38,7 @@ import { cn } from "@/lib/cn";
 import type { GmailAccount } from "@/types";
 
 type Tab = "inbox" | "stats" | "business" | "settings" | "logs";
+type InboxFilter = "all" | "needs_reply" | "drafts" | "replied" | "filtered";
 
 type PeriodStats = {
   emails_received: number;
@@ -81,6 +85,15 @@ type InboxItem = {
     status: string;
     model_used: string;
   } | null;
+};
+
+type ThreadMessage = {
+  message_id: string;
+  from_header: string;
+  body_text: string;
+  is_from_business: boolean;
+  sent_at: string | null;
+  snippet: string;
 };
 
 type Settings = {
@@ -150,6 +163,50 @@ function formatTime(iso: string) {
   }
 }
 
+function formatRelativeTime(iso: string) {
+  try {
+    const date = new Date(iso);
+    const diffMs = Date.now() - date.getTime();
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return "Just now";
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days}d`;
+    return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  } catch {
+    return iso;
+  }
+}
+
+function displayName(sender: string, email: string) {
+  const name = sender.replace(/<[^>]+>/g, "").trim();
+  if (name && name.toLowerCase() !== email.toLowerCase()) return name;
+  return email.split("@")[0] || email || "Customer";
+}
+
+function initials(name: string) {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  return (parts[0]?.slice(0, 2) || "?").toUpperCase();
+}
+
+function previewSnippet(body: string, max = 90) {
+  const cleaned = body.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "No preview";
+  return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+}
+
+function parseFromName(fromHeader: string) {
+  const name = fromHeader.replace(/<[^>]+>/g, "").replace(/"/g, "").trim();
+  return name || fromHeader || "Unknown";
+}
+
+function isDraftMessage(messageId: string) {
+  return messageId.startsWith("draft:");
+}
+
 function statusBadge(status: string) {
   const map: Record<string, "default" | "success" | "warning" | "muted"> = {
     new: "warning",
@@ -177,6 +234,20 @@ function statusLabel(status: string) {
     processed: "Done",
   };
   return labels[status] ?? status;
+}
+
+function effectiveStatus(item: InboxItem) {
+  if (item.status === "draft_pending" && item.latest_reply?.status === "draft") return "draft";
+  return item.status;
+}
+
+function matchesInboxFilter(item: InboxItem, filter: InboxFilter) {
+  if (filter === "all") return true;
+  if (filter === "needs_reply") return item.status === "new";
+  if (filter === "drafts") return item.status === "draft_pending" || item.latest_reply?.status === "draft";
+  if (filter === "replied") return item.status === "replied" || item.latest_reply?.status === "sent";
+  if (filter === "filtered") return item.status === "skipped";
+  return true;
 }
 
 function filterCategoryLabel(category: string | null) {
@@ -215,8 +286,20 @@ export function AIEmailAssistantPage() {
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [confirmFullScanOpen, setConfirmFullScanOpen] = useState(false);
   const [scanResultMessage, setScanResultMessage] = useState("");
+  const [inboxFilter, setInboxFilter] = useState<InboxFilter>("all");
+  const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
+  const [assistantNote, setAssistantNote] = useState<string | null>(null);
+  const [threadLoading, setThreadLoading] = useState(false);
 
   const selected = selectedId ? inbox.find((e) => e.id === selectedId) ?? null : null;
+  const filteredInbox = inbox.filter((item) => matchesInboxFilter(item, inboxFilter));
+  const filterCounts: Record<InboxFilter, number> = {
+    all: inbox.length,
+    needs_reply: inbox.filter((i) => i.status === "new").length,
+    drafts: inbox.filter((i) => i.status === "draft_pending" || i.latest_reply?.status === "draft").length,
+    replied: inbox.filter((i) => i.status === "replied" || i.latest_reply?.status === "sent").length,
+    filtered: inbox.filter((i) => i.status === "skipped").length,
+  };
 
   const loadAccounts = useCallback(async () => {
     if (!activeStore?.id) {
@@ -237,6 +320,44 @@ export function AIEmailAssistantPage() {
     setInbox(data as InboxItem[]);
     setSelectedId((prev) => prev ?? (data as InboxItem[])[0]?.id ?? null);
   }, [activeStore?.id]);
+
+  const loadThread = useCallback(async (emailId: string) => {
+    setThreadLoading(true);
+    try {
+      const thread = await api.aiEmailAssistant.inboxThread(emailId);
+      setThreadMessages(thread.messages as ThreadMessage[]);
+      setAssistantNote(thread.assistant_note);
+      // Keep list row in sync if thread payload has fresher email state
+      if (thread.inbox_email) {
+        setInbox((prev) =>
+          prev.map((item) =>
+            item.id === thread.inbox_email.id
+              ? {
+                  ...item,
+                  status: thread.inbox_email.status,
+                  skip_reason: thread.inbox_email.skip_reason,
+                  filter_category: thread.inbox_email.filter_category,
+                  detected_intent: thread.inbox_email.detected_intent,
+                  latest_reply: thread.inbox_email.latest_reply
+                    ? {
+                        id: thread.inbox_email.latest_reply.id,
+                        effective_body: thread.inbox_email.latest_reply.effective_body,
+                        status: thread.inbox_email.latest_reply.status,
+                        model_used: thread.inbox_email.latest_reply.model_used,
+                      }
+                    : null,
+                }
+              : item
+          )
+        );
+      }
+    } catch {
+      setThreadMessages([]);
+      setAssistantNote(null);
+    } finally {
+      setThreadLoading(false);
+    }
+  }, []);
 
   const loadSettings = useCallback(async () => {
     if (!activeStore?.id) {
@@ -293,6 +414,15 @@ export function AIEmailAssistantPage() {
       setDraftEdit("");
     }
   }, [selected?.id, selected?.latest_reply?.effective_body]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      setThreadMessages([]);
+      setAssistantNote(null);
+      return;
+    }
+    loadThread(selectedId);
+  }, [selectedId, loadThread]);
 
   const connectedAccount =
     accounts.find((a) => a.status === "connected" && a.id === settings?.gmail_account_id) ??
@@ -368,6 +498,7 @@ export function AIEmailAssistantPage() {
       const reply = await api.aiEmailAssistant.generateReply(emailId, storeId);
       setDraftEdit(reply.effective_body);
       await loadInbox();
+      await loadThread(emailId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not enable reply for this email");
     } finally {
@@ -387,6 +518,7 @@ export function AIEmailAssistantPage() {
       const reply = await api.aiEmailAssistant.generateReply(emailId, storeId);
       setDraftEdit(reply.effective_body);
       await loadInbox();
+      await loadThread(emailId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not generate reply");
       await loadSettings();
@@ -400,6 +532,7 @@ export function AIEmailAssistantPage() {
     try {
       await api.aiEmailAssistant.updateDraft(replyId, draftEdit);
       await loadInbox();
+      if (selectedId) await loadThread(selectedId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save draft");
     } finally {
@@ -412,6 +545,7 @@ export function AIEmailAssistantPage() {
     try {
       await api.aiEmailAssistant.approveReply(replyId);
       await Promise.all([loadInbox(), loadLogs(), loadStats()]);
+      if (selectedId) await loadThread(selectedId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
     } finally {
@@ -424,6 +558,7 @@ export function AIEmailAssistantPage() {
     try {
       await api.aiEmailAssistant.rejectReply(replyId);
       await loadInbox();
+      if (selectedId) await loadThread(selectedId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not reject draft");
     } finally {
@@ -769,178 +904,381 @@ export function AIEmailAssistantPage() {
       </div>
 
       {tab === "inbox" && (
-        <div className="grid gap-4 lg:grid-cols-5">
-          <Card
-            className={cn(
-              "lg:col-span-2 p-0 overflow-hidden",
-              selected && "hidden lg:block"
-            )}
-            padding="none"
-          >
-            <div className="border-b border-border px-4 py-3 flex items-center justify-between">
-              <span className="text-sm font-medium text-content">
-                Inbox
-                <span className="text-content-muted font-normal ml-1">({inbox.length})</span>
-              </span>
-            </div>
-            <ul className="max-h-[min(520px,70vh)] overflow-y-auto divide-y divide-border">
-              {inbox.length === 0 && (
-                <li className="px-4 py-10 text-sm text-content-muted text-center space-y-3">
-                  <p>No emails yet.</p>
-                  <p className="text-xs">
-                    {connectedAccount
-                      ? 'Click "Check inbox" to scan full Gmail history (you will confirm first).'
-                      : "Connect Gmail in Settings to get started."}
-                  </p>
-                </li>
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {(
+              [
+                { id: "all", label: "All" },
+                { id: "needs_reply", label: "Needs reply" },
+                { id: "drafts", label: "Drafts" },
+                { id: "replied", label: "Replied" },
+                { id: "filtered", label: "Filtered" },
+              ] as const
+            ).map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setInboxFilter(id)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                  inboxFilter === id
+                    ? "border-brand-500 bg-brand-500/10 text-brand-700 dark:text-brand-400"
+                    : "border-border text-content-muted hover:text-content hover:bg-surface-muted"
+                )}
+              >
+                {label}
+                <span className="text-content-subtle tabular-nums">{filterCounts[id]}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-5 min-h-[min(640px,72vh)]">
+            <Card
+              className={cn(
+                "lg:col-span-2 p-0 overflow-hidden flex flex-col",
+                selected && "hidden lg:flex"
               )}
-              {inbox.map((item) => (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedId(item.id)}
-                    className={cn(
-                      "w-full text-left px-4 py-3 hover:bg-surface-muted transition-colors",
-                      selected?.id === item.id && "bg-brand-500/10"
-                    )}
-                  >
-                    <p className="text-sm font-medium text-content truncate">{item.subject || "(no subject)"}</p>
-                    <p className="text-xs text-content-muted truncate mt-0.5">{item.sender_email}</p>
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      <Badge variant={statusBadge(item.status)}>
-                        {statusLabel(item.status === "draft_pending" && item.latest_reply?.status === "draft" ? "draft" : item.status)}
-                      </Badge>
-                      {item.filter_category && item.status === "skipped" && (
-                        <Badge variant="muted">{filterCategoryLabel(item.filter_category)}</Badge>
-                      )}
-                      {item.detected_intent && item.status !== "skipped" && (
-                        <Badge variant="default">{intentLabel(item.detected_intent)}</Badge>
-                      )}
-                    </div>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </Card>
-
-          <Card
-            className={cn("lg:col-span-3", !selected && "hidden lg:block")}
-            padding="none"
-          >
-            {selected ? (
-              <div className="space-y-4 p-4 sm:p-5">
-                <button
-                  type="button"
-                  onClick={() => setSelectedId(null)}
-                  className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content lg:hidden"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                  Back to inbox
-                </button>
+              padding="none"
+            >
+              <div className="border-b border-border px-4 py-3 flex items-center justify-between shrink-0">
                 <div>
-                  <h2 className="font-semibold text-content text-lg leading-snug">
-                    {selected.subject || "(no subject)"}
-                  </h2>
-                  <p className="text-sm text-content-muted mt-1">
-                    {selected.sender} · {formatTime(selected.received_at)}
+                  <span className="text-sm font-medium text-content">Mailbox</span>
+                  <p className="text-xs text-content-muted mt-0.5">
+                    Conversations your assistant is watching
                   </p>
                 </div>
-                <div className="rounded-lg bg-surface-muted p-4 text-sm text-content whitespace-pre-wrap max-h-44 overflow-y-auto leading-relaxed">
-                  {selected.body_text || "No message body."}
-                </div>
+                <Badge variant="muted">{filteredInbox.length}</Badge>
+              </div>
+              <ul className="flex-1 overflow-y-auto divide-y divide-border max-h-[min(640px,72vh)]">
+                {filteredInbox.length === 0 && (
+                  <li className="px-4 py-10 text-sm text-content-muted text-center space-y-3">
+                    <p>{inbox.length === 0 ? "No conversations yet." : "Nothing in this view."}</p>
+                    <p className="text-xs">
+                      {inbox.length === 0
+                        ? connectedAccount
+                          ? 'Click "Check inbox" to scan full Gmail history (you will confirm first).'
+                          : "Connect Gmail in Settings to get started."
+                        : "Try another filter to see more conversations."}
+                    </p>
+                  </li>
+                )}
+                {filteredInbox.map((item) => {
+                  const name = displayName(item.sender, item.sender_email);
+                  const st = effectiveStatus(item);
+                  const needsAttention = item.status === "new" || item.status === "draft_pending";
+                  return (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedId(item.id)}
+                        className={cn(
+                          "w-full text-left px-4 py-3.5 hover:bg-surface-muted transition-colors flex gap-3",
+                          selected?.id === item.id && "bg-brand-500/10"
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            "h-10 w-10 rounded-full flex items-center justify-center text-xs font-semibold shrink-0",
+                            needsAttention
+                              ? "bg-brand-500/15 text-brand-700 dark:text-brand-400"
+                              : "bg-surface-muted text-content-muted"
+                          )}
+                        >
+                          {initials(name)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-baseline justify-between gap-2">
+                            <p
+                              className={cn(
+                                "text-sm truncate",
+                                needsAttention ? "font-semibold text-content" : "font-medium text-content"
+                              )}
+                            >
+                              {name}
+                            </p>
+                            <span className="text-[11px] text-content-subtle shrink-0 tabular-nums">
+                              {formatRelativeTime(item.received_at)}
+                            </span>
+                          </div>
+                          <p
+                            className={cn(
+                              "text-sm truncate mt-0.5",
+                              needsAttention ? "font-medium text-content" : "text-content"
+                            )}
+                          >
+                            {item.subject || "(no subject)"}
+                          </p>
+                          <p className="text-xs text-content-muted truncate mt-0.5">
+                            {previewSnippet(item.body_text)}
+                          </p>
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            <Badge variant={statusBadge(st)}>{statusLabel(st)}</Badge>
+                            {item.filter_category && item.status === "skipped" && (
+                              <Badge variant="muted">{filterCategoryLabel(item.filter_category)}</Badge>
+                            )}
+                            {item.detected_intent && item.status !== "skipped" && (
+                              <Badge variant="default">{intentLabel(item.detected_intent)}</Badge>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </Card>
 
-                {selected.status === "skipped" && (
-                  <div className="rounded-lg border border-border bg-surface-muted/60 p-4 space-y-3">
-                    <div className="flex items-start gap-2">
-                      <Ban className="h-4 w-4 text-content-muted shrink-0 mt-0.5" />
-                      <div>
-                        <p className="text-sm font-medium text-content">No reply needed</p>
-                        <p className="text-sm text-content-muted mt-1">
-                          {selected.skip_reason ||
-                            "This email was left as read — the AI decided a reply was not needed."}
+            <Card
+              className={cn(
+                "lg:col-span-3 p-0 overflow-hidden flex flex-col",
+                !selected && "hidden lg:flex"
+              )}
+              padding="none"
+            >
+              {selected ? (
+                <>
+                  <div className="border-b border-border px-4 sm:px-5 py-4 shrink-0 space-y-3">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(null)}
+                      className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content lg:hidden"
+                    >
+                      <ArrowLeft className="h-4 w-4" />
+                      Back to mailbox
+                    </button>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h2 className="font-semibold text-content text-lg leading-snug">
+                          {selected.subject || "(no subject)"}
+                        </h2>
+                        <p className="text-sm text-content-muted mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="inline-flex items-center gap-1.5">
+                            <UserRound className="h-3.5 w-3.5" />
+                            {displayName(selected.sender, selected.sender_email)}
+                          </span>
+                          <span className="text-content-subtle">&lt;{selected.sender_email}&gt;</span>
                         </p>
                       </div>
+                      <Badge variant={statusBadge(effectiveStatus(selected))}>
+                        {statusLabel(effectiveStatus(selected))}
+                      </Badge>
                     </div>
-                    <Button
-                      variant="outline"
-                      onClick={() => replyAnyway(selected.id)}
-                      disabled={!settings?.openai_configured || actionId === selected.id}
-                    >
-                      Reply anyway
-                    </Button>
+                    {(assistantNote || selected.status === "skipped") && (
+                      <div
+                        className={cn(
+                          "rounded-lg px-3 py-2.5 text-sm flex items-start gap-2",
+                          selected.status === "skipped"
+                            ? "bg-surface-muted border border-border text-content-muted"
+                            : selected.status === "draft_pending"
+                              ? "bg-brand-500/10 border border-brand-500/20 text-content"
+                              : "bg-surface-muted/80 border border-border text-content-muted"
+                        )}
+                      >
+                        {selected.status === "skipped" ? (
+                          <Ban className="h-4 w-4 shrink-0 mt-0.5" />
+                        ) : (
+                          <Eye className="h-4 w-4 shrink-0 mt-0.5 text-brand-600 dark:text-brand-400" />
+                        )}
+                        <div>
+                          <p className="font-medium text-content text-xs uppercase tracking-wide mb-0.5">
+                            Assistant
+                          </p>
+                          <p className="leading-relaxed">
+                            {assistantNote ||
+                              selected.skip_reason ||
+                              "Monitoring this conversation."}
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                )}
 
-                {!selected.latest_reply && selected.status !== "skipped" && (
-                  <Button
-                    onClick={() => generateDraft(selected.id)}
-                    disabled={!settings?.openai_configured || actionId === selected.id}
-                  >
-                    <Sparkles className="h-4 w-4 mr-2" />
-                    {actionId === selected.id ? "Writing…" : "Write AI reply"}
-                  </Button>
-                )}
+                  <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-4 max-h-[min(420px,48vh)] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-surface-muted/40 via-transparent to-transparent">
+                    {threadLoading && (
+                      <p className="text-sm text-content-muted text-center py-8">
+                        Loading conversation…
+                      </p>
+                    )}
+                    {!threadLoading && threadMessages.length === 0 && (
+                      <div className="rounded-lg bg-surface-muted p-4 text-sm text-content whitespace-pre-wrap leading-relaxed">
+                        {selected.body_text || "No message body."}
+                      </div>
+                    )}
+                    {!threadLoading &&
+                      threadMessages.map((msg) => {
+                        const draft = isDraftMessage(msg.message_id);
+                        const fromName = parseFromName(msg.from_header);
+                        return (
+                          <div
+                            key={msg.message_id}
+                            className={cn(
+                              "flex gap-2.5",
+                              msg.is_from_business ? "flex-row-reverse" : "flex-row"
+                            )}
+                          >
+                            <div
+                              className={cn(
+                                "h-8 w-8 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0 mt-1",
+                                msg.is_from_business
+                                  ? draft
+                                    ? "bg-brand-500/20 text-brand-700 dark:text-brand-400"
+                                    : "bg-content/10 text-content"
+                                  : "bg-surface-muted text-content-muted"
+                              )}
+                            >
+                              {msg.is_from_business ? (
+                                draft ? (
+                                  <Bot className="h-3.5 w-3.5" />
+                                ) : (
+                                  initials(fromName)
+                                )
+                              ) : (
+                                initials(fromName)
+                              )}
+                            </div>
+                            <div
+                              className={cn(
+                                "max-w-[min(100%,28rem)] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
+                                msg.is_from_business
+                                  ? draft
+                                    ? "bg-brand-500/10 border border-dashed border-brand-500/40 text-content rounded-tr-md"
+                                    : "bg-brand-500 text-white rounded-tr-md"
+                                  : "bg-surface-muted text-content border border-border rounded-tl-md"
+                              )}
+                            >
+                              <div
+                                className={cn(
+                                  "flex items-center justify-between gap-3 mb-1 text-[11px]",
+                                  msg.is_from_business && !draft
+                                    ? "text-white/80"
+                                    : "text-content-muted"
+                                )}
+                              >
+                                <span className="font-medium truncate">
+                                  {draft ? "AI Assistant · draft" : fromName}
+                                </span>
+                                {msg.sent_at && (
+                                  <span className="shrink-0 tabular-nums">
+                                    {formatTime(msg.sent_at)}
+                                  </span>
+                                )}
+                                {draft && (
+                                  <span className="shrink-0 text-brand-700 dark:text-brand-400">
+                                    Not sent
+                                  </span>
+                                )}
+                              </div>
+                              <p className="whitespace-pre-wrap">{msg.body_text || msg.snippet}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
 
-                {selected.latest_reply?.status === "draft" && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm font-medium text-content">Draft reply</label>
-                      <span className="text-xs text-content-subtle">{selected.latest_reply.model_used}</span>
+                  <div className="border-t border-border px-4 sm:px-5 py-4 shrink-0 space-y-3 bg-surface">
+                    <div className="flex items-center gap-2 text-xs font-medium text-content-muted uppercase tracking-wide">
+                      <Bot className="h-3.5 w-3.5" />
+                      Assistant desk
+                      <span className="font-normal normal-case tracking-normal text-content-subtle">
+                        — review what it wrote before it goes out
+                      </span>
                     </div>
-                    <textarea
-                      className={textareaClass}
-                      rows={8}
-                      value={draftEdit}
-                      onChange={(e) => setDraftEdit(e.target.value)}
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        variant="outline"
-                        onClick={() => saveDraftEdits(selected.latest_reply!.id)}
-                        disabled={actionId === selected.latest_reply.id}
-                      >
-                        Save edits
-                      </Button>
-                      <Button
-                        onClick={() => approveSend(selected.latest_reply!.id)}
-                        disabled={actionId === selected.latest_reply.id}
-                      >
-                        <Send className="h-4 w-4 mr-2" />
-                        Send
-                      </Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => rejectDraft(selected.latest_reply!.id)}
-                        disabled={actionId === selected.latest_reply.id}
-                      >
-                        <X className="h-4 w-4 mr-2" />
-                        Discard
-                      </Button>
-                    </div>
-                  </div>
-                )}
 
-                {selected.latest_reply?.status === "sent" && (
-                  <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400 rounded-lg bg-green-500/10 px-3 py-2">
-                    <Check className="h-4 w-4" />
-                    Reply sent via Gmail
-                  </div>
-                )}
+                    {selected.status === "skipped" && (
+                      <div className="space-y-3">
+                        <p className="text-sm text-content-muted">
+                          {selected.skip_reason ||
+                            "The assistant decided a reply was not needed and left this as read."}
+                        </p>
+                        <Button
+                          variant="outline"
+                          onClick={() => replyAnyway(selected.id)}
+                          disabled={!settings?.openai_configured || actionId === selected.id}
+                        >
+                          Reply anyway
+                        </Button>
+                      </div>
+                    )}
 
-                {selected.latest_reply &&
-                  selected.latest_reply.status !== "draft" &&
-                  selected.latest_reply.status !== "sent" && (
-                    <p className="text-sm text-content-muted">
-                      Status: {statusLabel(selected.latest_reply.status)}
-                    </p>
-                  )}
-              </div>
-            ) : (
-              <div className="p-12 text-center text-content-muted text-sm">
-                Select an email from the list, or check your inbox to get started.
-              </div>
-            )}
-          </Card>
+                    {!selected.latest_reply && selected.status !== "skipped" && (
+                      <Button
+                        onClick={() => generateDraft(selected.id)}
+                        disabled={!settings?.openai_configured || actionId === selected.id}
+                      >
+                        <Sparkles className="h-4 w-4 mr-2" />
+                        {actionId === selected.id ? "Writing…" : "Write AI reply"}
+                      </Button>
+                    )}
+
+                    {selected.latest_reply?.status === "draft" && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="text-sm font-medium text-content">Draft reply</label>
+                          <span className="text-xs text-content-subtle">
+                            {selected.latest_reply.model_used}
+                          </span>
+                        </div>
+                        <textarea
+                          className={textareaClass}
+                          rows={6}
+                          value={draftEdit}
+                          onChange={(e) => setDraftEdit(e.target.value)}
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="outline"
+                            onClick={() => saveDraftEdits(selected.latest_reply!.id)}
+                            disabled={actionId === selected.latest_reply.id}
+                          >
+                            Save edits
+                          </Button>
+                          <Button
+                            onClick={() => approveSend(selected.latest_reply!.id)}
+                            disabled={actionId === selected.latest_reply.id}
+                          >
+                            <Send className="h-4 w-4 mr-2" />
+                            Send
+                          </Button>
+                          <Button
+                            variant="outline"
+                            onClick={() => rejectDraft(selected.latest_reply!.id)}
+                            disabled={actionId === selected.latest_reply.id}
+                          >
+                            <X className="h-4 w-4 mr-2" />
+                            Discard
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {selected.latest_reply?.status === "sent" && (
+                      <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400 rounded-lg bg-green-500/10 px-3 py-2">
+                        <Check className="h-4 w-4" />
+                        Reply sent via Gmail — conversation above is the live thread
+                      </div>
+                    )}
+
+                    {selected.latest_reply &&
+                      selected.latest_reply.status !== "draft" &&
+                      selected.latest_reply.status !== "sent" && (
+                        <p className="text-sm text-content-muted">
+                          Status: {statusLabel(selected.latest_reply.status)}
+                        </p>
+                      )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center p-12 text-center text-content-muted text-sm gap-3">
+                  <MessageSquare className="h-8 w-8 text-content-subtle" />
+                  <p>Select a conversation to watch the assistant handle it.</p>
+                  <p className="text-xs max-w-sm">
+                    You’ll see the full client thread, what the AI decided, and any draft waiting for
+                    your approval.
+                  </p>
+                </div>
+              )}
+            </Card>
+          </div>
         </div>
       )}
 

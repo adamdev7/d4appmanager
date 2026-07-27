@@ -11,6 +11,8 @@ class ThreadMessagePart:
     from_header: str
     body_text: str
     is_from_business: bool
+    sent_at: str | None = None
+    snippet: str = ""
 
 
 def format_thread_conversation(
