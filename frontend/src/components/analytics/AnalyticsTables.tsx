@@ -269,24 +269,34 @@ export function ProfitBreakdown({
       value: -summary.ad_spend,
       type: "negative" as const,
     },
-    ...((summary.chargebacks?.amount ?? 0) > 0
+    // Only lost + open hit P&L. Won disputes stay in Stripe revenue (original charge
+    // is still in the revenue total) — do not deduct or re-add, or we'd double-count.
+    ...((summary.chargebacks?.lost_amount ?? 0) > 0
       ? [
           {
-            label: `Chargebacks filed (${summary.chargebacks!.count})`,
-            value: -summary.chargebacks!.amount,
+            label: `Chargebacks lost (${summary.chargebacks!.lost_count})`,
+            value: -summary.chargebacks!.lost_amount,
             type: "negative" as const,
           },
         ]
       : []),
-    ...((summary.chargebacks?.won_amount ?? 0) > 0
+    ...((summary.chargebacks?.open_amount ?? 0) > 0
       ? [
           {
-            label: `Chargebacks won — back to profit (${summary.chargebacks!.won_count})`,
-            value: summary.chargebacks!.won_amount,
-            type: "positive" as const,
+            label: `Chargebacks open (${summary.chargebacks!.open_count})`,
+            value: -summary.chargebacks!.open_amount,
+            type: "negative" as const,
           },
         ]
       : []),
+    ...((summary.manual_investments?.items ?? [])
+      .filter((it) => (it.amount || 0) > 0)
+      .map((it) => ({
+        key: `investment-${it.id}`,
+        label: it.label,
+        value: -it.amount,
+        type: "negative" as const,
+      }))),
     {
       label: "Net profit",
       value: summary.net_profit,
@@ -323,7 +333,7 @@ export function ProfitBreakdown({
     cb?.pnl_cost ?? (cb ? (cb.lost_amount || 0) + (cb.open_amount || 0) : 0);
   const chargebackNote =
     cb && cb.count > 0
-      ? `Lost ${cb.lost_count} + open ${cb.open_count} = ${money(pnlCost, currency)} net chargeback cost · won ${cb.won_count} returned to profit · ${cb.rate_pct}% of Stripe gross disputed`
+      ? `Net chargeback cost ${money(pnlCost, currency)} (lost ${cb.lost_count} + open ${cb.open_count}). Won ${cb.won_count} (${money(cb.won_amount || 0, currency)}) stays in Stripe revenue — not deducted again.`
       : null;
 
   return (
@@ -332,8 +342,9 @@ export function ProfitBreakdown({
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
           P&amp;L is in store currency (CAD). Stripe revenue uses settlement balance amounts —
-          FX only when settlement currency differs. Meta ad spend and chargebacks (lost/open)
-          are deducted after gross profit; won chargebacks are added back. MRR uses spot FX.
+          FX only when settlement currency differs. Meta ad spend, lost/open chargebacks, and
+          dated manual investments are deducted after gross profit. Won chargebacks stay in
+          Stripe revenue (original charge) and are not deducted. MRR uses spot FX.
         </CardDescription>
       </CardHeader>
 
@@ -348,9 +359,9 @@ export function ProfitBreakdown({
       )}
 
       <div className="space-y-2">
-        {rows.map((row) => (
+        {rows.map((row, index) => (
           <div
-            key={row.label}
+            key={"key" in row && row.key ? row.key : `${row.label}-${index}`}
             className={cn(
               "flex justify-between items-center py-2 gap-3",
               row.type === "subtotal" && "border-t border-border pt-3 font-medium",

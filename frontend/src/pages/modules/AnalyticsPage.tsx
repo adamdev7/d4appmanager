@@ -16,6 +16,7 @@ import {
   TrendingUp,
   Wallet,
   Repeat,
+  Landmark,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api, type AnalyticsDashboard, type AnalyticsPeriod, type AnalyticsSettings } from "@/lib/api";
@@ -35,12 +36,14 @@ import {
 } from "@/components/analytics/AnalyticsTables";
 import { AnalyticsSettingsPanel } from "@/components/analytics/AnalyticsSettingsPanel";
 import { ProductCostsPanel } from "@/components/analytics/ProductCostsPanel";
+import { ManualInvestmentPanel } from "@/components/analytics/ManualInvestmentPanel";
 
-type Tab = "dashboard" | "products" | "settings";
+type Tab = "dashboard" | "products" | "investments" | "settings";
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof BarChart3 }> = [
   { id: "dashboard", label: "Dashboard", icon: BarChart3 },
   { id: "products", label: "Product Costs", icon: Package },
+  { id: "investments", label: "Investments", icon: Landmark },
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
 
@@ -299,6 +302,10 @@ export function AnalyticsPage() {
 
       {tab === "products" && (
         <ProductCostsPanel storeId={storeId} currency={currency} />
+      )}
+
+      {tab === "investments" && (
+        <ManualInvestmentPanel storeId={storeId} currency={currency} onChanged={() => load()} />
       )}
 
       {tab === "dashboard" && (

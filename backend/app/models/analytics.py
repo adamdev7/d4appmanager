@@ -58,3 +58,17 @@ class MrrWebhookPayload(BaseModel):
     churn_pct: float = Field(ge=0, default=0)
     snapshot_date: str | None = None  # YYYY-MM-DD
     note: str | None = None
+
+
+class ManualInvestmentCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=128)
+    amount: float = Field(gt=0)
+    investment_date: str = Field(min_length=10, max_length=10)  # YYYY-MM-DD
+    note: str | None = Field(default=None, max_length=255)
+
+
+class ManualInvestmentUpdate(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=128)
+    amount: float | None = Field(default=None, gt=0)
+    investment_date: str | None = Field(default=None, min_length=10, max_length=10)
+    note: str | None = Field(default=None, max_length=255)

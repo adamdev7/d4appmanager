@@ -1,5 +1,21 @@
 export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all" | "custom";
 
+export type ManualInvestment = {
+  id: string;
+  label: string;
+  amount: number;
+  investment_date: string;
+  note?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ManualInvestmentsResponse = {
+  investments: ManualInvestment[];
+  total: number;
+  count: number;
+};
+
 export type AnalyticsStripeAccount = {
   id: string;
   label: string;
@@ -127,6 +143,17 @@ export type AnalyticsDashboard = {
       native_pending?: number;
       delay_days?: number | null;
       holds?: Array<{ days: number; amount: number }>;
+    };
+    manual_investments?: {
+      total: number;
+      count: number;
+      items?: Array<{
+        id: string;
+        label: string;
+        amount: number;
+        investment_date: string;
+        note?: string | null;
+      }>;
     };
     approx_revenue: number;
     meta_approx_revenue: number;

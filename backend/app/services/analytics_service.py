@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_value, encrypt_value
 from app.db.models import (
+    AnalyticsManualInvestment,
     AnalyticsStripeAccount,
     MrrSnapshot,
     ProductCost,
@@ -338,6 +339,136 @@ class AnalyticsService:
         db.delete(row)
         db.commit()
         return {"ok": True, "accounts": self._list_stripe_accounts(db, store_id)}
+
+    @staticmethod
+    def _serialize_investment(row: AnalyticsManualInvestment) -> dict:
+        return {
+            "id": row.id,
+            "label": row.label,
+            "amount": _money(_d(row.amount)),
+            "investment_date": row.investment_date,
+            "note": row.note,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
+
+    @staticmethod
+    def _validate_investment_date(day: str) -> str:
+        try:
+            datetime.strptime(day[:10], "%Y-%m-%d")
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400, detail="investment_date must be YYYY-MM-DD"
+            ) from e
+        return day[:10]
+
+    def list_manual_investments(self, db: Session, user: User, store_id: str) -> dict:
+        self._ensure_store(db, user, store_id)
+        rows = db.scalars(
+            select(AnalyticsManualInvestment)
+            .where(AnalyticsManualInvestment.store_id == store_id)
+            .order_by(
+                AnalyticsManualInvestment.investment_date.desc(),
+                AnalyticsManualInvestment.created_at.desc(),
+            )
+        ).all()
+        items = [self._serialize_investment(r) for r in rows]
+        total = sum((_d(r.amount) for r in rows), Decimal("0"))
+        return {
+            "investments": items,
+            "total": _money(total),
+            "count": len(items),
+        }
+
+    def create_manual_investment(
+        self, db: Session, user: User, store_id: str, body: dict
+    ) -> dict:
+        self._ensure_store(db, user, store_id)
+        label = str(body.get("label") or "Investment").strip()[:128] or "Investment"
+        amount = _d(body.get("amount"))
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+        day = self._validate_investment_date(str(body.get("investment_date") or ""))
+        note_raw = body.get("note")
+        note = str(note_raw).strip()[:255] if note_raw else None
+        row = AnalyticsManualInvestment(
+            id=str(uuid4()),
+            store_id=store_id,
+            label=label,
+            amount=str(amount),
+            investment_date=day,
+            note=note or None,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return {"ok": True, "investment": self._serialize_investment(row)}
+
+    def update_manual_investment(
+        self, db: Session, user: User, store_id: str, investment_id: str, body: dict
+    ) -> dict:
+        self._ensure_store(db, user, store_id)
+        row = db.get(AnalyticsManualInvestment, investment_id)
+        if not row or row.store_id != store_id:
+            raise HTTPException(status_code=404, detail="Investment not found")
+        if "label" in body and body["label"] is not None:
+            label = str(body["label"]).strip()[:128]
+            if not label:
+                raise HTTPException(status_code=400, detail="Label is required")
+            row.label = label
+        if "amount" in body and body["amount"] is not None:
+            amount = _d(body["amount"])
+            if amount <= 0:
+                raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+            row.amount = str(amount)
+        if "investment_date" in body and body["investment_date"] is not None:
+            row.investment_date = self._validate_investment_date(
+                str(body["investment_date"])
+            )
+        if "note" in body:
+            note_raw = body.get("note")
+            if note_raw is None or str(note_raw).strip() == "":
+                row.note = None
+            else:
+                row.note = str(note_raw).strip()[:255]
+        db.commit()
+        db.refresh(row)
+        return {"ok": True, "investment": self._serialize_investment(row)}
+
+    def delete_manual_investment(
+        self, db: Session, user: User, store_id: str, investment_id: str
+    ) -> dict:
+        self._ensure_store(db, user, store_id)
+        row = db.get(AnalyticsManualInvestment, investment_id)
+        if not row or row.store_id != store_id:
+            raise HTTPException(status_code=404, detail="Investment not found")
+        db.delete(row)
+        db.commit()
+        return {"ok": True}
+
+    def _period_manual_investments(
+        self, db: Session, store_id: str, *, since: str, until: str
+    ) -> dict[str, Any]:
+        """Sum manual investments whose date falls in [since, until]."""
+        rows = db.scalars(
+            select(AnalyticsManualInvestment).where(
+                AnalyticsManualInvestment.store_id == store_id,
+                AnalyticsManualInvestment.investment_date >= since[:10],
+                AnalyticsManualInvestment.investment_date <= until[:10],
+            )
+        ).all()
+        total = sum((_d(r.amount) for r in rows), Decimal("0"))
+        items = [
+            {
+                "id": r.id,
+                "label": r.label,
+                "amount": _d(r.amount),
+                "investment_date": r.investment_date,
+                "note": r.note,
+            }
+            for r in rows
+        ]
+        return {"total": total, "count": len(items), "items": items}
 
     async def sync_mrr_from_stripe(self, db: Session, user: User, store_id: str) -> dict:
         store = self._ensure_store(db, user, store_id)
@@ -1534,7 +1665,13 @@ class AnalyticsService:
             (dispute_lost_amount + dispute_open_amount) if stripe_connected else Decimal("0")
         )
         chargeback_recovered = dispute_won_amount if stripe_connected else Decimal("0")
-        net_profit = gross_profit - ad_spend - chargeback_cost  # ad_spend stays in store currency
+        investment_period = self._period_manual_investments(
+            db, store_id, since=since, until=until
+        )
+        investment_cost = Decimal(str(investment_period.get("total") or 0))
+        net_profit = (
+            gross_profit - ad_spend - chargeback_cost - investment_cost
+        )  # ad_spend stays in store currency
 
         meta_est_variable_costs = Decimal("0")
         meta_est_gross_profit = Decimal("0")
@@ -1863,6 +2000,20 @@ class AnalyticsService:
                         {"days": int(h["days"]), "amount": _money(h["amount"])}
                         for h in balance_holds
                         if h["amount"] > 0
+                    ],
+                },
+                "manual_investments": {
+                    "total": _money(investment_cost),
+                    "count": int(investment_period.get("count") or 0),
+                    "items": [
+                        {
+                            "id": it["id"],
+                            "label": it["label"],
+                            "amount": _money(Decimal(str(it["amount"]))),
+                            "investment_date": it["investment_date"],
+                            "note": it.get("note"),
+                        }
+                        for it in (investment_period.get("items") or [])
                     ],
                 },
                 "approx_revenue": _money(approx_revenue),

@@ -5,6 +5,8 @@ import type {
   AnalyticsProductsResponse,
   AnalyticsSettings,
   AnalyticsProduct,
+  ManualInvestment,
+  ManualInvestmentsResponse,
 } from "@/lib/analyticsTypes";
 import type {
   AdsAiReport,
@@ -14,6 +16,7 @@ import type {
 } from "@/lib/adsTypes";
 
 export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
+export type { ManualInvestment, ManualInvestmentsResponse };
 export type { AdsAiReport, AdsDashboard, AdsPeriod, AdsSettings };
 
 const API_BASE = "/api/v1";
@@ -525,6 +528,29 @@ export const api = {
         message_count: number;
         assistant_note: string | null;
       }>(`/ai-email-assistant/inbox/${inboxEmailId}/thread`),
+    relatedOrders: (inboxEmailId: string) =>
+      request<{
+        customer_email: string;
+        shop_domain: string | null;
+        store_connected: boolean;
+        orders: Array<{
+          id: string;
+          order_number: string;
+          customer_email: string;
+          customer_name: string | null;
+          tracking_number: string | null;
+          carrier: string | null;
+          status: string;
+          shopify_financial_status: string | null;
+          shopify_fulfillment_status: string | null;
+          order_total: string | null;
+          currency: string | null;
+          order_placed_at: string | null;
+          match_reason: string;
+          last_updated_at: string | null;
+        }>;
+        message: string | null;
+      }>(`/ai-email-assistant/inbox/${inboxEmailId}/related-orders`),
     runAutomation: (storeId?: string) =>
       request<{
         ok: boolean;
@@ -595,6 +621,19 @@ export const api = {
       }>(
         `/ai-email-assistant/inbox/${inboxEmailId}/generate${storeId ? `?store_id=${storeId}` : ""}`,
         { method: "POST" }
+      ),
+    sendManualReply: (inboxEmailId: string, body: string, storeId?: string) =>
+      request<{
+        id: string;
+        effective_body: string;
+        status: string;
+        model_used: string;
+      }>(
+        `/ai-email-assistant/inbox/${inboxEmailId}/manual-reply${storeId ? `?store_id=${storeId}` : ""}`,
+        {
+          method: "POST",
+          body: JSON.stringify({ body }),
+        }
       ),
     approveReply: (replyId: string) =>
       request(`/ai-email-assistant/replies/${replyId}/approve`, { method: "POST" }),
@@ -738,6 +777,29 @@ export const api = {
       request<{ ok: boolean; updated: number }>(`/analytics/stores/${storeId}/products/costs`, {
         method: "PUT",
         body: JSON.stringify({ items }),
+      }),
+    listInvestments: (storeId: string) =>
+      request<ManualInvestmentsResponse>(`/analytics/stores/${storeId}/investments`),
+    createInvestment: (
+      storeId: string,
+      data: { label: string; amount: number; investment_date: string; note?: string | null },
+    ) =>
+      request<{ ok: boolean; investment: ManualInvestment }>(
+        `/analytics/stores/${storeId}/investments`,
+        { method: "POST", body: JSON.stringify(data) },
+      ),
+    updateInvestment: (
+      storeId: string,
+      investmentId: string,
+      data: Partial<{ label: string; amount: number; investment_date: string; note: string | null }>,
+    ) =>
+      request<{ ok: boolean; investment: ManualInvestment }>(
+        `/analytics/stores/${storeId}/investments/${investmentId}`,
+        { method: "PUT", body: JSON.stringify(data) },
+      ),
+    deleteInvestment: (storeId: string, investmentId: string) =>
+      request<{ ok: boolean }>(`/analytics/stores/${storeId}/investments/${investmentId}`, {
+        method: "DELETE",
       }),
     addStripeAccount: (storeId: string, data: { label: string; secret_key: string }) =>
       request<{ ok: boolean; accounts: unknown[] }>(`/analytics/stores/${storeId}/stripe-accounts`, {

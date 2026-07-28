@@ -6,6 +6,8 @@ from app.db.models import User
 from app.db.session import get_db
 from app.models.analytics import (
     AnalyticsSettingsUpdate,
+    ManualInvestmentCreate,
+    ManualInvestmentUpdate,
     MetaTestRequest,
     MetaTestResponse,
     MrrWebhookPayload,
@@ -79,6 +81,48 @@ async def update_product_costs(
 ):
     items = [item.model_dump() for item in body.items]
     return _service.update_product_costs(db, user, store_id, items)
+
+
+@router.get("/stores/{store_id}/investments")
+async def list_manual_investments(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.list_manual_investments(db, user, store_id)
+
+
+@router.post("/stores/{store_id}/investments")
+async def create_manual_investment(
+    store_id: str,
+    body: ManualInvestmentCreate,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.create_manual_investment(db, user, store_id, body.model_dump())
+
+
+@router.put("/stores/{store_id}/investments/{investment_id}")
+async def update_manual_investment(
+    store_id: str,
+    investment_id: str,
+    body: ManualInvestmentUpdate,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.update_manual_investment(
+        db, user, store_id, investment_id, body.model_dump(exclude_unset=True)
+    )
+
+
+@router.delete("/stores/{store_id}/investments/{investment_id}")
+async def delete_manual_investment(
+    store_id: str,
+    investment_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.delete_manual_investment(db, user, store_id, investment_id)
 
 
 @router.post("/stores/{store_id}/stripe-accounts")
