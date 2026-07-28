@@ -192,6 +192,27 @@ export function AnalyticsPage() {
   const storeCurrency = dashboard?.store_currency ?? settings?.currency ?? currency;
   const mrrCurrency = dashboard?.mrr?.currency || storeCurrency || currency;
   const summary = dashboard?.summary;
+  const stripeBalance = summary?.stripe_balance;
+  const balanceHolds = stripeBalance?.holds ?? [];
+  const balanceHoldTotal =
+    balanceHolds.length > 0
+      ? balanceHolds.reduce((sum, h) => sum + h.amount, 0)
+      : stripeBalance && stripeBalance.pending > 0 && stripeBalance.delay_days != null
+        ? stripeBalance.pending
+        : 0;
+  const balanceHoldDays =
+    balanceHolds.length === 1
+      ? balanceHolds[0].days
+      : balanceHolds.length === 0 &&
+          stripeBalance &&
+          stripeBalance.delay_days != null &&
+          stripeBalance.pending > 0
+        ? stripeBalance.delay_days
+        : null;
+  const showBalanceHold =
+    !!stripeBalance &&
+    balanceHoldTotal > 0 &&
+    (balanceHolds.length > 0 || stripeBalance.delay_days != null);
   const rangeHint =
     period === "custom"
       ? formatRangeLabel(appliedSince, appliedUntil)
@@ -439,6 +460,76 @@ export function AnalyticsPage() {
                   icon={Package}
                 />
               </div>
+
+              {stripeBalance && dashboard.connections.stripe && (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Wallet className="h-4 w-4 text-brand-600" />
+                    <h2 className="text-sm font-semibold text-content">Stripe Balance</h2>
+                    <Badge variant="muted">{currency}</Badge>
+                    {stripeBalance.delay_days != null && (
+                      <Badge variant="muted">{stripeBalance.delay_days}-day settlement</Badge>
+                    )}
+                  </div>
+                  <div
+                    className={cn(
+                      "grid gap-4 sm:grid-cols-2",
+                      showBalanceHold ? "lg:grid-cols-3" : "lg:grid-cols-2",
+                    )}
+                  >
+                    <MetricCard
+                      label="Available to withdraw"
+                      value={formatMoney(stripeBalance.available, currency)}
+                      hint={
+                        stripeBalance.native_currency &&
+                        stripeBalance.native_currency !== currency &&
+                        stripeBalance.native_available != null
+                          ? `Native ${formatMoney(stripeBalance.native_available, stripeBalance.native_currency)}`
+                          : "Ready for payout to your bank"
+                      }
+                      icon={Wallet}
+                      accent={stripeBalance.available > 0 ? "success" : "default"}
+                    />
+                    <MetricCard
+                      label="Pending balance"
+                      value={formatMoney(stripeBalance.pending, currency)}
+                      hint={
+                        stripeBalance.delay_days != null && stripeBalance.pending > 0
+                          ? `Settles on a ~${stripeBalance.delay_days}-day rolling basis`
+                          : stripeBalance.native_currency &&
+                              stripeBalance.native_currency !== currency &&
+                              stripeBalance.native_pending != null
+                            ? `Native ${formatMoney(stripeBalance.native_pending, stripeBalance.native_currency)}`
+                            : "Not yet available to withdraw"
+                      }
+                      icon={Calendar}
+                      accent={stripeBalance.pending > 0 ? "warning" : "default"}
+                    />
+                    {showBalanceHold && (
+                      <MetricCard
+                        label={
+                          balanceHoldDays != null
+                            ? `On hold · ${balanceHoldDays} day${balanceHoldDays === 1 ? "" : "s"}`
+                            : "On hold"
+                        }
+                        value={formatMoney(balanceHoldTotal, currency)}
+                        hint={
+                          balanceHolds.length > 0
+                            ? balanceHolds
+                                .map(
+                                  (h) =>
+                                    `${formatMoney(h.amount, currency)} in ${h.days} day${h.days === 1 ? "" : "s"}`,
+                                )
+                                .join(" · ")
+                            : `Pending funds clearing in ~${stripeBalance.delay_days} days`
+                        }
+                        icon={AlertTriangle}
+                        accent="warning"
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
 
               {summary.chargebacks && dashboard.connections.stripe && (
                 <div className="space-y-3">

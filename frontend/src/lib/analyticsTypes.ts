@@ -115,6 +115,16 @@ export type AnalyticsDashboard = {
       rate_pct: number;
       reasons?: Record<string, number>;
     };
+    stripe_balance?: {
+      available: number;
+      pending: number;
+      currency: string;
+      native_currency?: string | null;
+      native_available?: number;
+      native_pending?: number;
+      delay_days?: number | null;
+      holds?: Array<{ days: number; amount: number }>;
+    };
     approx_revenue: number;
     meta_approx_revenue: number;
     revenue_source: "shopify" | "stripe" | "stripe_mrr" | "meta_approx" | "none";

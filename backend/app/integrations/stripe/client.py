@@ -110,6 +110,155 @@ class StripeClient:
         ok, _, currency = await self.test_connection()
         return currency.upper() if ok and currency else None
 
+    async def retrieve_balance_summary(
+        self,
+        *,
+        currency: str | None = None,
+        hold_pages: int = 5,
+    ) -> dict[str, Any]:
+        """
+        Snapshot of Stripe cash balance: available to withdraw, pending, and
+        pending funds grouped by days until they become available (if any).
+        """
+        preferred = _norm_currency(currency)
+        result: dict[str, Any] = {
+            "available": Decimal("0"),
+            "pending": Decimal("0"),
+            "currency": None,
+            "delay_days": None,
+            "holds": [],  # [{days, amount}] — only when pending funds have available_on
+            "error": None,
+        }
+
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.get(
+                f"{STRIPE_API_BASE}/balance",
+                auth=(self.secret_key, ""),
+            )
+            if resp.status_code != 200:
+                err = (
+                    resp.json().get("error", {})
+                    if resp.headers.get("content-type", "").startswith("application/json")
+                    else {}
+                )
+                result["error"] = err.get("message") or resp.text[:200]
+                return result
+
+            data = resp.json()
+            available_rows = list(data.get("available") or [])
+            pending_rows = list(data.get("pending") or [])
+
+            # Prefer store/settlement currency when present in either bucket
+            def _pick_row(rows: list) -> dict | None:
+                if not rows:
+                    return None
+                if preferred:
+                    for row in rows:
+                        if _norm_currency(row.get("currency")) == preferred:
+                            return row
+                return rows[0]
+
+            avail_row = _pick_row(available_rows)
+            pend_row = _pick_row(pending_rows)
+            cur = _norm_currency(
+                (avail_row or {}).get("currency")
+                or (pend_row or {}).get("currency")
+                or preferred
+            )
+            # If preferred currency wasn't in the first pick, try matching both buckets
+            if preferred:
+                for row in available_rows + pending_rows:
+                    if _norm_currency(row.get("currency")) == preferred:
+                        cur = preferred
+                        break
+
+            if cur:
+                avail_amt = Decimal("0")
+                pend_amt = Decimal("0")
+                for row in available_rows:
+                    if _norm_currency(row.get("currency")) == cur:
+                        avail_amt += from_stripe_amount(row.get("amount"), cur)
+                for row in pending_rows:
+                    if _norm_currency(row.get("currency")) == cur:
+                        pend_amt += from_stripe_amount(row.get("amount"), cur)
+                result["available"] = avail_amt
+                result["pending"] = pend_amt
+                result["currency"] = cur.upper()
+
+            # Payout schedule delay (typical settlement hold in days)
+            try:
+                acct_resp = await client.get(
+                    f"{STRIPE_API_BASE}/account",
+                    auth=(self.secret_key, ""),
+                )
+                if acct_resp.status_code == 200:
+                    schedule = (
+                        ((acct_resp.json().get("settings") or {}).get("payouts") or {}).get(
+                            "schedule"
+                        )
+                        or {}
+                    )
+                    delay = schedule.get("delay_days")
+                    if delay is not None:
+                        result["delay_days"] = int(delay)
+            except Exception:
+                pass
+
+            # Break down pending funds by days until available_on (only if pending > 0)
+            if result["pending"] > 0:
+                holds: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+                now_ts = int(time.time())
+                starting_after: str | None = None
+                try:
+                    for _ in range(hold_pages):
+                        params: list[tuple[str, str | int]] = [("limit", 100)]
+                        if starting_after:
+                            params.append(("starting_after", starting_after))
+                        if cur:
+                            params.append(("currency", cur))
+                        bt_resp = await client.get(
+                            f"{STRIPE_API_BASE}/balance_transactions",
+                            params=params,
+                            auth=(self.secret_key, ""),
+                        )
+                        if bt_resp.status_code != 200:
+                            break
+                        payload = bt_resp.json()
+                        batch = list(payload.get("data") or [])
+                        all_past = True
+                        for bt in batch:
+                            available_on = int(bt.get("available_on") or 0)
+                            if available_on <= now_ts:
+                                continue
+                            all_past = False
+                            if (bt.get("status") or "").lower() != "pending":
+                                continue
+                            bt_cur = _norm_currency(bt.get("currency")) or cur
+                            if cur and bt_cur != cur:
+                                continue
+                            net = from_stripe_amount(bt.get("net"), bt_cur)
+                            if net <= 0:
+                                continue
+                            days = max(
+                                1,
+                                int((available_on - now_ts + 86399) // 86400),
+                            )
+                            holds[days] += net
+                        if not payload.get("has_more") or not batch or all_past:
+                            break
+                        starting_after = batch[-1].get("id")
+                        if not starting_after:
+                            break
+                except Exception:
+                    pass
+
+                result["holds"] = [
+                    {"days": days, "amount": amount}
+                    for days, amount in sorted(holds.items())
+                ]
+
+        return result
+
     async def list_active_subscriptions(self, *, limit_pages: int = 50) -> list[dict]:
         """Paginate subscriptions that count as current subscribers."""
         subs: list[dict] = []

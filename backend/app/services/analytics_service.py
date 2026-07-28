@@ -626,6 +626,13 @@ class AnalyticsService:
                 "reasons": {},
                 "rate_pct": 0.0,
             },
+            "balance": {
+                "available": Decimal("0"),
+                "pending": Decimal("0"),
+                "currency": None,
+                "delay_days": None,
+                "holds": [],
+            },
         }
         if not accounts:
             return empty
@@ -678,6 +685,11 @@ class AnalyticsService:
             "currency": None,
             "reasons": defaultdict(int),
         }
+        balance_available = Decimal("0")
+        balance_pending = Decimal("0")
+        balance_currency: str | None = None
+        balance_delay_days: int | None = None
+        balance_holds: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
 
         for acct in accounts:
             try:
@@ -735,6 +747,34 @@ class AnalyticsService:
                         errors.append(f"{acct.label} disputes: {disputes['error']}")
                 except Exception as de:
                     errors.append(f"{acct.label} disputes: {de}")
+
+                try:
+                    bal = await client.retrieve_balance_summary(currency=prefer)
+                    if bal.get("error"):
+                        errors.append(f"{acct.label} balance: {bal['error']}")
+                    else:
+                        bal_cur = str(bal.get("currency") or "").upper() or None
+                        if bal_cur and not balance_currency:
+                            balance_currency = bal_cur
+                        elif bal_cur and prefer and bal_cur == prefer:
+                            balance_currency = prefer
+                        # Only sum buckets in the same currency (avoid mixing FX here)
+                        if not balance_currency or bal_cur == balance_currency:
+                            balance_available += Decimal(str(bal.get("available") or 0))
+                            balance_pending += Decimal(str(bal.get("pending") or 0))
+                            for hold in bal.get("holds") or []:
+                                days = int(hold.get("days") or 0)
+                                if days > 0:
+                                    balance_holds[days] += Decimal(
+                                        str(hold.get("amount") or 0)
+                                    )
+                        delay = bal.get("delay_days")
+                        if delay is not None:
+                            delay_i = int(delay)
+                            if balance_delay_days is None or delay_i > balance_delay_days:
+                                balance_delay_days = delay_i
+                except Exception as be:
+                    errors.append(f"{acct.label} balance: {be}")
             except Exception as e:
                 errors.append(f"{acct.label}: {e}")
 
@@ -777,6 +817,16 @@ class AnalyticsService:
                 "currency": dispute_acc["currency"] or detected_currency,
                 "reasons": dict(dispute_acc["reasons"]),
                 "rate_pct": rate_pct,
+            },
+            "balance": {
+                "available": balance_available,
+                "pending": balance_pending,
+                "currency": balance_currency or detected_currency,
+                "delay_days": balance_delay_days,
+                "holds": [
+                    {"days": days, "amount": amount}
+                    for days, amount in sorted(balance_holds.items())
+                ],
             },
         }
 
@@ -1243,6 +1293,27 @@ class AnalyticsService:
         dispute_won_amount_native = Decimal(str(disputes_raw.get("won_amount") or 0))
         dispute_lost_amount_native = Decimal(str(disputes_raw.get("lost_amount") or 0))
 
+        balance_raw = stripe_totals.get("balance") or {}
+        balance_currency = str(
+            balance_raw.get("currency") or stripe_currency or store_currency or ""
+        ).upper() or store_currency
+        balance_available_native = Decimal(str(balance_raw.get("available") or 0))
+        balance_pending_native = Decimal(str(balance_raw.get("pending") or 0))
+        balance_delay_days = balance_raw.get("delay_days")
+        if balance_delay_days is not None:
+            try:
+                balance_delay_days = int(balance_delay_days)
+            except (TypeError, ValueError):
+                balance_delay_days = None
+        balance_holds_native = [
+            {
+                "days": int(h.get("days") or 0),
+                "amount": Decimal(str(h.get("amount") or 0)),
+            }
+            for h in (balance_raw.get("holds") or [])
+            if int(h.get("days") or 0) > 0
+        ]
+
         pnl_currency = store_currency  # P&L always in store currency (CAD)
         ad_spend_native = ad_spend
         ad_spend_currency = store_currency  # Meta stays in store currency — never GBP
@@ -1277,6 +1348,11 @@ class AnalyticsService:
         dispute_open_amount = dispute_open_amount_native
         dispute_won_amount = dispute_won_amount_native
         dispute_lost_amount = dispute_lost_amount_native
+        balance_available = balance_available_native
+        balance_pending = balance_pending_native
+        balance_holds = [
+            {"days": h["days"], "amount": h["amount"]} for h in balance_holds_native
+        ]
         stripe_fx_note: str | None = None
         daily_stripe_cad: dict[str, Decimal] = dict(daily_stripe_native)
 
@@ -1376,6 +1452,35 @@ class AnalyticsService:
                     from_currency=dispute_currency,
                     to_currency=store_currency,
                 )
+            except FxError:
+                pass
+
+        # Cash balance snapshot may settle in a different currency than the store
+        if (
+            balance_currency
+            and balance_currency != store_currency
+            and (balance_available_native != 0 or balance_pending_native != 0)
+        ):
+            try:
+                balance_available = await convert_amount(
+                    balance_available_native,
+                    from_currency=balance_currency,
+                    to_currency=store_currency,
+                )
+                balance_pending = await convert_amount(
+                    balance_pending_native,
+                    from_currency=balance_currency,
+                    to_currency=store_currency,
+                )
+                converted_holds = []
+                for h in balance_holds_native:
+                    amt = await convert_amount(
+                        h["amount"],
+                        from_currency=balance_currency,
+                        to_currency=store_currency,
+                    )
+                    converted_holds.append({"days": h["days"], "amount": amt})
+                balance_holds = converted_holds
             except FxError:
                 pass
 
@@ -1737,6 +1842,20 @@ class AnalyticsService:
                     "native_currency": dispute_currency,
                     "rate_pct": dispute_rate_pct,
                     "reasons": disputes_raw.get("reasons") or {},
+                },
+                "stripe_balance": {
+                    "available": _money(balance_available),
+                    "pending": _money(balance_pending),
+                    "currency": store_currency,
+                    "native_currency": balance_currency,
+                    "native_available": _money(balance_available_native),
+                    "native_pending": _money(balance_pending_native),
+                    "delay_days": balance_delay_days,
+                    "holds": [
+                        {"days": int(h["days"]), "amount": _money(h["amount"])}
+                        for h in balance_holds
+                        if h["amount"] > 0
+                    ],
                 },
                 "approx_revenue": _money(approx_revenue),
                 "meta_approx_revenue": _money(meta_approx_revenue),
