@@ -1529,7 +1529,12 @@ class AnalyticsService:
             gross_profit = gross_profit + applied_prior_revenue - applied_prior_costs
 
         display_revenue = base_revenue + applied_prior_revenue
-        net_profit = gross_profit - ad_spend  # ad_spend stays in store currency
+        # Lost/open chargebacks reduce profit; won disputes are recovered and not deducted.
+        chargeback_cost = (
+            (dispute_lost_amount + dispute_open_amount) if stripe_connected else Decimal("0")
+        )
+        chargeback_recovered = dispute_won_amount if stripe_connected else Decimal("0")
+        net_profit = gross_profit - ad_spend - chargeback_cost  # ad_spend stays in store currency
 
         meta_est_variable_costs = Decimal("0")
         meta_est_gross_profit = Decimal("0")
@@ -1838,6 +1843,9 @@ class AnalyticsService:
                     "open_amount": _money(dispute_open_amount),
                     "won_amount": _money(dispute_won_amount),
                     "lost_amount": _money(dispute_lost_amount),
+                    # P&L uses lost + open only; won stays in / returns to profit
+                    "pnl_cost": _money(chargeback_cost),
+                    "recovered": _money(chargeback_recovered),
                     "currency": store_currency,
                     "native_currency": dispute_currency,
                     "rate_pct": dispute_rate_pct,

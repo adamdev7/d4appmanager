@@ -110,6 +110,9 @@ export type AnalyticsDashboard = {
       open_amount: number;
       won_amount: number;
       lost_amount: number;
+      /** Lost + open deducted from net profit; won excluded (recovered). */
+      pnl_cost?: number;
+      recovered?: number;
       currency: string;
       native_currency?: string | null;
       rate_pct: number;
