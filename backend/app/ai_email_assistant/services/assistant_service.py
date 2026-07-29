@@ -2,14 +2,19 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.ai_email_assistant.ai_service import AIService
 from app.ai_email_assistant.automation_control import stop_autopilot
 from app.ai_email_assistant.duplicate_guard import (
     ALREADY_REPLIED_REASON,
+    GENERATING_MODEL_MARKER,
+    find_active_draft,
+    find_sent_reply,
     mark_thread_siblings_handled,
+    thread_has_answered_in_db,
+    thread_has_sent_reply,
 )
 from app.ai_email_assistant.email_filter import config_from_settings, evaluate_email_filter
 from app.ai_email_assistant.thread_context import format_customer_relationship
@@ -1139,7 +1144,11 @@ class AIEmailAssistantService:
         replied_threads: set[str] = set()
 
         for email in pending:
-            if email.replies:
+            db.refresh(email)
+            if email.status != InboxEmailStatus.NEW.value:
+                continue
+
+            if find_sent_reply(email) or find_active_draft(email):
                 # Draft/reply already exists — mark read so Gmail does not keep it unread.
                 await self._mark_email_read_in_gmail(db, email)
                 continue
@@ -1153,6 +1162,18 @@ class AIEmailAssistantService:
             # in that thread (AI already handled the conversation). Follow-ups that arrive
             # later are still synced and classified against full history.
             if settings_row.one_reply_per_thread and email.thread_id in replied_threads:
+                await self._skip_email_as_duplicate(
+                    db, email, ALREADY_REPLIED_REASON, account=email_account
+                )
+                continue
+
+            # Cross-run / concurrent guard: another worker may have drafted/sent already.
+            if settings_row.one_reply_per_thread and thread_has_answered_in_db(
+                db,
+                gmail_account_id=email.gmail_account_id,
+                thread_id=email.thread_id,
+                exclude_inbox_id=email.id,
+            ):
                 await self._skip_email_as_duplicate(
                     db, email, ALREADY_REPLIED_REASON, account=email_account
                 )
@@ -1241,12 +1262,35 @@ class AIEmailAssistantService:
             raise HTTPException(status_code=404, detail="Email not found for this store")
 
         settings_row = self.get_or_create_settings(db, user, store.id)
+        db.refresh(email)
+
+        # Idempotent: never create a second reply for an email that already has one.
+        existing_sent = find_sent_reply(email)
+        if existing_sent:
+            return self._serialize_reply(existing_sent, email.detected_intent)
+
+        existing_draft = find_active_draft(email)
+        if existing_draft:
+            if existing_draft.status == AIReplyStatus.SENDING.value:
+                return self._serialize_reply(existing_draft, email.detected_intent)
+            if existing_draft.model_used == GENERATING_MODEL_MARKER and not (
+                existing_draft.generated_body or ""
+            ).strip():
+                raise HTTPException(
+                    status_code=409,
+                    detail="A reply is already being generated for this email.",
+                )
+            if settings_row.auto_send_enabled:
+                return await self.approve_and_send(db, user, existing_draft.id)
+            return self._serialize_reply(existing_draft, email.detected_intent)
 
         if email.status == InboxEmailStatus.SKIPPED.value:
             raise HTTPException(
                 status_code=400,
                 detail=email.skip_reason or "This email was filtered and does not need a reply.",
             )
+        if email.status == InboxEmailStatus.REPLIED.value:
+            raise HTTPException(status_code=400, detail="This email was already replied to.")
 
         account = db.get(GmailAccount, email.gmail_account_id)
         if account:
@@ -1260,12 +1304,45 @@ class AIEmailAssistantService:
                 await self._skip_email_as_duplicate(db, email, dup, account=account)
                 raise HTTPException(status_code=400, detail=dup)
 
+        if settings_row.one_reply_per_thread and thread_has_answered_in_db(
+            db,
+            gmail_account_id=email.gmail_account_id,
+            thread_id=email.thread_id,
+            exclude_inbox_id=email.id,
+        ):
+            await self._skip_email_as_duplicate(
+                db, email, ALREADY_REPLIED_REASON, account=account
+            )
+            raise HTTPException(status_code=400, detail=ALREADY_REPLIED_REASON)
+
         await self._apply_email_filter(db, user, email, settings_row)
         db.refresh(email)
         if email.status == InboxEmailStatus.SKIPPED.value:
             raise HTTPException(
                 status_code=400,
                 detail=email.skip_reason or "This email was filtered and does not need a reply.",
+            )
+
+        # Claim the inbox row + insert a placeholder draft BEFORE the slow AI call so
+        # concurrent autopilot/UI runs cannot generate a second reply.
+        reply = AIEmailReply(
+            inbox_email_id=email.id,
+            user_id=user.id,
+            generated_body="",
+            status=AIReplyStatus.DRAFT.value,
+            model_used=GENERATING_MODEL_MARKER,
+        )
+        email.status = InboxEmailStatus.DRAFT_PENDING.value
+        db.add(reply)
+        db.commit()
+        db.refresh(reply)
+
+        if settings_row.one_reply_per_thread:
+            mark_thread_siblings_handled(
+                db,
+                gmail_account_id=email.gmail_account_id,
+                thread_id=email.thread_id,
+                keep_inbox_id=email.id,
             )
 
         thread_context = None
@@ -1285,23 +1362,27 @@ class AIEmailAssistantService:
                 model_override=settings_row.openai_model,
             )
         except OpenAIServiceError as exc:
+            reply.status = AIReplyStatus.FAILED.value
+            reply.error_message = exc.user_message
+            email.status = InboxEmailStatus.NEW.value
+            db.commit()
             raise HTTPException(
                 status_code=self._http_status_for_ai_error(exc),
                 detail=exc.user_message,
             ) from exc
+        except Exception:
+            reply.status = AIReplyStatus.FAILED.value
+            reply.error_message = "Reply generation failed"
+            email.status = InboxEmailStatus.NEW.value
+            db.commit()
+            raise
 
         email.detected_intent = result.intent
         email.status = InboxEmailStatus.DRAFT_PENDING.value
-
-        reply = AIEmailReply(
-            inbox_email_id=email.id,
-            user_id=user.id,
-            generated_body=result.body,
-            status=AIReplyStatus.DRAFT.value,
-            model_used=result.model,
-            prompt_snapshot=result.prompt_snapshot,
-        )
-        db.add(reply)
+        reply.generated_body = result.body
+        reply.model_used = result.model
+        reply.prompt_snapshot = result.prompt_snapshot
+        reply.error_message = None
         db.commit()
         db.refresh(reply)
 
@@ -1341,19 +1422,27 @@ class AIEmailAssistantService:
         if not account or account.status != GmailAccountStatus.CONNECTED.value:
             raise HTTPException(status_code=400, detail="Connect Gmail before sending a reply")
 
+        existing_sent = find_sent_reply(email)
+        if existing_sent:
+            return self._serialize_reply(existing_sent, email.detected_intent)
+
         # Allow replying to filtered threads from the in-app mailbox
         if email.status == InboxEmailStatus.SKIPPED.value:
             email.skip_reason = None
             email.filter_category = None
 
         # Reuse an existing draft if present; otherwise create a manual reply record
-        existing_draft = next(
-            (r for r in (email.replies or []) if r.status == AIReplyStatus.DRAFT.value),
-            None,
-        )
-        if existing_draft:
+        existing_draft = find_active_draft(email)
+        if existing_draft and existing_draft.status == AIReplyStatus.SENDING.value:
+            return self._serialize_reply(existing_draft, email.detected_intent)
+        if existing_draft and existing_draft.status == AIReplyStatus.DRAFT.value:
             existing_draft.edited_body = text
-            existing_draft.model_used = existing_draft.model_used or "manual"
+            existing_draft.model_used = (
+                existing_draft.model_used
+                if existing_draft.model_used
+                and existing_draft.model_used != GENERATING_MODEL_MARKER
+                else "manual"
+            )
             reply = existing_draft
         else:
             reply = AIEmailReply(
@@ -1375,16 +1464,87 @@ class AIEmailAssistantService:
         reply = db.get(AIEmailReply, reply_id)
         if not reply or reply.user_id != user.id:
             raise HTTPException(status_code=404, detail="Reply not found")
+
+        # Already finished — idempotent success.
         if reply.status == AIReplyStatus.SENT.value:
             return self._serialize_reply(reply, reply.inbox_email.detected_intent)
+
+        # Another request is already sending this draft.
+        if reply.status == AIReplyStatus.SENDING.value:
+            return self._serialize_reply(reply, reply.inbox_email.detected_intent)
+
+        if reply.status != AIReplyStatus.DRAFT.value:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Reply cannot be sent (status: {reply.status})",
+            )
+
+        body = (reply.edited_body or reply.generated_body or "").strip()
+        if not body:
+            raise HTTPException(status_code=400, detail="Reply body is empty")
 
         email = reply.inbox_email
         account = db.get(GmailAccount, email.gmail_account_id)
         if not account:
             raise HTTPException(status_code=400, detail="Gmail account missing")
 
-        body = reply.edited_body or reply.generated_body
+        # Atomically claim this draft so concurrent approve/auto-send cannot double-send.
+        claim = db.execute(
+            update(AIEmailReply)
+            .where(
+                AIEmailReply.id == reply_id,
+                AIEmailReply.status == AIReplyStatus.DRAFT.value,
+            )
+            .values(status=AIReplyStatus.SENDING.value, error_message=None)
+        )
+        db.commit()
+        if claim.rowcount == 0:
+            db.refresh(reply)
+            if reply.status == AIReplyStatus.SENT.value:
+                return self._serialize_reply(reply, email.detected_intent)
+            if reply.status == AIReplyStatus.SENDING.value:
+                return self._serialize_reply(reply, email.detected_intent)
+            raise HTTPException(
+                status_code=409,
+                detail="Reply was already handled by another send attempt.",
+            )
+
+        db.refresh(reply)
+
+        # Thread-level guard: a sibling message may already have been answered.
+        if thread_has_sent_reply(
+            db,
+            gmail_account_id=email.gmail_account_id,
+            thread_id=email.thread_id,
+            exclude_reply_id=reply.id,
+        ):
+            reply.status = AIReplyStatus.REJECTED.value
+            reply.error_message = ALREADY_REPLIED_REASON
+            email.status = InboxEmailStatus.SKIPPED.value
+            email.skip_reason = ALREADY_REPLIED_REASON
+            email.processed_at = datetime.now(UTC)
+            db.commit()
+            await self._mark_email_read_in_gmail(db, email, account)
+            raise HTTPException(status_code=400, detail=ALREADY_REPLIED_REASON)
+
+        settings_row = self.get_or_create_settings(db, user, email.store_id)
         client = GmailInboxClient(db)
+
+        # Final Gmail check right before send (closes the race after AI generation).
+        if settings_row.verify_gmail_thread_before_reply:
+            if await client.we_sent_last_in_thread(account, email.thread_id):
+                reply.status = AIReplyStatus.REJECTED.value
+                reply.error_message = (
+                    "The latest message in this thread is already from your business — "
+                    "skipped to avoid sending a duplicate reply."
+                )
+                email.status = InboxEmailStatus.SKIPPED.value
+                email.skip_reason = reply.error_message
+                email.processed_at = datetime.now(UTC)
+                db.commit()
+                await client.mark_thread_as_read(account, email.thread_id)
+                raise HTTPException(status_code=400, detail=reply.error_message)
+
         send_result = await client.send_thread_reply(
             account,
             to=email.sender_email,
@@ -1395,8 +1555,10 @@ class AIEmailAssistantService:
         )
 
         if not send_result:
-            reply.status = AIReplyStatus.FAILED.value
+            # Revert to draft so the user/autopilot can retry without creating a second reply.
+            reply.status = AIReplyStatus.DRAFT.value
             reply.error_message = "Failed to send via Gmail API"
+            email.status = InboxEmailStatus.DRAFT_PENDING.value
             db.commit()
             raise HTTPException(status_code=502, detail="Failed to send reply via Gmail")
 
@@ -1408,7 +1570,6 @@ class AIEmailAssistantService:
         email.processed_at = datetime.now(UTC)
         db.commit()
 
-        settings_row = self.get_or_create_settings(db, user, email.store_id)
         mark_thread_siblings_handled(
             db,
             gmail_account_id=email.gmail_account_id,
@@ -1423,6 +1584,10 @@ class AIEmailAssistantService:
         reply = db.get(AIEmailReply, reply_id)
         if not reply or reply.user_id != user.id:
             raise HTTPException(status_code=404, detail="Reply not found")
+        if reply.status == AIReplyStatus.SENT.value:
+            raise HTTPException(status_code=400, detail="Cannot reject a reply that was already sent")
+        if reply.status == AIReplyStatus.SENDING.value:
+            raise HTTPException(status_code=400, detail="Reply is currently sending")
         reply.status = AIReplyStatus.REJECTED.value
         reply.inbox_email.status = InboxEmailStatus.PROCESSED.value
         db.commit()

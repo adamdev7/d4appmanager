@@ -303,6 +303,7 @@ class InboxEmailStatus(str, enum.Enum):
 
 class AIReplyStatus(str, enum.Enum):
     DRAFT = "draft"
+    SENDING = "sending"
     SENT = "sent"
     FAILED = "failed"
     REJECTED = "rejected"

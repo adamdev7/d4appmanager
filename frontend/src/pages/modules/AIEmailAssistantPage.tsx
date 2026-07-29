@@ -256,6 +256,9 @@ function assistantInsight(item: InboxItem): string | null {
   if (item.status === "draft_pending" || item.latest_reply?.status === "draft") {
     return "Draft ready for review";
   }
+  if (item.latest_reply?.status === "sending") {
+    return "Sending reply…";
+  }
   if (item.status === "replied" || item.latest_reply?.status === "sent") {
     return "Replied via Gmail";
   }
@@ -428,6 +431,7 @@ export function AIEmailAssistantPage() {
   const [savingOpenaiKey, setSavingOpenaiKey] = useState(false);
   const [runningAutomation, setRunningAutomation] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
+  const sendLockRef = useRef<string | null>(null);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [confirmFullScanOpen, setConfirmFullScanOpen] = useState(false);
   const [scanResultMessage, setScanResultMessage] = useState("");
@@ -729,6 +733,8 @@ export function AIEmailAssistantPage() {
   };
 
   const approveSend = async (replyId: string) => {
+    if (sendLockRef.current === replyId || actionId === replyId) return;
+    sendLockRef.current = replyId;
     setActionId(replyId);
     try {
       // Persist textarea edits before send
@@ -742,6 +748,7 @@ export function AIEmailAssistantPage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Send failed");
     } finally {
+      if (sendLockRef.current === replyId) sendLockRef.current = null;
       setActionId(null);
     }
   };

@@ -76,6 +76,8 @@ async def run_automation_for_settings(settings_id: str, *, force: bool = False) 
 
         max_emails = settings_row.automation_max_emails_per_run
 
+        # sync_inbox already drafts/sends pending replies — do not process twice in one cycle
+        # (that race was a common cause of duplicate Gmail sends).
         await _service.sync_inbox(
             db,
             user,
@@ -83,14 +85,11 @@ async def run_automation_for_settings(settings_id: str, *, force: bool = False) 
             store_id=store_id,
             max_results=max_emails,
         )
-        processed = await _service.process_pending_replies(
-            db, user, settings_row, store_id=store_id, limit=max_emails
-        )
 
         settings_row.automation_last_run_at = datetime.now(UTC)
         settings_row.automation_last_error = None
         db.commit()
-        return {"ok": True, "processed": processed, "stopped": False}
+        return {"ok": True, "processed": True, "stopped": False}
     except OpenAIServiceError as exc:
         logger.warning("Autopilot AI error for settings %s: %s", settings_id, exc.user_message)
         row = db.get(AIEmailAssistantSettings, settings_id)
