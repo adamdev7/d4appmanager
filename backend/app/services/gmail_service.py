@@ -131,6 +131,35 @@ class GmailService:
         db.commit()
         return True
 
+    def delete_account(self, db: Session, user: User, account_id: str) -> bool:
+        """Permanently remove a Gmail account and its store links from App Manager."""
+        account = db.get(GmailAccount, account_id)
+        if not account or account.owner_id != user.id:
+            return False
+
+        was_default = account.is_default_sender
+
+        links = db.scalars(
+            select(GmailStoreLink).where(GmailStoreLink.gmail_account_id == account.id)
+        ).all()
+        for link in links:
+            db.delete(link)
+
+        db.delete(account)
+        db.flush()
+
+        if was_default:
+            replacement = db.scalar(
+                select(GmailAccount)
+                .where(GmailAccount.owner_id == user.id)
+                .order_by(GmailAccount.email)
+            )
+            if replacement:
+                replacement.is_default_sender = True
+
+        db.commit()
+        return True
+
     def _email_settings_query(self, user_id: str, store_id: str | None):
         q = select(UserEmailSettings).where(UserEmailSettings.user_id == user_id)
         if store_id is None:

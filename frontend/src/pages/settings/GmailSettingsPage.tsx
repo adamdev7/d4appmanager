@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Mail, Plus, Unplug, Star, CheckCircle } from "lucide-react";
+import { Mail, Plus, Unplug, Star, CheckCircle, Trash2 } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -21,6 +21,7 @@ export function GmailSettingsPage() {
   const [replyTo, setReplyTo] = useState("");
   const [dailyLimit, setDailyLimit] = useState("500");
   const [connecting, setConnecting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const connected = searchParams.get("connected") === "1";
 
@@ -69,8 +70,30 @@ export function GmailSettingsPage() {
   };
 
   const handleDisconnect = async (id: string) => {
-    await api.gmail.disconnect(id);
-    await load();
+    setError("");
+    try {
+      await api.gmail.disconnect(id);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not disconnect Gmail");
+    }
+  };
+
+  const handleDelete = async (account: GmailAccount) => {
+    const ok = window.confirm(
+      `Remove ${account.email} from App Manager? You can connect it again later with Google.`
+    );
+    if (!ok) return;
+    setError("");
+    setDeletingId(account.id);
+    try {
+      await api.gmail.delete(account.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete Gmail account");
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const handleSaveSettings = async () => {
@@ -165,17 +188,34 @@ export function GmailSettingsPage() {
                     </div>
                     <p className="text-sm text-content-muted">{account.email}</p>
                   </div>
-                  {account.status === "connected" && (
-                    <Button size="sm" variant="outline" onClick={() => handleDisconnect(account.id)}>
-                      <Unplug className="h-3.5 w-3.5" />
-                      Disconnect
+                  <div className="flex items-center gap-2 shrink-0">
+                    {account.status === "connected" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleDisconnect(account.id)}
+                      >
+                        <Unplug className="h-3.5 w-3.5" />
+                        Disconnect
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="primary" onClick={handleConnectGmail}>
+                        Reconnect
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Delete ${account.email}`}
+                      title="Delete account"
+                      disabled={deletingId === account.id}
+                      isLoading={deletingId === account.id}
+                      onClick={() => handleDelete(account)}
+                      className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                    >
+                      <Trash2 className="h-4 w-4" />
                     </Button>
-                  )}
-                  {account.status !== "connected" && (
-                    <Button size="sm" variant="primary" onClick={handleConnectGmail}>
-                      Reconnect
-                    </Button>
-                  )}
+                  </div>
                 </div>
               </Card>
             </motion.div>

@@ -55,6 +55,17 @@ async def disconnect_account(
     return {"message": "Account disconnected"}
 
 
+@router.delete("/accounts/{account_id}")
+async def delete_account(
+    account_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    if not _gmail.delete_account(db, user, account_id):
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"message": "Account deleted"}
+
+
 @router.get("/settings")
 async def get_email_settings(
     store_id: str | None = Query(default=None),

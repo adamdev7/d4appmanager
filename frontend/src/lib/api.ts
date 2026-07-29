@@ -289,6 +289,8 @@ export const api = {
       }),
     disconnect: (accountId: string) =>
       request(`/gmail/accounts/${accountId}/disconnect`, { method: "POST" }),
+    delete: (accountId: string) =>
+      request(`/gmail/accounts/${accountId}`, { method: "DELETE" }),
   },
   modules: {
     list: () =>
