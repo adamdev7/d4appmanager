@@ -70,14 +70,14 @@ export function RevenueSpendChart({
 }) {
   const periodLabel = granularity === "monthly" ? "Monthly" : "Daily";
   return (
-    <Card padding="lg">
+    <Card padding="lg" className="min-w-0 overflow-hidden">
       <CardHeader>
         <CardTitle>Revenue vs Ad Spend</CardTitle>
         <CardDescription>{periodLabel} store revenue compared to Meta ad spend</CardDescription>
       </CardHeader>
-      <div className="h-72 w-full">
+      <div className="h-64 sm:h-72 xl:h-80 2xl:h-96 w-full min-w-0">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <AreaChart data={data} margin={{ top: 8, right: 4, left: -12, bottom: 0 }}>
             <defs>
               <linearGradient id="revGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor="#0d9488" stopOpacity={0.3} />
@@ -95,15 +95,17 @@ export function RevenueSpendChart({
               tick={{ fontSize: 11, fill: "var(--color-content-muted)" }}
               axisLine={false}
               tickLine={false}
+              interval="preserveStartEnd"
+              minTickGap={28}
             />
             <YAxis
               tick={{ fontSize: 11, fill: "var(--color-content-muted)" }}
               axisLine={false}
               tickLine={false}
-              width={48}
+              width={40}
             />
             <Tooltip content={<ChartTooltip currency={currency} granularity={granularity} />} />
-            <Legend />
+            <Legend wrapperStyle={{ fontSize: 12 }} />
             <Area
               type="monotone"
               dataKey="revenue"
@@ -138,14 +140,14 @@ export function ProfitChart({
 }) {
   const periodLabel = granularity === "monthly" ? "Monthly" : "Daily";
   return (
-    <Card padding="lg">
+    <Card padding="lg" className="min-w-0 overflow-hidden">
       <CardHeader>
         <CardTitle>{periodLabel} Net Profit</CardTitle>
         <CardDescription>Estimated profit after product costs, fees, and ad spend</CardDescription>
       </CardHeader>
-      <div className="h-56 w-full">
+      <div className="h-52 sm:h-56 xl:h-72 2xl:h-80 w-full min-w-0">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <BarChart data={data} margin={{ top: 8, right: 4, left: -12, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" opacity={0.5} />
             <XAxis
               dataKey="date"
@@ -153,12 +155,14 @@ export function ProfitChart({
               tick={{ fontSize: 11, fill: "var(--color-content-muted)" }}
               axisLine={false}
               tickLine={false}
+              interval="preserveStartEnd"
+              minTickGap={28}
             />
             <YAxis
               tick={{ fontSize: 11, fill: "var(--color-content-muted)" }}
               axisLine={false}
               tickLine={false}
-              width={48}
+              width={40}
             />
             <Tooltip content={<ChartTooltip currency={currency} granularity={granularity} />} />
             <Bar dataKey="profit" name="Net Profit" fill="#0d9488" radius={[4, 4, 0, 0]} />
@@ -178,14 +182,14 @@ export function OrdersChart({
 }) {
   const periodLabel = granularity === "monthly" ? "Orders per Month" : "Orders per Day";
   return (
-    <Card padding="lg">
+    <Card padding="lg" className="min-w-0 overflow-hidden">
       <CardHeader>
         <CardTitle>{periodLabel}</CardTitle>
         <CardDescription>Shopify orders in the selected period</CardDescription>
       </CardHeader>
-      <div className="h-48 w-full">
+      <div className="h-44 sm:h-48 xl:h-64 2xl:h-72 w-full min-w-0">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+          <BarChart data={data} margin={{ top: 8, right: 4, left: -12, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" opacity={0.5} />
             <XAxis
               dataKey="date"
@@ -193,12 +197,14 @@ export function OrdersChart({
               tick={{ fontSize: 11, fill: "var(--color-content-muted)" }}
               axisLine={false}
               tickLine={false}
+              interval="preserveStartEnd"
+              minTickGap={28}
             />
             <YAxis
               tick={{ fontSize: 11, fill: "var(--color-content-muted)" }}
               axisLine={false}
               tickLine={false}
-              width={32}
+              width={28}
               allowDecimals={false}
             />
             <Tooltip />

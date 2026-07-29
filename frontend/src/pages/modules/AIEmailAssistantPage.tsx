@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type TextareaHTMLAttributes } from "react";
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -8,11 +8,9 @@ import {
   Settings2,
   ScrollText,
   Send,
-  X,
   Check,
   AlertCircle,
   Filter,
-  Ban,
   KeyRound,
   Bot,
   Building2,
@@ -23,9 +21,9 @@ import {
   Users,
   ShieldCheck,
   TrendingUp,
-  Eye,
-  MessageSquare,
-  UserRound,
+  PenLine,
+  Package,
+  ExternalLink,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api } from "@/lib/api";
@@ -96,6 +94,23 @@ type ThreadMessage = {
   snippet: string;
 };
 
+type RelatedOrder = {
+  id: string;
+  order_number: string;
+  customer_email: string;
+  customer_name: string | null;
+  tracking_number: string | null;
+  carrier: string | null;
+  status: string;
+  shopify_financial_status: string | null;
+  shopify_fulfillment_status: string | null;
+  order_total: string | null;
+  currency: string | null;
+  order_placed_at: string | null;
+  match_reason: string;
+  last_updated_at: string | null;
+};
+
 type Settings = {
   business_name: string;
   business_type: string;
@@ -145,11 +160,6 @@ const TABS: { id: Tab; label: string; icon: typeof Mail }[] = [
   { id: "logs", label: "Activity", icon: ScrollText },
 ];
 
-function intentLabel(intent: string | null) {
-  if (!intent) return null;
-  return intent.replace(/_/g, " ");
-}
-
 function formatTime(iso: string) {
   try {
     return new Date(iso).toLocaleString(undefined, {
@@ -192,8 +202,11 @@ function initials(name: string) {
   return (parts[0]?.slice(0, 2) || "?").toUpperCase();
 }
 
-function previewSnippet(body: string, max = 90) {
-  const cleaned = body.replace(/\s+/g, " ").trim();
+function previewSnippet(body: string, max = 72) {
+  const cleaned = body
+    .replace(/https?:\/\/\S+/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!cleaned) return "No preview";
   return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
 }
@@ -205,6 +218,138 @@ function parseFromName(fromHeader: string) {
 
 function isDraftMessage(messageId: string) {
   return messageId.startsWith("draft:");
+}
+
+function orderStatusLabel(status: string) {
+  if (status === "in_transit") return "On the way";
+  if (status === "delivered") return "Delivered";
+  return "Preparing";
+}
+
+function orderStatusBadge(status: string): "success" | "brand" | "muted" {
+  if (status === "delivered") return "success";
+  if (status === "in_transit") return "brand";
+  return "muted";
+}
+
+function fulfillmentLabel(status: string | null) {
+  const value = (status || "").toLowerCase();
+  if (value === "fulfilled") return "Shipped";
+  if (value === "partial") return "Partially shipped";
+  if (value === "unfulfilled" || !value) return "Not shipped";
+  return value.replace(/_/g, " ");
+}
+
+function cleanEmailBody(text: string) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function assistantInsight(item: InboxItem): string | null {
+  if (item.status === "skipped") {
+    const cat = filterCategoryLabel(item.filter_category);
+    return cat ? `Filtered · ${cat}` : "Filtered · no reply needed";
+  }
+  if (item.status === "draft_pending" || item.latest_reply?.status === "draft") {
+    return "Draft ready for review";
+  }
+  if (item.status === "replied" || item.latest_reply?.status === "sent") {
+    return "Replied via Gmail";
+  }
+  if (item.status === "new") return "Needs your attention";
+  return null;
+}
+
+function statusDotClass(status: string) {
+  if (status === "new") return "bg-amber-400";
+  if (status === "draft" || status === "draft_pending") return "bg-brand-500";
+  if (status === "replied" || status === "sent") return "bg-emerald-500";
+  if (status === "skipped") return "bg-content-subtle/50";
+  return "bg-content-subtle/40";
+}
+
+function EmailBodyText({ text, className }: { text: string; className?: string }) {
+  const cleaned = cleanEmailBody(text);
+  if (!cleaned) {
+    return <p className={cn("text-sm italic opacity-70", className)}>No message body.</p>;
+  }
+  const parts = cleaned.split(/(https?:\/\/[^\s<>\]"'`]+)/gi);
+  return (
+    <div className={cn("text-[14px] leading-6 whitespace-pre-wrap break-words", className)}>
+      {parts.map((part, i) => {
+        if (/^https?:\/\//i.test(part)) {
+          let label = part;
+          try {
+            const u = new URL(part);
+            const path =
+              u.pathname.length > 1
+                ? u.pathname.slice(0, 28) + (u.pathname.length > 28 ? "…" : "")
+                : "";
+            label = `${u.hostname}${path}`;
+          } catch {
+            label = part.length > 48 ? `${part.slice(0, 48)}…` : part;
+          }
+          return (
+            <a
+              key={`${i}-${part.slice(0, 24)}`}
+              href={part}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2 opacity-90 hover:opacity-100 break-all"
+            >
+              {label}
+            </a>
+          );
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </div>
+  );
+}
+
+/** Textarea that grows with content, capped so long docs don’t dominate the page. */
+function AutoGrowTextarea({
+  value,
+  className,
+  minRows = 4,
+  maxHeightPx = 280,
+  ...props
+}: TextareaHTMLAttributes<HTMLTextAreaElement> & {
+  minRows?: number;
+  maxHeightPx?: number;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  const resize = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, maxHeightPx);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > maxHeightPx ? "auto" : "hidden";
+  }, [maxHeightPx]);
+
+  useEffect(() => {
+    resize();
+  }, [value, resize]);
+
+  return (
+    <textarea
+      {...props}
+      ref={ref}
+      value={value}
+      rows={minRows}
+      onInput={(e) => {
+        props.onInput?.(e);
+        resize();
+      }}
+      className={cn(className, "resize-none")}
+      style={{ maxHeight: maxHeightPx }}
+    />
+  );
 }
 
 function statusBadge(status: string) {
@@ -288,8 +433,12 @@ export function AIEmailAssistantPage() {
   const [scanResultMessage, setScanResultMessage] = useState("");
   const [inboxFilter, setInboxFilter] = useState<InboxFilter>("all");
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
-  const [assistantNote, setAssistantNote] = useState<string | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
+  const [composing, setComposing] = useState(false);
+  const [relatedOrders, setRelatedOrders] = useState<RelatedOrder[]>([]);
+  const [relatedOrdersMessage, setRelatedOrdersMessage] = useState<string | null>(null);
+  const [relatedShopDomain, setRelatedShopDomain] = useState<string | null>(null);
+  const [relatedOrdersLoading, setRelatedOrdersLoading] = useState(false);
 
   const selected = selectedId ? inbox.find((e) => e.id === selectedId) ?? null : null;
   const filteredInbox = inbox.filter((item) => matchesInboxFilter(item, inboxFilter));
@@ -326,7 +475,6 @@ export function AIEmailAssistantPage() {
     try {
       const thread = await api.aiEmailAssistant.inboxThread(emailId);
       setThreadMessages(thread.messages as ThreadMessage[]);
-      setAssistantNote(thread.assistant_note);
       // Keep list row in sync if thread payload has fresher email state
       if (thread.inbox_email) {
         setInbox((prev) =>
@@ -353,9 +501,24 @@ export function AIEmailAssistantPage() {
       }
     } catch {
       setThreadMessages([]);
-      setAssistantNote(null);
     } finally {
       setThreadLoading(false);
+    }
+  }, []);
+
+  const loadRelatedOrders = useCallback(async (emailId: string) => {
+    setRelatedOrdersLoading(true);
+    try {
+      const data = await api.aiEmailAssistant.relatedOrders(emailId);
+      setRelatedOrders(data.orders as RelatedOrder[]);
+      setRelatedOrdersMessage(data.message);
+      setRelatedShopDomain(data.shop_domain);
+    } catch {
+      setRelatedOrders([]);
+      setRelatedOrdersMessage(null);
+      setRelatedShopDomain(null);
+    } finally {
+      setRelatedOrdersLoading(false);
     }
   }, []);
 
@@ -408,21 +571,29 @@ export function AIEmailAssistantPage() {
   }, [loadAll]);
 
   useEffect(() => {
-    if (selected?.latest_reply?.effective_body) {
+    // Only auto-open the composer when there is a pending AI/manual draft to review.
+    // Sent replies must not pre-fill a new Reply.
+    if (selected?.latest_reply?.status === "draft" && selected.latest_reply.effective_body) {
       setDraftEdit(selected.latest_reply.effective_body);
+      setComposing(true);
     } else {
       setDraftEdit("");
+      setComposing(false);
     }
-  }, [selected?.id, selected?.latest_reply?.effective_body]);
+  }, [selected?.id, selected?.latest_reply?.status, selected?.latest_reply?.effective_body]);
 
   useEffect(() => {
     if (!selectedId) {
       setThreadMessages([]);
-      setAssistantNote(null);
+      setComposing(false);
+      setRelatedOrders([]);
+      setRelatedOrdersMessage(null);
+      setRelatedShopDomain(null);
       return;
     }
     loadThread(selectedId);
-  }, [selectedId, loadThread]);
+    loadRelatedOrders(selectedId);
+  }, [selectedId, loadThread, loadRelatedOrders]);
 
   const connectedAccount =
     accounts.find((a) => a.status === "connected" && a.id === settings?.gmail_account_id) ??
@@ -485,22 +656,33 @@ export function AIEmailAssistantPage() {
     }
   };
 
-  const replyAnyway = async (emailId: string) => {
+  const openManualCompose = () => {
+    // Manual Reply always starts blank — don't reuse an old AI/sent body.
+    setDraftEdit("");
+    setComposing(true);
+  };
+
+  const sendManualReply = async () => {
     const storeId = activeStore?.id;
-    if (!storeId) {
+    if (!selected || !storeId) {
       setError("Select a store first.");
       return;
     }
-    setActionId(emailId);
+    const body = draftEdit.trim();
+    if (!body) {
+      setError("Write a reply before sending.");
+      return;
+    }
+    setActionId(selected.id);
     setError("");
     try {
-      await api.aiEmailAssistant.unskipEmail(emailId);
-      const reply = await api.aiEmailAssistant.generateReply(emailId, storeId);
-      setDraftEdit(reply.effective_body);
-      await loadInbox();
-      await loadThread(emailId);
+      await api.aiEmailAssistant.sendManualReply(selected.id, body, storeId);
+      setComposing(false);
+      setDraftEdit("");
+      await Promise.all([loadInbox(), loadLogs(), loadStats()]);
+      await loadThread(selected.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not enable reply for this email");
+      setError(err instanceof Error ? err.message : "Could not send reply");
     } finally {
       setActionId(null);
     }
@@ -515,8 +697,14 @@ export function AIEmailAssistantPage() {
     setActionId(emailId);
     setError("");
     try {
+      // If filtered, unskip so generate is allowed
+      const item = inbox.find((e) => e.id === emailId);
+      if (item?.status === "skipped") {
+        await api.aiEmailAssistant.unskipEmail(emailId);
+      }
       const reply = await api.aiEmailAssistant.generateReply(emailId, storeId);
       setDraftEdit(reply.effective_body);
+      setComposing(true);
       await loadInbox();
       await loadThread(emailId);
     } catch (err) {
@@ -543,7 +731,12 @@ export function AIEmailAssistantPage() {
   const approveSend = async (replyId: string) => {
     setActionId(replyId);
     try {
+      // Persist textarea edits before send
+      if (draftEdit.trim()) {
+        await api.aiEmailAssistant.updateDraft(replyId, draftEdit);
+      }
       await api.aiEmailAssistant.approveReply(replyId);
+      setComposing(false);
       await Promise.all([loadInbox(), loadLogs(), loadStats()]);
       if (selectedId) await loadThread(selectedId);
     } catch (err) {
@@ -557,6 +750,8 @@ export function AIEmailAssistantPage() {
     setActionId(replyId);
     try {
       await api.aiEmailAssistant.rejectReply(replyId);
+      setComposing(false);
+      setDraftEdit("");
       await loadInbox();
       if (selectedId) await loadThread(selectedId);
     } catch (err) {
@@ -737,10 +932,12 @@ export function AIEmailAssistantPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-6xl">
+    <div className="space-y-4 sm:space-y-5 w-full min-w-0">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-content tracking-tight">AI Email Assistant</h1>
+          <h1 className="text-2xl xl:text-3xl font-bold text-content tracking-tight">
+            AI Email Assistant
+          </h1>
           <p className="text-content-muted mt-1 max-w-xl text-sm leading-relaxed">
             Read customer emails for{" "}
             <strong className="text-content">{activeStore.name}</strong>, draft replies in
@@ -904,381 +1101,507 @@ export function AIEmailAssistantPage() {
       </div>
 
       {tab === "inbox" && (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {(
-              [
-                { id: "all", label: "All" },
-                { id: "needs_reply", label: "Needs reply" },
-                { id: "drafts", label: "Drafts" },
-                { id: "replied", label: "Replied" },
-                { id: "filtered", label: "Filtered" },
-              ] as const
-            ).map(({ id, label }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setInboxFilter(id)}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-                  inboxFilter === id
-                    ? "border-brand-500 bg-brand-500/10 text-brand-700 dark:text-brand-400"
-                    : "border-border text-content-muted hover:text-content hover:bg-surface-muted"
-                )}
-              >
-                {label}
-                <span className="text-content-subtle tabular-nums">{filterCounts[id]}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-5 min-h-[min(640px,72vh)]">
-            <Card
-              className={cn(
-                "lg:col-span-2 p-0 overflow-hidden flex flex-col",
-                selected && "hidden lg:flex"
-              )}
-              padding="none"
-            >
-              <div className="border-b border-border px-4 py-3 flex items-center justify-between shrink-0">
-                <div>
-                  <span className="text-sm font-medium text-content">Mailbox</span>
-                  <p className="text-xs text-content-muted mt-0.5">
-                    Conversations your assistant is watching
-                  </p>
-                </div>
-                <Badge variant="muted">{filteredInbox.length}</Badge>
+        <div className="rounded-xl border border-border bg-surface overflow-hidden shadow-card h-[min(820px,calc(100dvh-11rem))] sm:h-[min(860px,calc(100dvh-12rem))] xl:h-[calc(100dvh-9.5rem)] 2xl:h-[calc(100dvh-10rem)] flex flex-col lg:flex-row w-full min-w-0">
+          {/* Thread list */}
+          <aside
+            className={cn(
+              "w-full lg:w-[min(400px,34%)] xl:w-[min(440px,32%)] 2xl:w-[480px] shrink-0 border-b lg:border-b-0 lg:border-r border-border flex flex-col min-h-0",
+              selected && "hidden lg:flex"
+            )}
+          >
+            <div className="px-3 pt-3 pb-2 shrink-0 space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <h2 className="text-sm font-semibold text-content tracking-tight">Inbox</h2>
+                <span className="text-xs text-content-subtle tabular-nums">
+                  {filteredInbox.length}
+                </span>
               </div>
-              <ul className="flex-1 overflow-y-auto divide-y divide-border max-h-[min(640px,72vh)]">
-                {filteredInbox.length === 0 && (
-                  <li className="px-4 py-10 text-sm text-content-muted text-center space-y-3">
-                    <p>{inbox.length === 0 ? "No conversations yet." : "Nothing in this view."}</p>
-                    <p className="text-xs">
-                      {inbox.length === 0
-                        ? connectedAccount
-                          ? 'Click "Check inbox" to scan full Gmail history (you will confirm first).'
-                          : "Connect Gmail in Settings to get started."
-                        : "Try another filter to see more conversations."}
-                    </p>
-                  </li>
-                )}
-                {filteredInbox.map((item) => {
-                  const name = displayName(item.sender, item.sender_email);
-                  const st = effectiveStatus(item);
-                  const needsAttention = item.status === "new" || item.status === "draft_pending";
-                  return (
-                    <li key={item.id}>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedId(item.id)}
-                        className={cn(
-                          "w-full text-left px-4 py-3.5 hover:bg-surface-muted transition-colors flex gap-3",
-                          selected?.id === item.id && "bg-brand-500/10"
-                        )}
-                      >
-                        <div
-                          className={cn(
-                            "h-10 w-10 rounded-full flex items-center justify-center text-xs font-semibold shrink-0",
-                            needsAttention
-                              ? "bg-brand-500/15 text-brand-700 dark:text-brand-400"
-                              : "bg-surface-muted text-content-muted"
-                          )}
-                        >
-                          {initials(name)}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-baseline justify-between gap-2">
-                            <p
-                              className={cn(
-                                "text-sm truncate",
-                                needsAttention ? "font-semibold text-content" : "font-medium text-content"
-                              )}
-                            >
-                              {name}
-                            </p>
-                            <span className="text-[11px] text-content-subtle shrink-0 tabular-nums">
-                              {formatRelativeTime(item.received_at)}
-                            </span>
-                          </div>
-                          <p
-                            className={cn(
-                              "text-sm truncate mt-0.5",
-                              needsAttention ? "font-medium text-content" : "text-content"
-                            )}
-                          >
-                            {item.subject || "(no subject)"}
-                          </p>
-                          <p className="text-xs text-content-muted truncate mt-0.5">
-                            {previewSnippet(item.body_text)}
-                          </p>
-                          <div className="flex flex-wrap gap-1.5 mt-2">
-                            <Badge variant={statusBadge(st)}>{statusLabel(st)}</Badge>
-                            {item.filter_category && item.status === "skipped" && (
-                              <Badge variant="muted">{filterCategoryLabel(item.filter_category)}</Badge>
-                            )}
-                            {item.detected_intent && item.status !== "skipped" && (
-                              <Badge variant="default">{intentLabel(item.detected_intent)}</Badge>
-                            )}
-                          </div>
-                        </div>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </Card>
+              <div className="flex gap-0.5 p-0.5 rounded-lg bg-surface-muted/80">
+                {(
+                  [
+                    { id: "all", label: "All" },
+                    { id: "needs_reply", label: "Open" },
+                    { id: "drafts", label: "Drafts" },
+                    { id: "replied", label: "Sent" },
+                    { id: "filtered", label: "Skipped" },
+                  ] as const
+                ).map(({ id, label }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setInboxFilter(id)}
+                    className={cn(
+                      "flex-1 min-w-0 rounded-md px-1.5 py-1.5 text-[11px] font-medium transition-colors",
+                      inboxFilter === id
+                        ? "bg-surface text-content shadow-sm"
+                        : "text-content-muted hover:text-content"
+                    )}
+                  >
+                    {label}
+                    {filterCounts[id] > 0 && (
+                      <span className="ml-0.5 text-content-subtle tabular-nums">
+                        {filterCounts[id]}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-            <Card
-              className={cn(
-                "lg:col-span-3 p-0 overflow-hidden flex flex-col",
-                !selected && "hidden lg:flex"
+            <ul className="flex-1 overflow-y-auto min-h-0">
+              {filteredInbox.length === 0 && (
+                <li className="px-6 py-16 text-center">
+                  <Mail className="h-8 w-8 text-content-subtle mx-auto mb-3 opacity-60" />
+                  <p className="text-sm text-content-muted">
+                    {inbox.length === 0 ? "Your inbox is empty" : "No conversations here"}
+                  </p>
+                  <p className="text-xs text-content-subtle mt-1.5 max-w-[220px] mx-auto leading-relaxed">
+                    {inbox.length === 0
+                      ? connectedAccount
+                        ? 'Use "Check inbox" to sync Gmail.'
+                        : "Connect Gmail in Settings to get started."
+                      : "Try another filter."}
+                  </p>
+                </li>
               )}
-              padding="none"
-            >
-              {selected ? (
-                <>
-                  <div className="border-b border-border px-4 sm:px-5 py-4 shrink-0 space-y-3">
+              {filteredInbox.map((item) => {
+                const name = displayName(item.sender, item.sender_email);
+                const st = effectiveStatus(item);
+                const active = selected?.id === item.id;
+                const needsAttention = item.status === "new" || item.status === "draft_pending";
+                return (
+                  <li key={item.id}>
                     <button
                       type="button"
-                      onClick={() => setSelectedId(null)}
-                      className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content lg:hidden"
+                      onClick={() => setSelectedId(item.id)}
+                      className={cn(
+                        "w-full text-left px-4 py-3 transition-colors border-l-2",
+                        active
+                          ? "bg-surface-muted border-l-brand-500"
+                          : "border-l-transparent hover:bg-surface-muted/60"
+                      )}
                     >
-                      <ArrowLeft className="h-4 w-4" />
-                      Back to mailbox
-                    </button>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <h2 className="font-semibold text-content text-lg leading-snug">
-                          {selected.subject || "(no subject)"}
-                        </h2>
-                        <p className="text-sm text-content-muted mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span className="inline-flex items-center gap-1.5">
-                            <UserRound className="h-3.5 w-3.5" />
-                            {displayName(selected.sender, selected.sender_email)}
-                          </span>
-                          <span className="text-content-subtle">&lt;{selected.sender_email}&gt;</span>
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className={cn("h-1.5 w-1.5 rounded-full shrink-0", statusDotClass(st))}
+                          title={statusLabel(st)}
+                        />
+                        <p
+                          className={cn(
+                            "text-[13px] truncate flex-1 min-w-0",
+                            needsAttention ? "font-semibold text-content" : "font-medium text-content"
+                          )}
+                        >
+                          {name}
                         </p>
+                        <span className="text-[11px] text-content-subtle shrink-0 tabular-nums">
+                          {formatRelativeTime(item.received_at)}
+                        </span>
                       </div>
-                      <Badge variant={statusBadge(effectiveStatus(selected))}>
-                        {statusLabel(effectiveStatus(selected))}
-                      </Badge>
-                    </div>
-                    {(assistantNote || selected.status === "skipped") && (
-                      <div
+                      <p
                         className={cn(
-                          "rounded-lg px-3 py-2.5 text-sm flex items-start gap-2",
-                          selected.status === "skipped"
-                            ? "bg-surface-muted border border-border text-content-muted"
-                            : selected.status === "draft_pending"
-                              ? "bg-brand-500/10 border border-brand-500/20 text-content"
-                              : "bg-surface-muted/80 border border-border text-content-muted"
+                          "text-[13px] truncate mt-1 pl-4",
+                          needsAttention ? "text-content" : "text-content/80"
                         )}
                       >
-                        {selected.status === "skipped" ? (
-                          <Ban className="h-4 w-4 shrink-0 mt-0.5" />
-                        ) : (
-                          <Eye className="h-4 w-4 shrink-0 mt-0.5 text-brand-600 dark:text-brand-400" />
-                        )}
-                        <div>
-                          <p className="font-medium text-content text-xs uppercase tracking-wide mb-0.5">
-                            Assistant
-                          </p>
-                          <p className="leading-relaxed">
-                            {assistantNote ||
-                              selected.skip_reason ||
-                              "Monitoring this conversation."}
-                          </p>
-                        </div>
-                      </div>
+                        {item.subject || "(no subject)"}
+                      </p>
+                      <p className="text-[12px] text-content-muted truncate mt-0.5 pl-4 leading-snug">
+                        {previewSnippet(item.body_text)}
+                      </p>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </aside>
+
+          {/* Reading pane */}
+          <section
+            className={cn(
+              "flex-1 min-w-0 flex flex-col min-h-0 bg-surface",
+              !selected && "hidden lg:flex"
+            )}
+          >
+            {selected ? (
+              <>
+                <header className="shrink-0 px-5 sm:px-7 pt-5 pb-4 border-b border-border/80">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(null)}
+                    className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content lg:hidden mb-3"
+                  >
+                    <ArrowLeft className="h-4 w-4" />
+                    Inbox
+                  </button>
+                  <h2 className="text-xl font-semibold text-content tracking-tight leading-snug">
+                    {selected.subject || "(no subject)"}
+                  </h2>
+                  <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px]">
+                    <span className="text-content font-medium">
+                      {displayName(selected.sender, selected.sender_email)}
+                    </span>
+                    <span className="text-content-subtle">{selected.sender_email}</span>
+                    {assistantInsight(selected) && (
+                      <>
+                        <span className="text-content-subtle/40">·</span>
+                        <span className="inline-flex items-center gap-1.5 text-content-muted">
+                          <Bot className="h-3.5 w-3.5 text-brand-600 dark:text-brand-400" />
+                          {assistantInsight(selected)}
+                        </span>
+                      </>
                     )}
                   </div>
 
-                  <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-4 max-h-[min(420px,48vh)] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-surface-muted/40 via-transparent to-transparent">
-                    {threadLoading && (
-                      <p className="text-sm text-content-muted text-center py-8">
-                        Loading conversation…
-                      </p>
-                    )}
-                    {!threadLoading && threadMessages.length === 0 && (
-                      <div className="rounded-lg bg-surface-muted p-4 text-sm text-content whitespace-pre-wrap leading-relaxed">
-                        {selected.body_text || "No message body."}
+                  {(relatedOrdersLoading || relatedOrders.length > 0 || relatedOrdersMessage) && (
+                    <div className="mt-4 rounded-lg border border-border bg-surface-muted/40 overflow-hidden">
+                      <div className="flex items-center justify-between gap-2 px-3.5 py-2.5 border-b border-border/70">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Package className="h-3.5 w-3.5 text-brand-600 dark:text-brand-400 shrink-0" />
+                          <p className="text-xs font-semibold uppercase tracking-wide text-content-muted">
+                            Shopify orders
+                          </p>
+                          {relatedOrders.length > 0 && (
+                            <span className="text-xs text-content-subtle tabular-nums">
+                              {relatedOrders.length}
+                            </span>
+                          )}
+                        </div>
+                        <Link
+                          to="/modules/tracking"
+                          className="text-xs text-brand-600 dark:text-brand-400 hover:underline shrink-0"
+                        >
+                          Open Tracking
+                        </Link>
                       </div>
-                    )}
-                    {!threadLoading &&
-                      threadMessages.map((msg) => {
+                      {relatedOrdersLoading && (
+                        <p className="px-3.5 py-3 text-sm text-content-muted">Looking up orders…</p>
+                      )}
+                      {!relatedOrdersLoading && relatedOrders.length === 0 && relatedOrdersMessage && (
+                        <p className="px-3.5 py-3 text-sm text-content-muted">{relatedOrdersMessage}</p>
+                      )}
+                      {!relatedOrdersLoading && relatedOrders.length > 0 && (
+                        <ul className="divide-y divide-border/60">
+                          {relatedOrders.map((order) => {
+                            const adminUrl =
+                              relatedShopDomain && order.order_number
+                                ? `https://${relatedShopDomain}/admin/orders?query=${encodeURIComponent(order.order_number)}`
+                                : null;
+                            return (
+                              <li
+                                key={order.id}
+                                className="px-3.5 py-3 flex flex-wrap items-start justify-between gap-3"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold text-content">
+                                      {order.order_number}
+                                    </p>
+                                    <Badge variant={orderStatusBadge(order.status)}>
+                                      {orderStatusLabel(order.status)}
+                                    </Badge>
+                                    {order.match_reason === "order_number_in_email" && (
+                                      <span className="text-[11px] text-content-subtle">
+                                        Mentioned in email
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="text-xs text-content-muted mt-1">
+                                    {fulfillmentLabel(order.shopify_fulfillment_status)}
+                                    {order.order_total
+                                      ? ` · ${order.currency || ""} ${order.order_total}`.trim()
+                                      : ""}
+                                    {order.order_placed_at
+                                      ? ` · ${formatTime(order.order_placed_at)}`
+                                      : ""}
+                                  </p>
+                                  {order.tracking_number && (
+                                    <p className="text-xs text-content-subtle mt-1 font-mono">
+                                      {order.tracking_number}
+                                      {order.carrier ? ` · ${order.carrier}` : ""}
+                                    </p>
+                                  )}
+                                </div>
+                                {adminUrl && (
+                                  <a
+                                    href={adminUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs text-brand-600 dark:text-brand-400 hover:underline shrink-0"
+                                  >
+                                    Shopify
+                                    <ExternalLink className="h-3 w-3" />
+                                  </a>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </header>
+
+                <div className="flex-1 overflow-y-auto min-h-0 px-2 sm:px-3 lg:px-4 py-4 bg-surface-muted/20">
+                  {threadLoading && (
+                    <p className="text-sm text-content-muted text-center py-20">
+                      Loading conversation…
+                    </p>
+                  )}
+                  {!threadLoading && threadMessages.length === 0 && (
+                    <div className="flex gap-2 w-full justify-start">
+                      <div className="h-8 w-8 rounded-full bg-surface-muted text-content-muted flex items-center justify-center text-[10px] font-semibold shrink-0 mt-1">
+                        {initials(displayName(selected.sender, selected.sender_email))}
+                      </div>
+                      <div className="min-w-0 max-w-[78%] sm:max-w-[70%]">
+                        <div className="rounded-2xl rounded-tl-md bg-surface border border-border px-3.5 py-2.5 text-content shadow-sm">
+                          <EmailBodyText text={selected.body_text} />
+                        </div>
+                        <p className="text-[11px] text-content-subtle mt-1 px-1">
+                          {formatTime(selected.received_at)}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  {!threadLoading && threadMessages.length > 0 && (
+                    <div className="w-full space-y-3">
+                      {threadMessages.map((msg, index) => {
                         const draft = isDraftMessage(msg.message_id);
                         const fromName = parseFromName(msg.from_header);
+                        const mine = msg.is_from_business;
+                        const prev = threadMessages[index - 1];
+                        const showName =
+                          !prev ||
+                          prev.is_from_business !== msg.is_from_business ||
+                          parseFromName(prev.from_header) !== fromName ||
+                          isDraftMessage(prev.message_id) !== draft;
+
                         return (
                           <div
                             key={msg.message_id}
                             className={cn(
-                              "flex gap-2.5",
-                              msg.is_from_business ? "flex-row-reverse" : "flex-row"
+                              "flex gap-2 w-full",
+                              mine ? "flex-row-reverse justify-start" : "flex-row justify-start"
                             )}
                           >
                             <div
                               className={cn(
-                                "h-8 w-8 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0 mt-1",
-                                msg.is_from_business
-                                  ? draft
-                                    ? "bg-brand-500/20 text-brand-700 dark:text-brand-400"
-                                    : "bg-content/10 text-content"
-                                  : "bg-surface-muted text-content-muted"
+                                "h-8 w-8 rounded-full flex items-center justify-center text-[10px] font-semibold shrink-0 mt-auto mb-5",
+                                draft
+                                  ? "bg-brand-500/20 text-brand-700 dark:text-brand-400"
+                                  : mine
+                                    ? "bg-brand-500/15 text-brand-700 dark:text-brand-400"
+                                    : "bg-surface-muted text-content-muted"
                               )}
                             >
-                              {msg.is_from_business ? (
-                                draft ? (
-                                  <Bot className="h-3.5 w-3.5" />
-                                ) : (
-                                  initials(fromName)
-                                )
-                              ) : (
-                                initials(fromName)
-                              )}
+                              {draft ? <Bot className="h-3.5 w-3.5" /> : initials(fromName)}
                             </div>
                             <div
                               className={cn(
-                                "max-w-[min(100%,28rem)] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
-                                msg.is_from_business
-                                  ? draft
-                                    ? "bg-brand-500/10 border border-dashed border-brand-500/40 text-content rounded-tr-md"
-                                    : "bg-brand-500 text-white rounded-tr-md"
-                                  : "bg-surface-muted text-content border border-border rounded-tl-md"
+                                "min-w-0 max-w-[78%] sm:max-w-[70%] flex flex-col",
+                                mine ? "items-end" : "items-start"
                               )}
                             >
+                              {showName && (
+                                <p className="text-[11px] font-medium mb-1 px-1 text-content-muted">
+                                  {draft ? "AI draft" : mine ? "You" : fromName}
+                                  {draft && (
+                                    <span className="ml-1.5 text-brand-700 dark:text-brand-400">
+                                      · not sent
+                                    </span>
+                                  )}
+                                </p>
+                              )}
                               <div
                                 className={cn(
-                                  "flex items-center justify-between gap-3 mb-1 text-[11px]",
-                                  msg.is_from_business && !draft
-                                    ? "text-white/80"
-                                    : "text-content-muted"
+                                  "px-3.5 py-2.5 shadow-sm w-fit max-w-full",
+                                  draft
+                                    ? "rounded-2xl rounded-tr-md bg-brand-500/10 border border-dashed border-brand-500/45 text-content"
+                                    : mine
+                                      ? "rounded-2xl rounded-tr-md bg-brand-500 text-white"
+                                      : "rounded-2xl rounded-tl-md bg-surface border border-border text-content"
                                 )}
                               >
-                                <span className="font-medium truncate">
-                                  {draft ? "AI Assistant · draft" : fromName}
-                                </span>
-                                {msg.sent_at && (
-                                  <span className="shrink-0 tabular-nums">
-                                    {formatTime(msg.sent_at)}
-                                  </span>
-                                )}
-                                {draft && (
-                                  <span className="shrink-0 text-brand-700 dark:text-brand-400">
-                                    Not sent
-                                  </span>
-                                )}
+                                <EmailBodyText
+                                  text={msg.body_text || msg.snippet}
+                                  className={
+                                    mine && !draft
+                                      ? "text-white [&_a]:text-white"
+                                      : "text-content"
+                                  }
+                                />
                               </div>
-                              <p className="whitespace-pre-wrap">{msg.body_text || msg.snippet}</p>
+                              {msg.sent_at && (
+                                <time
+                                  className={cn(
+                                    "text-[10px] text-content-subtle mt-1 px-1 tabular-nums",
+                                    mine && "text-right"
+                                  )}
+                                >
+                                  {formatTime(msg.sent_at)}
+                                </time>
+                              )}
+                              {draft && !msg.sent_at && (
+                                <span className="text-[10px] text-brand-700 dark:text-brand-400 mt-1 px-1">
+                                  Waiting for send
+                                </span>
+                              )}
                             </div>
                           </div>
                         );
                       })}
-                  </div>
-
-                  <div className="border-t border-border px-4 sm:px-5 py-4 shrink-0 space-y-3 bg-surface">
-                    <div className="flex items-center gap-2 text-xs font-medium text-content-muted uppercase tracking-wide">
-                      <Bot className="h-3.5 w-3.5" />
-                      Assistant desk
-                      <span className="font-normal normal-case tracking-normal text-content-subtle">
-                        — review what it wrote before it goes out
-                      </span>
                     </div>
+                  )}
+                </div>
 
-                    {selected.status === "skipped" && (
-                      <div className="space-y-3">
-                        <p className="text-sm text-content-muted">
-                          {selected.skip_reason ||
-                            "The assistant decided a reply was not needed and left this as read."}
-                        </p>
-                        <Button
-                          variant="outline"
-                          onClick={() => replyAnyway(selected.id)}
-                          disabled={!settings?.openai_configured || actionId === selected.id}
-                        >
-                          Reply anyway
-                        </Button>
-                      </div>
+                <footer className="shrink-0 border-t border-border/80 px-4 sm:px-6 lg:px-8 py-4 bg-surface-muted/30">
+                  {selected.status === "skipped" && !composing && selected.latest_reply?.status !== "draft" && (
+                    <p className="text-sm text-content-muted mb-3 w-full max-w-none">
+                      Assistant skipped this thread
+                      {selected.filter_category
+                        ? ` (${filterCategoryLabel(selected.filter_category)?.toLowerCase()})`
+                        : ""}
+                      . You can still reply yourself or ask AI to draft one.
+                    </p>
+                  )}
+
+                  {selected.latest_reply?.status === "sent" && !composing && (
+                    <p className="text-sm text-content-muted inline-flex items-center gap-2 mb-3">
+                      <Check className="h-4 w-4 text-emerald-500" />
+                      Sent via Gmail
+                    </p>
+                  )}
+
+                  {selected.latest_reply &&
+                    selected.latest_reply.status !== "draft" &&
+                    selected.latest_reply.status !== "sent" &&
+                    !composing && (
+                      <p className="text-sm text-content-muted mb-3">
+                        {statusLabel(selected.latest_reply.status)}
+                      </p>
                     )}
 
-                    {!selected.latest_reply && selected.status !== "skipped" && (
+                  {!composing && selected.latest_reply?.status !== "draft" && (
+                    <div className="flex flex-wrap gap-2 w-full max-w-none">
                       <Button
+                        onClick={openManualCompose}
+                        disabled={!connectedAccount || actionId === selected.id}
+                      >
+                        <PenLine className="h-4 w-4 mr-2" />
+                        Reply
+                      </Button>
+                      <Button
+                        variant="outline"
                         onClick={() => generateDraft(selected.id)}
                         disabled={!settings?.openai_configured || actionId === selected.id}
                       >
                         <Sparkles className="h-4 w-4 mr-2" />
-                        {actionId === selected.id ? "Writing…" : "Write AI reply"}
+                        {actionId === selected.id ? "Writing…" : "Draft with AI"}
                       </Button>
-                    )}
+                    </div>
+                  )}
 
-                    {selected.latest_reply?.status === "draft" && (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <label className="text-sm font-medium text-content">Draft reply</label>
-                          <span className="text-xs text-content-subtle">
-                            {selected.latest_reply.model_used}
-                          </span>
-                        </div>
-                        <textarea
-                          className={textareaClass}
-                          rows={6}
-                          value={draftEdit}
-                          onChange={(e) => setDraftEdit(e.target.value)}
-                        />
-                        <div className="flex flex-wrap gap-2">
-                          <Button
-                            variant="outline"
-                            onClick={() => saveDraftEdits(selected.latest_reply!.id)}
-                            disabled={actionId === selected.latest_reply.id}
-                          >
-                            Save edits
-                          </Button>
-                          <Button
-                            onClick={() => approveSend(selected.latest_reply!.id)}
-                            disabled={actionId === selected.latest_reply.id}
-                          >
-                            <Send className="h-4 w-4 mr-2" />
-                            Send
-                          </Button>
-                          <Button
-                            variant="outline"
-                            onClick={() => rejectDraft(selected.latest_reply!.id)}
-                            disabled={actionId === selected.latest_reply.id}
-                          >
-                            <X className="h-4 w-4 mr-2" />
-                            Discard
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-
-                    {selected.latest_reply?.status === "sent" && (
-                      <div className="flex items-center gap-2 text-sm text-green-600 dark:text-green-400 rounded-lg bg-green-500/10 px-3 py-2">
-                        <Check className="h-4 w-4" />
-                        Reply sent via Gmail — conversation above is the live thread
-                      </div>
-                    )}
-
-                    {selected.latest_reply &&
-                      selected.latest_reply.status !== "draft" &&
-                      selected.latest_reply.status !== "sent" && (
-                        <p className="text-sm text-content-muted">
-                          Status: {statusLabel(selected.latest_reply.status)}
+                  {(composing || selected.latest_reply?.status === "draft") && (
+                    <div className="w-full max-w-none space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-content">
+                          {selected.latest_reply?.status === "draft" &&
+                          selected.latest_reply.model_used !== "manual"
+                            ? "AI draft"
+                            : "Your reply"}
                         </p>
-                      )}
-                  </div>
-                </>
-              ) : (
-                <div className="flex-1 flex flex-col items-center justify-center p-12 text-center text-content-muted text-sm gap-3">
-                  <MessageSquare className="h-8 w-8 text-content-subtle" />
-                  <p>Select a conversation to watch the assistant handle it.</p>
-                  <p className="text-xs max-w-sm">
-                    You’ll see the full client thread, what the AI decided, and any draft waiting for
-                    your approval.
-                  </p>
+                        <span className="text-xs text-content-subtle">
+                          {selected.latest_reply?.status === "draft"
+                            ? selected.latest_reply.model_used
+                            : "Manual"}
+                        </span>
+                      </div>
+                      <textarea
+                        className={cn(textareaClass, "min-h-[140px] bg-surface")}
+                        rows={5}
+                        value={draftEdit}
+                        onChange={(e) => setDraftEdit(e.target.value)}
+                        placeholder="Write your reply…"
+                        autoFocus
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        {selected.latest_reply?.status === "draft" ? (
+                          <>
+                            <Button
+                              onClick={() => approveSend(selected.latest_reply!.id)}
+                              disabled={
+                                !draftEdit.trim() || actionId === selected.latest_reply.id
+                              }
+                            >
+                              <Send className="h-4 w-4 mr-2" />
+                              Send
+                            </Button>
+                            <Button
+                              variant="outline"
+                              onClick={() => saveDraftEdits(selected.latest_reply!.id)}
+                              disabled={actionId === selected.latest_reply.id}
+                            >
+                              Save
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              onClick={() => rejectDraft(selected.latest_reply!.id)}
+                              disabled={actionId === selected.latest_reply.id}
+                            >
+                              Discard
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              onClick={sendManualReply}
+                              disabled={
+                                !draftEdit.trim() ||
+                                !connectedAccount ||
+                                actionId === selected.id
+                              }
+                            >
+                              <Send className="h-4 w-4 mr-2" />
+                              {actionId === selected.id ? "Sending…" : "Send"}
+                            </Button>
+                            <Button
+                              variant="outline"
+                              onClick={() => generateDraft(selected.id)}
+                              disabled={
+                                !settings?.openai_configured || actionId === selected.id
+                              }
+                            >
+                              <Sparkles className="h-4 w-4 mr-2" />
+                              Draft with AI
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              onClick={() => {
+                                setComposing(false);
+                                setDraftEdit("");
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </footer>
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center px-8 text-center">
+                <div className="h-12 w-12 rounded-full bg-surface-muted flex items-center justify-center mb-4">
+                  <Mail className="h-5 w-5 text-content-subtle" />
                 </div>
-              )}
-            </Card>
-          </div>
+                <p className="text-sm font-medium text-content">Select a conversation</p>
+                <p className="text-sm text-content-muted mt-1 max-w-xs leading-relaxed">
+                  Read the full thread and review what your assistant did — or draft a reply.
+                </p>
+              </div>
+            )}
+          </section>
         </div>
       )}
 
@@ -1517,7 +1840,7 @@ export function AIEmailAssistantPage() {
       )}
 
       {tab === "business" && settings && (
-        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl space-y-5">
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="w-full min-w-0 max-w-4xl 2xl:max-w-5xl space-y-5">
           <div>
             <h2 className="text-lg font-semibold text-content">Your business</h2>
             <p className="text-sm text-content-muted mt-1 leading-relaxed">
@@ -1560,9 +1883,9 @@ export function AIEmailAssistantPage() {
             </CardHeader>
             <div className="space-y-1.5">
               <label className="block text-sm font-medium text-content">Rules</label>
-              <textarea
+              <AutoGrowTextarea
                 className={textareaClass}
-                rows={4}
+                minRows={4}
                 placeholder={"Always be polite.\nNever promise a refund without checking the order first.\nSign off with the store name."}
                 value={settings.rules}
                 onChange={(e) => setSettings({ ...settings, rules: e.target.value })}
@@ -1580,9 +1903,9 @@ export function AIEmailAssistantPage() {
             <div className="space-y-4">
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-content">Key policies</label>
-                <textarea
+                <AutoGrowTextarea
                   className={textareaClass}
-                  rows={4}
+                  minRows={4}
                   placeholder={"Shipping: 3–5 business days.\nReturns within 14 days of delivery.\nFree shipping over $50."}
                   value={settings.policies}
                   onChange={(e) => setSettings({ ...settings, policies: e.target.value })}
@@ -1590,9 +1913,9 @@ export function AIEmailAssistantPage() {
               </div>
               <div className="space-y-1.5">
                 <label className="block text-sm font-medium text-content">Common questions</label>
-                <textarea
+                <AutoGrowTextarea
                   className={textareaClass}
-                  rows={4}
+                  minRows={4}
                   placeholder={"Q: How do I track my order?\nA: Use the tracking link in your shipping email.\n\nQ: Can I change my address?\nA: Reply with the new address before we ship."}
                   value={settings.faq}
                   onChange={(e) => setSettings({ ...settings, faq: e.target.value })}
@@ -1615,7 +1938,7 @@ export function AIEmailAssistantPage() {
       )}
 
       {tab === "settings" && settings && (
-        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl space-y-5">
+        <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className="w-full min-w-0 max-w-4xl 2xl:max-w-5xl space-y-5">
           <div>
             <h2 className="text-lg font-semibold text-content">Settings</h2>
             <p className="text-sm text-content-muted mt-1 leading-relaxed">

@@ -34,7 +34,13 @@ export function TopNavbar({ title, mobileNavOpen, onMobileNavToggle }: TopNavbar
   };
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-2 sm:gap-4 border-b border-border glass px-3 sm:px-6">
+    <header
+      className="sticky top-0 z-30 flex h-14 xl:h-16 items-center gap-2 sm:gap-4 border-b border-border glass"
+      style={{
+        paddingLeft: "var(--page-gutter-x)",
+        paddingRight: "var(--page-gutter-x)",
+      }}
+    >
       <button
         type="button"
         onClick={onMobileNavToggle}
@@ -67,7 +73,7 @@ export function TopNavbar({ title, mobileNavOpen, onMobileNavToggle }: TopNavbar
 
         <button
           type="button"
-          className="relative flex h-9 w-9 items-center justify-center rounded-lg text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
+          className="relative hidden sm:flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
           aria-label="Notifications"
         >
           <Bell className="h-4 w-4" />
@@ -77,7 +83,7 @@ export function TopNavbar({ title, mobileNavOpen, onMobileNavToggle }: TopNavbar
         <button
           type="button"
           onClick={toggle}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
           aria-label="Toggle theme"
         >
           {resolved === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}

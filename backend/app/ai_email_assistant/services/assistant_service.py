@@ -13,6 +13,7 @@ from app.ai_email_assistant.duplicate_guard import (
 )
 from app.ai_email_assistant.email_filter import config_from_settings, evaluate_email_filter
 from app.ai_email_assistant.thread_context import format_customer_relationship
+from app.ai_email_assistant.order_link import extract_order_numbers
 from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_exception
 from app.ai_email_assistant.prompt_builder import BusinessContext
 from app.config import settings
@@ -32,7 +33,9 @@ from app.db.models import (
     GmailStoreLink,
     InboxEmail,
     InboxEmailStatus,
+    OrderTracking,
     Store,
+    StoreStatus,
     User,
 )
 from app.integrations.gmail.inbox_client import GmailInboxClient
@@ -48,9 +51,14 @@ from app.models.ai_email_assistant import (
     NamedCount,
     OpenAIKeyStatusResponse,
     PeriodStats,
+    RelatedOrderItem,
+    RelatedOrdersResponse,
     SetOpenAIKeyBody,
     ThreadMessageResponse,
 )
+from app.services.tracking_service import TrackingService
+from app.tracking.payload_parser import normalize_email, normalize_order_number, order_number_variants
+from app.tracking.track_service import TrackOrderService
 
 logger = logging.getLogger(__name__)
 
@@ -569,6 +577,142 @@ class AIEmailAssistantService:
             messages=messages,
             message_count=len(messages),
             assistant_note=self._assistant_note_for_email(email),
+        )
+
+    def _serialize_related_order(self, row: OrderTracking, *, match_reason: str) -> RelatedOrderItem:
+        serialized = TrackingService._serialize_order(row)
+        return RelatedOrderItem(
+            id=serialized["id"],
+            order_number=serialized["order_number"],
+            customer_email=serialized["customer_email"],
+            customer_name=serialized.get("customer_name"),
+            tracking_number=serialized.get("tracking_number"),
+            carrier=serialized.get("carrier"),
+            status=serialized["status"],
+            shopify_financial_status=serialized.get("shopify_financial_status"),
+            shopify_fulfillment_status=serialized.get("shopify_fulfillment_status"),
+            order_total=serialized.get("order_total"),
+            currency=serialized.get("currency"),
+            order_placed_at=serialized.get("order_placed_at"),
+            match_reason=match_reason,
+            last_updated_at=serialized.get("last_updated_at"),
+        )
+
+    async def get_related_orders(
+        self, db: Session, user: User, inbox_email_id: str
+    ) -> RelatedOrdersResponse:
+        """Find Shopify orders for this conversation (by customer email + order #s in the mail)."""
+        email = db.get(InboxEmail, inbox_email_id)
+        if not email or email.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        customer_email = normalize_email(email.sender_email)
+        if not email.store_id:
+            return RelatedOrdersResponse(
+                customer_email=customer_email,
+                message="This email is not linked to a Shopify store.",
+            )
+
+        store = db.get(Store, email.store_id)
+        if not store or store.owner_id != user.id:
+            raise HTTPException(status_code=404, detail="Store not found")
+
+        store_connected = store.status == StoreStatus.CONNECTED.value and bool(
+            store.access_token_encrypted
+        )
+        if not store_connected:
+            return RelatedOrdersResponse(
+                customer_email=customer_email,
+                shop_domain=store.shop_domain,
+                store_connected=False,
+                message="Connect this Shopify store to see matching customer orders.",
+            )
+
+        mentioned = extract_order_numbers(email.subject, email.body_text)
+        by_id: dict[str, RelatedOrderItem] = {}
+
+        # 1) All local orders for this customer email
+        if customer_email:
+            rows = db.scalars(
+                select(OrderTracking)
+                .where(
+                    OrderTracking.store_id == store.id,
+                    OrderTracking.customer_email == customer_email,
+                )
+                .order_by(OrderTracking.order_placed_at.desc().nullslast())
+                .limit(12)
+            ).all()
+            for row in rows:
+                by_id[row.id] = self._serialize_related_order(row, match_reason="customer_email")
+
+        # 2) Local lookup for order numbers mentioned in the email
+        for number in mentioned:
+            variants = {
+                normalize_order_number(v) for v in order_number_variants(number)
+            }
+            variants.discard("")
+            if not variants:
+                continue
+            row = db.scalar(
+                select(OrderTracking)
+                .where(
+                    OrderTracking.store_id == store.id,
+                    OrderTracking.order_number_normalized.in_(variants),
+                )
+                .order_by(OrderTracking.order_placed_at.desc().nullslast())
+                .limit(1)
+            )
+            if row and row.id not in by_id:
+                reason = (
+                    "customer_email"
+                    if customer_email and row.customer_email == customer_email
+                    else "order_number_in_email"
+                )
+                by_id[row.id] = self._serialize_related_order(row, match_reason=reason)
+
+        # 3) Live Shopify lookup for mentioned numbers still missing (and matching email)
+        missing_numbers = [
+            n
+            for n in mentioned
+            if not any(
+                normalize_order_number(item.order_number) == n
+                or normalize_order_number(item.order_number.lstrip("#")) == n
+                for item in by_id.values()
+            )
+        ]
+        if missing_numbers and customer_email:
+            tracker = TrackOrderService(db)
+            for number in missing_numbers[:5]:
+                try:
+                    row = await tracker._fetch_from_shopify(store, number, customer_email)
+                except Exception:
+                    logger.exception("Shopify related-order lookup failed for %s", number)
+                    continue
+                if row and row.id not in by_id:
+                    by_id[row.id] = self._serialize_related_order(
+                        row, match_reason="order_number_in_email"
+                    )
+
+        orders = sorted(
+            by_id.values(),
+            key=lambda o: o.order_placed_at or o.last_updated_at or "",
+            reverse=True,
+        )[:12]
+
+        message = None
+        if not orders:
+            message = (
+                f"No Shopify orders found for {customer_email or 'this sender'}."
+                if customer_email
+                else "No customer email on this message to match orders."
+            )
+
+        return RelatedOrdersResponse(
+            customer_email=customer_email,
+            shop_domain=store.shop_domain,
+            store_connected=True,
+            orders=orders,
+            message=message,
         )
 
     async def sync_inbox(
@@ -1168,6 +1312,64 @@ class AIEmailAssistantService:
         # and so it no longer appears unread when you open Gmail.
         await self._mark_email_read_in_gmail(db, email, account)
         return self._serialize_reply(reply, email.detected_intent)
+
+    async def send_manual_reply(
+        self,
+        db: Session,
+        user: User,
+        inbox_email_id: str,
+        body: str,
+        *,
+        store_id: str | None = None,
+    ) -> AIReplyResponse:
+        """Send a human-written reply via Gmail without calling OpenAI."""
+        text = (body or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Reply body cannot be empty")
+
+        email = db.get(InboxEmail, inbox_email_id)
+        if not email or email.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Email not found")
+
+        store = self._ensure_store(db, user, store_id or email.store_id)
+        if email.store_id is None:
+            email.store_id = store.id
+        elif email.store_id != store.id:
+            raise HTTPException(status_code=404, detail="Email not found for this store")
+
+        account = db.get(GmailAccount, email.gmail_account_id)
+        if not account or account.status != GmailAccountStatus.CONNECTED.value:
+            raise HTTPException(status_code=400, detail="Connect Gmail before sending a reply")
+
+        # Allow replying to filtered threads from the in-app mailbox
+        if email.status == InboxEmailStatus.SKIPPED.value:
+            email.skip_reason = None
+            email.filter_category = None
+
+        # Reuse an existing draft if present; otherwise create a manual reply record
+        existing_draft = next(
+            (r for r in (email.replies or []) if r.status == AIReplyStatus.DRAFT.value),
+            None,
+        )
+        if existing_draft:
+            existing_draft.edited_body = text
+            existing_draft.model_used = existing_draft.model_used or "manual"
+            reply = existing_draft
+        else:
+            reply = AIEmailReply(
+                inbox_email_id=email.id,
+                user_id=user.id,
+                generated_body="",
+                edited_body=text,
+                status=AIReplyStatus.DRAFT.value,
+                model_used="manual",
+            )
+            db.add(reply)
+
+        email.status = InboxEmailStatus.DRAFT_PENDING.value
+        db.commit()
+        db.refresh(reply)
+        return await self.approve_and_send(db, user, reply.id)
 
     async def approve_and_send(self, db: Session, user: User, reply_id: str) -> AIReplyResponse:
         reply = db.get(AIEmailReply, reply_id)

@@ -109,6 +109,39 @@ class UpdateReplyDraftBody(BaseModel):
     body: str = Field(min_length=1)
 
 
+class ManualReplyBody(BaseModel):
+    """Send a human-written reply from the in-app mailbox (no AI generation)."""
+
+    body: str = Field(min_length=1, max_length=50000)
+
+
+class RelatedOrderItem(BaseModel):
+    """Compact Shopify order linked to an inbox conversation."""
+
+    id: str
+    order_number: str
+    customer_email: str
+    customer_name: str | None = None
+    tracking_number: str | None = None
+    carrier: str | None = None
+    status: str
+    shopify_financial_status: str | None = None
+    shopify_fulfillment_status: str | None = None
+    order_total: str | None = None
+    currency: str | None = None
+    order_placed_at: str | None = None
+    match_reason: str = "customer_email"
+    last_updated_at: str | None = None
+
+
+class RelatedOrdersResponse(BaseModel):
+    customer_email: str
+    shop_domain: str | None = None
+    store_connected: bool = False
+    orders: list[RelatedOrderItem] = []
+    message: str | None = None
+
+
 class SyncInboxRequest(BaseModel):
     gmail_account_id: str
     max_results: int = Field(default=15, ge=1, le=50)

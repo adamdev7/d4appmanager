@@ -38,7 +38,7 @@ export function AdsSpendCpmChart({
         <CardTitle>Spend & CPM</CardTitle>
         <CardDescription>Auction cost pressure day by day</CardDescription>
       </CardHeader>
-      <div className="h-64 w-full">
+      <div className="h-64 xl:h-80 2xl:h-96 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <defs>
@@ -89,7 +89,7 @@ export function AdsCreativeHealthChart({ data }: { data: AdsDashboard["daily"] }
         <CardTitle>Creative health</CardTitle>
         <CardDescription>Hook rate, outbound CTR, and frequency (fatigue)</CardDescription>
       </CardHeader>
-      <div className="h-64 w-full">
+      <div className="h-64 xl:h-80 2xl:h-96 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />

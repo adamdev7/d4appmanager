@@ -250,19 +250,19 @@ export function AdsPage() {
         : null;
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-6 pb-10 w-full min-w-0 max-w-none">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <Megaphone className="h-5 w-5 text-brand-600" />
-            <h1 className="text-2xl font-semibold tracking-tight text-content">Ads</h1>
+            <Megaphone className="h-5 w-5 xl:h-6 xl:w-6 text-brand-600" />
+            <h1 className="text-2xl xl:text-3xl font-semibold tracking-tight text-content">Ads</h1>
             {dashboard?.meta_configured ? (
               <Badge variant="success">Live Meta</Badge>
             ) : (
               <Badge variant="warning">Setup required</Badge>
             )}
           </div>
-          <p className="text-sm text-content-muted max-w-xl">
+          <p className="text-sm xl:text-base text-content-muted max-w-2xl">
             E-commerce Meta dashboard focused on what shops usually miss: MER, hook rate, fatigue,
             outbound CTR, funnel leaks, and attribution gaps — not just ROAS.
           </p>
@@ -305,7 +305,7 @@ export function AdsPage() {
               <Calendar className="h-4 w-4" />
             </button>
             {calendarOpen && (
-              <div className="absolute right-0 z-30 mt-2 w-72 rounded-xl border border-border bg-surface p-4 shadow-elevated">
+              <div className="absolute right-0 z-30 mt-2 w-72 max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-surface p-4 shadow-elevated">
                 <p className="text-sm font-medium text-content mb-3">Custom range</p>
                 <div className="space-y-3">
                   <Input
@@ -405,7 +405,7 @@ export function AdsPage() {
             )}
           </Card>
 
-          <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
+          <div className="grid gap-4 grid-cols-1 lg:grid-cols-[240px_1fr] [&>*]:min-w-0">
             <Card padding="md" className="h-fit">
               <p className="text-xs font-medium uppercase tracking-wide text-content-subtle mb-2">
                 History
@@ -487,7 +487,7 @@ export function AdsPage() {
             </div>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
             <MetricCard
               label="Ad spend"
               value={formatMoney(summary?.spend ?? 0, currency)}
@@ -519,7 +519,7 @@ export function AdsPage() {
             />
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
             <MetricCard
               label="Hook rate"
               value={`${(summary?.hook_rate ?? 0).toFixed(1)}%`}

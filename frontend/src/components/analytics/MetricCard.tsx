@@ -33,27 +33,33 @@ export function MetricCard({
   return (
     <div
       className={cn(
-        "rounded-xl border p-5 shadow-card transition-all",
+        "min-w-0 overflow-hidden rounded-xl border p-4 sm:p-5 xl:p-6 2xl:p-7 shadow-card transition-all",
         accentStyles[accent],
         className
       )}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium text-content-muted">{label}</p>
-          <p className="mt-1 text-2xl font-bold tracking-tight text-content">{value}</p>
-          {hint && <p className="mt-1 text-xs text-content-subtle">{hint}</p>}
+        <div className="min-w-0 flex-1">
+          <p className="text-sm xl:text-base font-medium text-content-muted truncate">{label}</p>
+          <p className="mt-1 text-xl sm:text-2xl xl:text-3xl font-bold tracking-tight text-content break-words">
+            {value}
+          </p>
+          {hint && (
+            <p className="mt-1 text-xs xl:text-sm text-content-subtle break-words line-clamp-3">
+              {hint}
+            </p>
+          )}
         </div>
         {Icon && (
-          <div className="rounded-lg bg-surface-muted p-2.5 shrink-0">
-            <Icon className="h-5 w-5 text-brand-600 dark:text-brand-400" />
+          <div className="rounded-lg bg-surface-muted p-2 sm:p-2.5 xl:p-3 shrink-0">
+            <Icon className="h-4 w-4 sm:h-5 sm:w-5 xl:h-6 xl:w-6 text-brand-600 dark:text-brand-400" />
           </div>
         )}
       </div>
       {trendLabel && (
         <p
           className={cn(
-            "mt-3 text-xs font-medium",
+            "mt-3 text-xs font-medium truncate",
             trend === "up" && "text-emerald-600 dark:text-emerald-400",
             trend === "down" && "text-red-600 dark:text-red-400",
             trend === "neutral" && "text-content-muted"

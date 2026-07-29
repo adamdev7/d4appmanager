@@ -136,11 +136,11 @@ export function ManualInvestmentPanel({ storeId, currency, onChanged }: Props) {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 w-full min-w-0">
       <Card padding="lg" className="border-brand-500/20 bg-brand-500/5">
         <div className="flex items-start gap-3">
           <Landmark className="h-5 w-5 text-brand-600 shrink-0 mt-0.5" />
-          <div>
+          <div className="min-w-0">
             <CardTitle>Manual investments</CardTitle>
             <CardDescription className="mt-1">
               Log cash you put into the business that APIs cannot track — agencies, tools,
@@ -162,7 +162,7 @@ export function ManualInvestmentPanel({ storeId, currency, onChanged }: Props) {
             </Button>
           )}
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
           <Input
             label="Label"
             placeholder="e.g. Agency retainer"

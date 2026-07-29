@@ -9,16 +9,16 @@ interface CardProps extends HTMLAttributes<HTMLDivElement> {
 
 const paddingMap = {
   none: "",
-  sm: "p-4",
-  md: "p-5",
-  lg: "p-6",
+  sm: "p-4 xl:p-5",
+  md: "p-5 xl:p-6 2xl:p-7",
+  lg: "p-6 xl:p-7 2xl:p-8",
 };
 
 export function Card({ children, className, hover, padding = "md", ...props }: CardProps) {
   return (
     <div
       className={cn(
-        "rounded-xl border border-border bg-surface shadow-card transition-all duration-200",
+        "rounded-xl border border-border bg-surface shadow-card transition-all duration-200 min-w-0",
         paddingMap[padding],
         hover && "hover:shadow-elevated hover:border-border-strong cursor-pointer",
         className
@@ -35,7 +35,9 @@ export function CardHeader({ children, className }: { children: ReactNode; class
 }
 
 export function CardTitle({ children, className }: { children: ReactNode; className?: string }) {
-  return <h3 className={cn("text-base font-semibold text-content", className)}>{children}</h3>;
+  return (
+    <h3 className={cn("text-base xl:text-lg font-semibold text-content", className)}>{children}</h3>
+  );
 }
 
 export function CardDescription({

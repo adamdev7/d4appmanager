@@ -11,7 +11,7 @@ export function GeneralSettingsPage() {
   const [weeklyDigest, setWeeklyDigest] = useState(false);
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="w-full min-w-0 max-w-4xl 2xl:max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-content">General settings</h1>
         <p className="text-content-muted mt-1">Manage your account and workspace preferences.</p>

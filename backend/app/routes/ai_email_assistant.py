@@ -14,7 +14,9 @@ from app.models.ai_email_assistant import (
     FullHistoryScanRequest,
     FullHistoryScanResponse,
     InboxThreadResponse,
+    ManualReplyBody,
     OpenAIKeyStatusResponse,
+    RelatedOrdersResponse,
     SetOpenAIKeyBody,
     SyncInboxRequest,
     UpdateReplyDraftBody,
@@ -85,6 +87,16 @@ async def get_inbox_thread(
 ):
     """Full Gmail conversation for mailbox-style monitoring of the assistant."""
     return await _service.get_inbox_thread(db, user, inbox_email_id)
+
+
+@router.get("/inbox/{inbox_email_id}/related-orders", response_model=RelatedOrdersResponse)
+async def get_related_orders(
+    inbox_email_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    """Shopify orders for this customer (email match + order numbers found in the mail)."""
+    return await _service.get_related_orders(db, user, inbox_email_id)
 
 
 @router.post("/automation/run", response_model=AutomationRunResponse)
@@ -164,6 +176,20 @@ async def generate_reply(
     db: Session = Depends(get_db),
 ):
     return await _service.generate_and_maybe_send(db, user, inbox_email_id, store_id=store_id)
+
+
+@router.post("/inbox/{inbox_email_id}/manual-reply", response_model=AIReplyResponse)
+async def send_manual_reply(
+    inbox_email_id: str,
+    body: ManualReplyBody,
+    store_id: str | None = Query(default=None),
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    """Send a human-written reply through Gmail (in-app mailbox, no AI)."""
+    return await _service.send_manual_reply(
+        db, user, inbox_email_id, body.body, store_id=store_id
+    )
 
 
 @router.post("/replies/{reply_id}/approve", response_model=AIReplyResponse)

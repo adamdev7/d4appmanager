@@ -223,7 +223,7 @@ export function EmailAutomationPage() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8 pb-10">
+    <div className="w-full min-w-0 max-w-none space-y-8 pb-10">
       <Link
         to="/dashboard"
         className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content"
@@ -234,13 +234,13 @@ export function EmailAutomationPage() {
 
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-content flex items-center gap-2">
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-500/10 text-brand-600 dark:text-brand-400">
-              <Mail className="h-5 w-5" />
+          <h1 className="text-2xl xl:text-3xl font-bold text-content flex items-center gap-2">
+            <span className="flex h-10 w-10 xl:h-12 xl:w-12 items-center justify-center rounded-xl bg-brand-500/10 text-brand-600 dark:text-brand-400">
+              <Mail className="h-5 w-5 xl:h-6 xl:w-6" />
             </span>
             Email Automation
           </h1>
-          <p className="text-content-muted mt-2 max-w-lg">
+          <p className="text-content-muted mt-2 max-w-2xl xl:text-lg">
             Send the right message automatically when something happens in{" "}
             <strong className="text-content">{activeStore.name}</strong> — orders, shipping,
             and new customers.

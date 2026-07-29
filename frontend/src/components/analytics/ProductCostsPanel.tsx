@@ -137,15 +137,15 @@ export function ProductCostsPanel({ storeId, currency }: Props) {
       {error && <p className="text-sm text-red-600">{error}</p>}
       {message && <p className="text-sm text-emerald-600 dark:text-emerald-400">{message}</p>}
 
-      <Card padding="none" className="overflow-hidden">
+      <Card padding="none" className="min-w-0 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[520px] text-sm">
             <thead>
               <tr className="border-b border-border bg-surface-muted/50 text-left text-content-muted">
-                <th className="px-4 py-3 font-medium">Product</th>
-                <th className="px-4 py-3 font-medium text-right">Sell price</th>
-                <th className="px-4 py-3 font-medium text-right w-36">Your cost</th>
-                <th className="px-4 py-3 font-medium text-right">Margin</th>
+                <th className="px-3 sm:px-4 py-3 font-medium">Product</th>
+                <th className="px-3 sm:px-4 py-3 font-medium text-right">Sell price</th>
+                <th className="px-3 sm:px-4 py-3 font-medium text-right w-28 sm:w-36">Your cost</th>
+                <th className="px-3 sm:px-4 py-3 font-medium text-right">Margin</th>
               </tr>
             </thead>
             <tbody>
@@ -156,7 +156,7 @@ export function ProductCostsPanel({ storeId, currency }: Props) {
                 const margin = price > 0 ? ((price - cost) / price) * 100 : 0;
                 return (
                   <tr key={key} className="border-b border-border last:border-0">
-                    <td className="px-4 py-3">
+                    <td className="px-3 sm:px-4 py-3">
                       <div className="flex items-center gap-3 min-w-0">
                         {p.image_url ? (
                           <img
@@ -177,23 +177,23 @@ export function ProductCostsPanel({ storeId, currency }: Props) {
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-right text-content-muted whitespace-nowrap">
+                    <td className="px-3 sm:px-4 py-3 text-right text-content-muted whitespace-nowrap">
                       {formatMoney(price, currency)}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 sm:px-4 py-3">
                       <Input
                         type="number"
                         min="0"
                         step="0.01"
                         placeholder="0.00"
-                        className="text-right"
+                        className="text-right w-24 sm:w-28 ml-auto"
                         value={costs[key] ?? ""}
                         onChange={(e) =>
                           setCosts((prev) => ({ ...prev, [key]: e.target.value }))
                         }
                       />
                     </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <td className="px-3 sm:px-4 py-3 text-right whitespace-nowrap">
                       {cost > 0 ? (
                         <Badge variant={margin >= 50 ? "success" : margin >= 25 ? "warning" : "muted"}>
                           {margin.toFixed(0)}%

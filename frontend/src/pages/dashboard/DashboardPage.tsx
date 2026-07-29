@@ -87,18 +87,20 @@ export function DashboardPage() {
   const connectedStoreCount = stores.filter((s) => s.status === "connected").length;
 
   return (
-    <div className="space-y-8 max-w-7xl mx-auto">
+    <div className="space-y-8 w-full min-w-0">
       <motion.div
         initial={{ opacity: 0, y: -8 }}
         animate={{ opacity: 1, y: 0 }}
         className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4"
       >
         <div>
-          <p className="text-sm font-medium text-brand-600 dark:text-brand-400">
+          <p className="text-sm xl:text-base font-medium text-brand-600 dark:text-brand-400">
             {greeting}, {firstName}
           </p>
-          <h1 className="text-2xl font-bold tracking-tight text-content mt-0.5">Overview</h1>
-          <p className="mt-1 text-content-muted max-w-xl">
+          <h1 className="text-2xl xl:text-3xl 2xl:text-4xl font-bold tracking-tight text-content mt-0.5">
+            Overview
+          </h1>
+          <p className="mt-1 text-content-muted max-w-2xl xl:text-lg">
             {activeStore
               ? `Workspace for ${activeStore.name} — email, tracking, analytics, and ads in one place.`
               : "Your automation hub — connect Shopify and Gmail, then launch any app below."}
@@ -164,57 +166,57 @@ export function DashboardPage() {
 
       <section>
         <div className="mb-4">
-          <h2 className="text-lg font-semibold text-content">App pulse</h2>
-          <p className="text-sm text-content-muted mt-0.5">
+          <h2 className="text-lg xl:text-xl font-semibold text-content">App pulse</h2>
+          <p className="text-sm xl:text-base text-content-muted mt-0.5">
             Live stats for each module — ready apps vs ones that still need a connection
           </p>
         </div>
         <ModuleHighlights highlights={display.highlights} loading={loading} />
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-5">
-        <div className="lg:col-span-3 space-y-6">
+      <div className="grid gap-6 lg:grid-cols-5 xl:gap-8 2xl:grid-cols-12">
+        <div className="lg:col-span-3 2xl:col-span-8 space-y-6">
           <section>
             <div className="mb-4">
-              <h2 className="text-lg font-semibold text-content">Your apps</h2>
-              <p className="text-sm text-content-muted mt-0.5">
+              <h2 className="text-lg xl:text-xl font-semibold text-content">Your apps</h2>
+              <p className="text-sm xl:text-base text-content-muted mt-0.5">
                 Ready modules first, then anything waiting on Shopify or Gmail, then roadmap
               </p>
             </div>
             <AppModulesGrid />
           </section>
 
-          <div className="flex flex-wrap gap-3 text-sm">
+          <div className="flex flex-wrap gap-3 text-sm xl:text-base">
             <Link
               to="/settings/stores"
-              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
+              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 xl:px-4 xl:py-2.5 text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
             >
               <Store className="h-4 w-4" />
               Manage stores
             </Link>
             <Link
               to="/settings/gmail"
-              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
+              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 xl:px-4 xl:py-2.5 text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
             >
               <Mail className="h-4 w-4" />
               Manage Gmail
             </Link>
           </div>
         </div>
-        <div className="lg:col-span-2 space-y-4">
+        <div className="lg:col-span-2 2xl:col-span-4 space-y-4">
           <ActivityFeed />
-          <div className="rounded-xl border border-border bg-surface p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-content-subtle mb-3">
+          <div className="rounded-xl border border-border bg-surface p-4 xl:p-5">
+            <p className="text-xs xl:text-sm font-medium uppercase tracking-wide text-content-subtle mb-3">
               Quick launch
             </p>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2 xl:gap-3">
               {QUICK_LINKS.map((item) => (
                 <Link
                   key={item.to}
                   to={item.to}
-                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2.5 text-sm text-content hover:border-brand-500/40 hover:bg-brand-500/5 transition-colors"
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2.5 xl:px-4 xl:py-3 text-sm xl:text-base text-content hover:border-brand-500/40 hover:bg-brand-500/5 transition-colors"
                 >
-                  <item.icon className="h-4 w-4 text-brand-600" />
+                  <item.icon className="h-4 w-4 xl:h-5 xl:w-5 text-brand-600" />
                   {item.label}
                 </Link>
               ))}

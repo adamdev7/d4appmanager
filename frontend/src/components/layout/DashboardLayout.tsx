@@ -40,7 +40,7 @@ export function DashboardLayout() {
   }, [mobileOpen]);
 
   return (
-    <div className="min-h-screen bg-surface-muted">
+    <div className="min-h-dvh bg-surface-muted">
       <Sidebar
         collapsed={collapsed}
         onCollapsedChange={setCollapsed}
@@ -59,7 +59,7 @@ export function DashboardLayout() {
 
       <div
         className={cn(
-          "min-h-screen flex flex-col transition-[padding] duration-300",
+          "min-h-dvh flex flex-col w-full min-w-0 transition-[padding] duration-300",
           collapsed ? "lg:pl-[72px]" : "lg:pl-[var(--sidebar-width)]"
         )}
       >
@@ -71,11 +71,25 @@ export function DashboardLayout() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.25 }}
-          className="flex-1 p-4 sm:p-6"
+          className="flex-1 w-full min-w-0 max-w-none"
+          style={{
+            paddingLeft: "var(--page-gutter-x)",
+            paddingRight: "var(--page-gutter-x)",
+            paddingTop: "var(--page-gutter-y)",
+            paddingBottom: "var(--page-gutter-y)",
+          }}
         >
-          <Outlet />
+          <div className="mx-auto w-full min-w-0 max-w-none">
+            <Outlet />
+          </div>
         </motion.main>
-        <div className="px-4 sm:px-6 pb-6">
+        <div
+          className="w-full min-w-0 max-w-none pb-4 sm:pb-5"
+          style={{
+            paddingLeft: "var(--page-gutter-x)",
+            paddingRight: "var(--page-gutter-x)",
+          }}
+        >
           <SiteFooter />
         </div>
       </div>

@@ -85,7 +85,7 @@ function ModuleCard({
       <div className="flex items-start justify-between gap-3">
         <div
           className={cn(
-            "flex h-10 w-10 items-center justify-center rounded-xl",
+            "flex h-10 w-10 xl:h-12 xl:w-12 items-center justify-center rounded-xl",
             mod.status === "active"
               ? "bg-brand-500/15 text-brand-600 dark:text-brand-400"
               : mod.status === "setup"
@@ -93,7 +93,7 @@ function ModuleCard({
                 : "bg-surface-muted text-content-subtle"
           )}
         >
-          <Icon className="h-5 w-5" />
+          <Icon className="h-5 w-5 xl:h-6 xl:w-6" />
         </div>
         <Badge variant={statusBadge(mod.status)} className="capitalize">
           {statusLabel(mod.status)}
@@ -178,9 +178,12 @@ export function AppModulesGrid() {
     return (
       <div className="space-y-3">
         <div className="h-4 w-40 rounded bg-surface-muted animate-pulse" />
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2 xl:gap-5">
           {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="h-36 rounded-xl border border-border bg-surface animate-pulse" />
+            <div
+              key={i}
+              className="h-36 xl:h-40 rounded-xl border border-border bg-surface animate-pulse"
+            />
           ))}
         </div>
       </div>
@@ -200,7 +203,7 @@ export function AppModulesGrid() {
             subtitle="Connected and available for daily work"
             count={grouped.ready.length}
           />
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3 xl:gap-5">
             {grouped.ready.map((mod, i) => (
               <ModuleCard key={mod.id} mod={mod} index={i} />
             ))}
@@ -215,7 +218,7 @@ export function AppModulesGrid() {
             subtitle="Link Shopify or Gmail once to unlock these apps"
             count={grouped.setup.length}
           />
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3 xl:gap-5">
             {grouped.setup.map((mod, i) => (
               <ModuleCard key={mod.id} mod={mod} index={i} compact />
             ))}
@@ -230,7 +233,7 @@ export function AppModulesGrid() {
             subtitle="Planned modules — not available yet"
             count={grouped.soon.length}
           />
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-3 xl:gap-5">
             {grouped.soon.map((mod, i) => (
               <ModuleCard key={mod.id} mod={mod} index={i} compact />
             ))}

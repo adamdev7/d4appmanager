@@ -57,7 +57,7 @@ export function ModuleHighlights({
     : highlights;
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5 xl:gap-5 2xl:gap-6">
       {items.map((item, i) => {
         const Icon = ICONS[item.slug as keyof typeof ICONS] ?? Package;
         const disabled = item.status === "coming_soon" || loading;
@@ -68,21 +68,23 @@ export function ModuleHighlights({
             className={cn("h-full", loading && "opacity-60 animate-pulse", disabled && !loading && "opacity-75")}
           >
             <div className="flex items-start justify-between gap-2">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-500/10 text-brand-600 dark:text-brand-400">
-                <Icon className="h-5 w-5" />
+              <div className="flex h-10 w-10 xl:h-12 xl:w-12 items-center justify-center rounded-xl bg-brand-500/10 text-brand-600 dark:text-brand-400">
+                <Icon className="h-5 w-5 xl:h-6 xl:w-6" />
               </div>
               <Badge variant={statusVariant(item.status)} className="capitalize shrink-0">
                 {statusLabel(item.status)}
               </Badge>
             </div>
-            <CardTitle className="mt-3 text-base">{item.name}</CardTitle>
+            <CardTitle className="mt-3 text-base xl:text-lg">{item.name}</CardTitle>
             <CardDescription className="line-clamp-2">{item.hint}</CardDescription>
             <div className="mt-4 flex items-end justify-between gap-2">
               <div>
-                <p className="text-xs text-content-subtle uppercase tracking-wide">
+                <p className="text-xs xl:text-sm text-content-subtle uppercase tracking-wide">
                   {item.stat_label}
                 </p>
-                <p className="text-2xl font-bold text-content tabular-nums">{item.stat_value}</p>
+                <p className="text-2xl xl:text-3xl font-bold text-content tabular-nums">
+                  {item.stat_value}
+                </p>
               </div>
               {!disabled && (
                 <span className="inline-flex items-center gap-1 text-sm font-medium text-brand-600 opacity-0 group-hover:opacity-100 transition-opacity">

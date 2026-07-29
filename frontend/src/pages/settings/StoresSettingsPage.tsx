@@ -49,7 +49,7 @@ export function StoresSettingsPage() {
   };
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="w-full min-w-0 max-w-4xl 2xl:max-w-5xl space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-content">Stores</h1>

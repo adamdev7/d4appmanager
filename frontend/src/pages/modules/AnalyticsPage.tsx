@@ -17,6 +17,7 @@ import {
   Wallet,
   Repeat,
   Landmark,
+  ChevronDown,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api, type AnalyticsDashboard, type AnalyticsPeriod, type AnalyticsSettings } from "@/lib/api";
@@ -95,6 +96,7 @@ export function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [holdBreakdownOpen, setHoldBreakdownOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!storeId) {
@@ -155,6 +157,7 @@ export function AnalyticsPage() {
   const selectPreset = (id: Exclude<AnalyticsPeriod, "custom">) => {
     setPeriod(id);
     setCalendarOpen(false);
+    setHoldBreakdownOpen(false);
   };
 
   const applyCustomRange = () => {
@@ -224,10 +227,10 @@ export function AnalyticsPage() {
         : null;
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-6 pb-10 w-full min-w-0 overflow-x-hidden">
       {/* Header */}
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
+        <div className="min-w-0">
           <Link
             to="/dashboard"
             className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content mb-3"
@@ -235,17 +238,19 @@ export function AnalyticsPage() {
             <ArrowLeft className="h-4 w-4" />
             Back to overview
           </Link>
-          <h1 className="text-2xl font-bold text-content tracking-tight">Store Analytics</h1>
-          <p className="text-content-muted mt-1 max-w-xl">
+          <h1 className="text-2xl xl:text-3xl font-bold text-content tracking-tight">
+            Store Analytics
+          </h1>
+          <p className="text-content-muted mt-1 max-w-2xl text-sm sm:text-base xl:text-lg">
             Triple Whale-style profitability dashboard — Shopify revenue and Meta ad spend in one
             place, with real net profit tracking.
           </p>
           {rangeHint && (
-            <p className="text-xs text-content-subtle mt-2">{rangeHint}</p>
+            <p className="text-xs text-content-subtle mt-2 break-words">{rangeHint}</p>
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           {dashboard?.connections && (
             <>
               <Badge variant={dashboard.connections.shopify ? "success" : "warning"}>
@@ -267,14 +272,14 @@ export function AnalyticsPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 p-1 rounded-xl bg-surface-muted border border-border w-fit">
+      <div className="flex gap-1 p-1 rounded-xl bg-surface-muted border border-border w-full max-w-full overflow-x-auto">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
             onClick={() => setTab(id)}
             className={cn(
-              "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+              "flex items-center gap-2 px-3 sm:px-4 py-2 rounded-lg text-sm font-medium transition-colors shrink-0 whitespace-nowrap",
               tab === id
                 ? "bg-surface text-content shadow-sm"
                 : "text-content-muted hover:text-content"
@@ -318,7 +323,7 @@ export function AnalyticsPage() {
                 type="button"
                 onClick={() => selectPreset(p.id)}
                 className={cn(
-                  "px-4 py-2 rounded-lg text-sm font-medium border transition-colors",
+                  "px-3 sm:px-4 py-2 rounded-lg text-sm font-medium border transition-colors shrink-0",
                   period === p.id
                     ? "bg-brand-600 text-white border-brand-600"
                     : "border-border text-content-muted hover:border-border-strong hover:text-content"
@@ -327,7 +332,7 @@ export function AnalyticsPage() {
                 {p.label}
               </button>
             ))}
-            <div className="relative" ref={calendarRef}>
+            <div className="relative ml-auto sm:ml-0" ref={calendarRef}>
               <button
                 type="button"
                 onClick={() => {
@@ -348,7 +353,7 @@ export function AnalyticsPage() {
                 <Calendar className="h-4 w-4" />
               </button>
               {calendarOpen && (
-                <div className="absolute left-0 z-30 mt-2 w-72 rounded-xl border border-border bg-surface p-4 shadow-elevated sm:left-auto sm:right-0">
+                <div className="absolute right-0 z-30 mt-2 w-72 max-w-[calc(100vw-1.5rem)] rounded-xl border border-border bg-surface p-4 shadow-elevated">
                   <p className="text-sm font-medium text-content mb-3">Custom range</p>
                   <div className="space-y-3">
                     <Input
@@ -390,7 +395,7 @@ export function AnalyticsPage() {
               )}
 
               {/* Hero KPIs */}
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
                 <MetricCard
                   label="Net Profit"
                   value={formatMoney(summary.net_profit, currency)}
@@ -441,7 +446,7 @@ export function AnalyticsPage() {
               </div>
 
               {/* Secondary KPIs */}
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 [&>*]:min-w-0">
                 <MetricCard
                   label="Gross Profit"
                   value={formatMoney(summary.gross_profit, currency)}
@@ -480,7 +485,7 @@ export function AnalyticsPage() {
                   </div>
                   <div
                     className={cn(
-                      "grid gap-4 sm:grid-cols-2",
+                      "grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 [&>*]:min-w-0",
                       showBalanceHold ? "lg:grid-cols-3" : "lg:grid-cols-2",
                     )}
                   >
@@ -513,26 +518,66 @@ export function AnalyticsPage() {
                       accent={stripeBalance.pending > 0 ? "warning" : "default"}
                     />
                     {showBalanceHold && (
-                      <MetricCard
-                        label={
-                          balanceHoldDays != null
-                            ? `On hold · ${balanceHoldDays} day${balanceHoldDays === 1 ? "" : "s"}`
-                            : "On hold"
-                        }
-                        value={formatMoney(balanceHoldTotal, currency)}
-                        hint={
-                          balanceHolds.length > 0
-                            ? balanceHolds
-                                .map(
-                                  (h) =>
-                                    `${formatMoney(h.amount, currency)} in ${h.days} day${h.days === 1 ? "" : "s"}`,
-                                )
-                                .join(" · ")
-                            : `Pending funds clearing in ~${stripeBalance.delay_days} days`
-                        }
-                        icon={AlertTriangle}
-                        accent="warning"
-                      />
+                      <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 sm:p-5 shadow-card min-w-0 overflow-hidden">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-content-muted">
+                              {balanceHoldDays != null
+                                ? `On hold · ${balanceHoldDays} day${balanceHoldDays === 1 ? "" : "s"}`
+                                : "On hold"}
+                            </p>
+                            {balanceHolds.length > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => setHoldBreakdownOpen((o) => !o)}
+                                aria-expanded={holdBreakdownOpen}
+                                className="mt-1 inline-flex max-w-full min-w-0 items-center gap-1.5 text-left text-xl sm:text-2xl font-bold tracking-tight text-content hover:text-brand-600 transition-colors"
+                              >
+                                <span className="min-w-0 break-words">
+                                  {formatMoney(balanceHoldTotal, currency)}
+                                </span>
+                                <ChevronDown
+                                  className={cn(
+                                    "h-4 w-4 shrink-0 text-content-muted transition-transform",
+                                    holdBreakdownOpen && "rotate-180",
+                                  )}
+                                />
+                              </button>
+                            ) : (
+                              <p className="mt-1 text-xl sm:text-2xl font-bold tracking-tight text-content break-words">
+                                {formatMoney(balanceHoldTotal, currency)}
+                              </p>
+                            )}
+                            <p className="mt-1 text-xs text-content-subtle">
+                              {balanceHolds.length > 0
+                                ? holdBreakdownOpen
+                                  ? "Click amount to hide unlock schedule"
+                                  : "Click amount to see unlock schedule"
+                                : `Pending funds clearing in ~${stripeBalance.delay_days} days`}
+                            </p>
+                            {holdBreakdownOpen && balanceHolds.length > 0 && (
+                              <ul className="mt-3 space-y-1.5 border-t border-border/60 pt-3">
+                                {balanceHolds.map((h) => (
+                                  <li
+                                    key={h.days}
+                                    className="flex justify-between gap-3 text-xs text-content-muted"
+                                  >
+                                    <span>
+                                      In {h.days} day{h.days === 1 ? "" : "s"}
+                                    </span>
+                                    <span className="font-medium tabular-nums text-content">
+                                      {formatMoney(h.amount, currency)}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <div className="rounded-lg bg-surface-muted p-2.5 shrink-0">
+                            <AlertTriangle className="h-5 w-5 text-brand-600 dark:text-brand-400" />
+                          </div>
+                        </div>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -546,7 +591,7 @@ export function AnalyticsPage() {
                     <Badge variant="muted">{currency}</Badge>
                     {summary.chargebacks.count === 0 && <Badge variant="success">None</Badge>}
                   </div>
-                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 [&>*]:min-w-0">
                     <MetricCard
                       label="Disputed amount"
                       value={formatMoney(summary.chargebacks.amount, currency)}
@@ -621,7 +666,7 @@ export function AnalyticsPage() {
                       FX conversion failed — showing native Stripe amount. {dashboard.mrr.fx_error}
                     </p>
                   )}
-                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 [&>*]:min-w-0">
                     <MetricCard
                       label="MRR"
                       value={formatMoney(dashboard.mrr.mrr, mrrCurrency)}
@@ -696,7 +741,7 @@ export function AnalyticsPage() {
               <ProfitInsights insights={dashboard.insights} />
 
               {/* Charts */}
-              <div className="grid gap-6 xl:grid-cols-2">
+              <div className="grid gap-4 xl:grid-cols-2 [&>*]:min-w-0">
                 <RevenueSpendChart
                   data={dashboard.daily_chart}
                   currency={currency}
@@ -712,7 +757,7 @@ export function AnalyticsPage() {
               <OrdersChart data={dashboard.daily_chart} granularity={dashboard.chart_granularity} />
 
               {/* Tables & breakdown */}
-              <div className="grid gap-6 xl:grid-cols-2">
+              <div className="grid gap-4 xl:grid-cols-2 [&>*]:min-w-0">
                 <ProfitBreakdown summary={summary} currency={currency} />
                 <TopProductsTable products={dashboard.top_products} currency={currency} />
               </div>
@@ -720,34 +765,34 @@ export function AnalyticsPage() {
               <CampaignTable campaigns={dashboard.campaigns} currency={currency} />
 
               {dashboard.recent_orders.length > 0 && (
-                <Card padding="none" className="overflow-hidden">
-                  <div className="p-5 pb-0">
+                <Card padding="none" className="min-w-0 overflow-hidden">
+                  <div className="p-4 sm:p-5 pb-0">
                     <CardTitle>Recent Orders — Profit Snapshot</CardTitle>
                     <CardDescription>Per-order estimated profit for quick review</CardDescription>
                   </div>
                   <div className="overflow-x-auto mt-4">
-                    <table className="w-full text-sm">
+                    <table className="w-full min-w-[420px] text-sm">
                       <thead>
                         <tr className="border-y border-border bg-surface-muted/50 text-left text-content-muted">
-                          <th className="px-5 py-3 font-medium">Order</th>
-                          <th className="px-5 py-3 font-medium text-right">Total</th>
-                          <th className="px-5 py-3 font-medium text-right">COGS</th>
-                          <th className="px-5 py-3 font-medium text-right">Est. Profit</th>
+                          <th className="px-3 sm:px-5 py-3 font-medium">Order</th>
+                          <th className="px-3 sm:px-5 py-3 font-medium text-right">Total</th>
+                          <th className="px-3 sm:px-5 py-3 font-medium text-right">COGS</th>
+                          <th className="px-3 sm:px-5 py-3 font-medium text-right">Est. Profit</th>
                         </tr>
                       </thead>
                       <tbody>
                         {dashboard.recent_orders.map((o) => (
                           <tr key={o.order_number + o.created_at} className="border-b border-border last:border-0">
-                            <td className="px-5 py-3 font-medium text-content">{o.order_number}</td>
-                            <td className="px-5 py-3 text-right text-content-muted">
+                            <td className="px-3 sm:px-5 py-3 font-medium text-content">{o.order_number}</td>
+                            <td className="px-3 sm:px-5 py-3 text-right text-content-muted whitespace-nowrap">
                               {formatMoney(o.total, currency)}
                             </td>
-                            <td className="px-5 py-3 text-right text-content-muted">
+                            <td className="px-3 sm:px-5 py-3 text-right text-content-muted whitespace-nowrap">
                               {formatMoney(o.cogs, currency)}
                             </td>
                             <td
                               className={cn(
-                                "px-5 py-3 text-right font-medium",
+                                "px-3 sm:px-5 py-3 text-right font-medium whitespace-nowrap",
                                 o.profit >= 0 ? "text-emerald-600" : "text-red-600"
                               )}
                             >

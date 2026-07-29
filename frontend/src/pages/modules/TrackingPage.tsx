@@ -255,7 +255,7 @@ export function TrackingPage() {
     overview?.shopify_connected ?? activeStore.status === "connected";
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6 pb-10">
+    <div className="w-full min-w-0 space-y-6 pb-10">
       <Link
         to="/dashboard"
         className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content"
@@ -266,13 +266,13 @@ export function TrackingPage() {
 
       <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-content flex items-center gap-2">
-            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-500/10 text-brand-600 dark:text-brand-400">
-              <Package className="h-5 w-5" />
+          <h1 className="text-2xl xl:text-3xl font-bold text-content flex items-center gap-2">
+            <span className="flex h-10 w-10 xl:h-12 xl:w-12 items-center justify-center rounded-xl bg-brand-500/10 text-brand-600 dark:text-brand-400">
+              <Package className="h-5 w-5 xl:h-6 xl:w-6" />
             </span>
             Order Tracking
           </h1>
-          <p className="text-content-muted mt-2 max-w-xl">
+          <p className="text-content-muted mt-2 max-w-2xl xl:text-lg">
             See where your customers&apos; packages are. Orders sync automatically from{" "}
             <strong className="font-medium text-content">{activeStore.name}</strong> on Shopify.
           </p>

@@ -87,7 +87,7 @@ export function GmailSettingsPage() {
   };
 
   return (
-    <div className="max-w-3xl space-y-8">
+    <div className="w-full min-w-0 max-w-4xl 2xl:max-w-5xl space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-content">Gmail & email</h1>
         <p className="text-content-muted mt-1">

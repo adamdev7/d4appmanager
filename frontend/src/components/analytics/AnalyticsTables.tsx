@@ -86,38 +86,38 @@ export function CampaignTable({
   }
 
   return (
-    <Card padding="none" className="overflow-hidden">
-      <div className="p-5 pb-0">
+    <Card padding="none" className="min-w-0 overflow-hidden">
+      <div className="p-4 sm:p-5 pb-0">
         <CardTitle>Meta Ad Campaigns</CardTitle>
         <CardDescription>Performance by campaign for the selected period</CardDescription>
       </div>
-      <div className="overflow-x-auto mt-4">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto mt-4 -mx-0">
+        <table className="w-full min-w-[640px] text-sm">
           <thead>
             <tr className="border-y border-border bg-surface-muted/50 text-left text-content-muted">
-              <th className="px-5 py-3 font-medium">Campaign</th>
-              <th className="px-5 py-3 font-medium text-right">Spend</th>
-              <th className="px-5 py-3 font-medium text-right">Purchases</th>
-              <th className="px-5 py-3 font-medium text-right">Purchase value</th>
-              <th className="px-5 py-3 font-medium text-right">ROAS</th>
-              <th className="px-5 py-3 font-medium text-right">CPA</th>
-              <th className="px-5 py-3 font-medium text-right">CTR</th>
+              <th className="px-3 sm:px-5 py-3 font-medium">Campaign</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">Spend</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">Purchases</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">Purchase value</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">ROAS</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">CPA</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">CTR</th>
             </tr>
           </thead>
           <tbody>
             {campaigns.map((c) => (
               <tr key={c.campaign_id} className="border-b border-border last:border-0">
-                <td className="px-5 py-3 font-medium text-content max-w-[200px] truncate">
+                <td className="px-3 sm:px-5 py-3 font-medium text-content max-w-[160px] sm:max-w-[200px] truncate">
                   {c.campaign_name}
                 </td>
-                <td className="px-5 py-3 text-right text-content-muted">
+                <td className="px-3 sm:px-5 py-3 text-right text-content-muted whitespace-nowrap">
                   {formatMoney(c.spend, currency)}
                 </td>
-                <td className="px-5 py-3 text-right text-content-muted">{c.purchases}</td>
-                <td className="px-5 py-3 text-right text-content-muted">
+                <td className="px-3 sm:px-5 py-3 text-right text-content-muted">{c.purchases}</td>
+                <td className="px-3 sm:px-5 py-3 text-right text-content-muted whitespace-nowrap">
                   {formatMoney(c.purchase_value, currency)}
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-3 sm:px-5 py-3 text-right">
                   <span
                     className={cn(
                       "font-medium",
@@ -127,10 +127,10 @@ export function CampaignTable({
                     {c.roas}x
                   </span>
                 </td>
-                <td className="px-5 py-3 text-right text-content-muted">
+                <td className="px-3 sm:px-5 py-3 text-right text-content-muted whitespace-nowrap">
                   {c.cpa > 0 ? formatMoney(c.cpa, currency) : "—"}
                 </td>
-                <td className="px-5 py-3 text-right text-content-muted">{c.ctr.toFixed(2)}%</td>
+                <td className="px-3 sm:px-5 py-3 text-right text-content-muted">{c.ctr.toFixed(2)}%</td>
               </tr>
             ))}
           </tbody>
@@ -150,36 +150,36 @@ export function TopProductsTable({
   if (!products.length) return null;
 
   return (
-    <Card padding="none" className="overflow-hidden">
-      <div className="p-5 pb-0">
+    <Card padding="none" className="min-w-0 overflow-hidden">
+      <div className="p-4 sm:p-5 pb-0">
         <CardTitle>Top Products by Revenue</CardTitle>
         <CardDescription>See which products drive sales and margin</CardDescription>
       </div>
       <div className="overflow-x-auto mt-4">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[480px] text-sm">
           <thead>
             <tr className="border-y border-border bg-surface-muted/50 text-left text-content-muted">
-              <th className="px-5 py-3 font-medium">Product</th>
-              <th className="px-5 py-3 font-medium text-right">Units</th>
-              <th className="px-5 py-3 font-medium text-right">Revenue</th>
-              <th className="px-5 py-3 font-medium text-right">Profit</th>
-              <th className="px-5 py-3 font-medium text-right">Margin</th>
+              <th className="px-3 sm:px-5 py-3 font-medium">Product</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">Units</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">Revenue</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">Profit</th>
+              <th className="px-3 sm:px-5 py-3 font-medium text-right">Margin</th>
             </tr>
           </thead>
           <tbody>
             {products.map((p, i) => (
               <tr key={i} className="border-b border-border last:border-0">
-                <td className="px-5 py-3 font-medium text-content max-w-[220px] truncate">
+                <td className="px-3 sm:px-5 py-3 font-medium text-content max-w-[160px] sm:max-w-[220px] truncate">
                   {p.title}
                 </td>
-                <td className="px-5 py-3 text-right text-content-muted">{p.units_sold}</td>
-                <td className="px-5 py-3 text-right text-content-muted">
+                <td className="px-3 sm:px-5 py-3 text-right text-content-muted">{p.units_sold}</td>
+                <td className="px-3 sm:px-5 py-3 text-right text-content-muted whitespace-nowrap">
                   {formatMoney(p.revenue, currency)}
                 </td>
-                <td className="px-5 py-3 text-right text-content">
+                <td className="px-3 sm:px-5 py-3 text-right text-content whitespace-nowrap">
                   {formatMoney(p.profit, currency)}
                 </td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-3 sm:px-5 py-3 text-right">
                   <span
                     className={cn(
                       "font-medium",
@@ -337,7 +337,7 @@ export function ProfitBreakdown({
       : null;
 
   return (
-    <Card padding="lg">
+    <Card padding="lg" className="min-w-0 overflow-hidden">
       <CardHeader>
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
@@ -348,14 +348,14 @@ export function ProfitBreakdown({
         </CardDescription>
       </CardHeader>
 
-      {startNote && <p className="mb-3 text-xs text-content-muted">{startNote}</p>}
-      {stripeGrossNote && <p className="mb-3 text-xs text-content-muted">{stripeGrossNote}</p>}
-      {feeNote && <p className="mb-3 text-xs text-content-muted">{feeNote}</p>}
+      {startNote && <p className="mb-3 text-xs text-content-muted break-words">{startNote}</p>}
+      {stripeGrossNote && <p className="mb-3 text-xs text-content-muted break-words">{stripeGrossNote}</p>}
+      {feeNote && <p className="mb-3 text-xs text-content-muted break-words">{feeNote}</p>}
       {stripeBreakdownNote && (
-        <p className="mb-3 text-xs text-content-muted">Stripe mix: {stripeBreakdownNote}</p>
+        <p className="mb-3 text-xs text-content-muted break-words">Stripe mix: {stripeBreakdownNote}</p>
       )}
       {chargebackNote && (
-        <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">{chargebackNote}</p>
+        <p className="mb-3 text-xs text-amber-700 dark:text-amber-400 break-words">{chargebackNote}</p>
       )}
 
       <div className="space-y-2">
@@ -363,14 +363,14 @@ export function ProfitBreakdown({
           <div
             key={"key" in row && row.key ? row.key : `${row.label}-${index}`}
             className={cn(
-              "flex justify-between items-center py-2 gap-3",
+              "flex justify-between items-start sm:items-center py-2 gap-3 min-w-0",
               row.type === "subtotal" && "border-t border-border pt-3 font-medium",
-              row.type === "total" && "border-t-2 border-brand-500/30 pt-3 font-bold text-lg"
+              row.type === "total" && "border-t-2 border-brand-500/30 pt-3 font-bold text-base sm:text-lg"
             )}
           >
             <span
               className={cn(
-                "truncate",
+                "min-w-0 break-words",
                 row.type === "total" ? "text-content" : "text-content-muted",
                 row.type === "subtotal" && "text-content"
               )}
@@ -379,7 +379,7 @@ export function ProfitBreakdown({
             </span>
             <span
               className={cn(
-                "shrink-0",
+                "shrink-0 tabular-nums",
                 row.value >= 0 ? "text-content" : "text-red-600 dark:text-red-400",
                 row.type === "total" && (row.value >= 0 ? "text-emerald-600" : "text-red-600")
               )}
@@ -390,17 +390,17 @@ export function ProfitBreakdown({
         ))}
       </div>
 
-      <div className="mt-4 pt-4 border-t border-border grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
-        <div>
-          <p className="text-content-muted">Break-even MER</p>
+      <div className="mt-4 pt-4 border-t border-border grid grid-cols-3 gap-3 sm:gap-4 text-sm">
+        <div className="min-w-0">
+          <p className="text-content-muted text-xs sm:text-sm">Break-even MER</p>
           <p className="font-semibold text-content">{summary.break_even_roas}x</p>
         </div>
-        <div>
-          <p className="text-content-muted">Net margin</p>
+        <div className="min-w-0">
+          <p className="text-content-muted text-xs sm:text-sm">Net margin</p>
           <p className="font-semibold text-content">{summary.net_margin_pct}%</p>
         </div>
-        <div>
-          <p className="text-content-muted">MER</p>
+        <div className="min-w-0">
+          <p className="text-content-muted text-xs sm:text-sm">MER</p>
           <p className="font-semibold text-content">{summary.mer}x</p>
         </div>
       </div>
