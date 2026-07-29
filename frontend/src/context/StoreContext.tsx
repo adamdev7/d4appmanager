@@ -44,7 +44,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         currency: s.currency,
       }));
       setStores(mapped);
-      if (mapped.length && !mapped.find((s) => s.id === activeStoreId)) {
+      if (!mapped.length) {
+        setActiveStoreId("");
+        localStorage.removeItem("active_store_id");
+      } else if (!mapped.find((s) => s.id === activeStoreId)) {
         const saved = localStorage.getItem("active_store_id");
         const next = mapped.find((s) => s.id === saved)?.id ?? mapped[0].id;
         setActiveStoreId(next);

@@ -16,6 +16,8 @@ export default {
           700: "#15803d",
           800: "#166534",
           900: "#14532d",
+          fluo: "var(--color-fluo)",
+          line: "var(--color-fluo-line)",
         },
         surface: {
           DEFAULT: "var(--color-surface)",

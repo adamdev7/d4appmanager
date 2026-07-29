@@ -13,6 +13,10 @@
   --color-text-subtle: #94a3b8;
   --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06);
   --shadow-elevated: 0 10px 40px -10px rgb(0 0 0 / 0.12);
+  /* Fluorescent green accents (light mode) */
+  --color-fluo: #3dff7a;
+  --color-fluo-soft: #86efac;
+  --color-fluo-line: #4ade80;
   --sidebar-width: 260px;
   /* Page gutters grow with viewport so desktop uses the full width */
   --page-gutter-x: 0.75rem;
@@ -67,6 +71,10 @@
   --color-text-subtle: #64748b;
   --shadow-card: 0 1px 3px 0 rgb(0 0 0 / 0.4);
   --shadow-elevated: 0 10px 40px -10px rgb(0 0 0 / 0.5);
+  /* Mute fluo accents in dark mode — keep calm brand green */
+  --color-fluo: #22c55e;
+  --color-fluo-soft: #166534;
+  --color-fluo-line: #22c55e;
 }
 
 @layer base {
@@ -87,7 +95,7 @@
   /* App-wide scrollbars — dark track, brand-green thumb */
   * {
     scrollbar-width: thin;
-    scrollbar-color: #22c55e transparent;
+    scrollbar-color: var(--color-fluo-line) transparent;
   }
 
   .dark * {
@@ -109,7 +117,7 @@
   }
 
   *::-webkit-scrollbar-thumb {
-    background: color-mix(in srgb, #22c55e 55%, #64748b);
+    background: color-mix(in srgb, var(--color-fluo-line) 70%, #64748b);
     border-radius: 9999px;
     border: 2px solid transparent;
     background-clip: padding-box;
@@ -122,7 +130,7 @@
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background: #22c55e;
+    background: var(--color-fluo-line);
     border: 2px solid transparent;
     background-clip: padding-box;
   }
@@ -136,5 +144,36 @@
   .glass {
     background-color: color-mix(in srgb, var(--color-surface) 80%, transparent);
     @apply backdrop-blur-xl;
+  }
+
+  /* Light-mode fluorescent green outline accents (no-op-ish in dark via muted vars) */
+  .fluo-edge {
+    box-shadow: inset -2px 0 0 0 var(--color-fluo-line);
+  }
+
+  .dark .fluo-edge {
+    box-shadow: none;
+  }
+
+  .fluo-bubble {
+    border-color: color-mix(in srgb, var(--color-fluo-line) 70%, var(--color-border));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--color-fluo) 28%, transparent),
+      var(--shadow-card);
+  }
+
+  .dark .fluo-bubble {
+    border-color: var(--color-border);
+    box-shadow: var(--shadow-card);
+  }
+
+  .fluo-bubble-out {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--color-fluo) 45%, transparent),
+      0 1px 2px rgb(0 0 0 / 0.06);
+  }
+
+  .dark .fluo-bubble-out {
+    box-shadow: none;
   }
 }

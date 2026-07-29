@@ -53,7 +53,7 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        "fixed left-0 top-0 z-50 flex h-dvh flex-col border-r border-border bg-surface transition-all duration-300",
+        "fixed left-0 top-0 z-50 flex h-dvh flex-col border-r border-border bg-surface transition-all duration-300 fluo-edge",
         "w-[min(100vw,var(--sidebar-width))]",
         mobileOpen ? "translate-x-0" : "-translate-x-full",
         "lg:translate-x-0",
@@ -98,17 +98,27 @@ export function Sidebar({
                   onClick={onMobileClose}
                   className={({ isActive }) =>
                     cn(
-                      "flex items-center gap-3 rounded-lg px-2.5 py-2.5 text-sm font-medium transition-colors lg:py-2",
+                      "relative flex items-center gap-3 rounded-lg px-2.5 py-2.5 text-sm font-medium transition-colors lg:py-2",
                       isActive
-                        ? "bg-brand-500/10 text-brand-700 dark:text-brand-400"
-                        : "text-content-muted hover:bg-surface-muted hover:text-content",
+                        ? "bg-brand-400/15 text-brand-700 ring-1 ring-inset ring-brand-line/60 dark:bg-brand-500/10 dark:text-brand-400 dark:ring-0"
+                        : "text-content-muted hover:bg-brand-50 hover:text-brand-800 dark:hover:bg-surface-muted dark:hover:text-content",
                       !showLabels && "justify-center px-2"
                     )
                   }
                   title={!showLabels ? label : undefined}
                 >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {showLabels && label}
+                  {({ isActive }) => (
+                    <>
+                      {isActive && (
+                        <span
+                          className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full bg-brand-fluo dark:bg-brand-500"
+                          aria-hidden
+                        />
+                      )}
+                      <Icon className="h-4 w-4 shrink-0" />
+                      {showLabels && label}
+                    </>
+                  )}
                 </NavLink>
               </li>
             ))}
@@ -130,17 +140,27 @@ export function Sidebar({
                   onClick={onMobileClose}
                   className={({ isActive }) =>
                     cn(
-                      "flex items-center gap-3 rounded-lg px-2.5 py-2.5 text-sm font-medium transition-colors lg:py-2",
+                      "relative flex items-center gap-3 rounded-lg px-2.5 py-2.5 text-sm font-medium transition-colors lg:py-2",
                       isActive
-                        ? "bg-brand-500/10 text-brand-700 dark:text-brand-400"
-                        : "text-content-muted hover:bg-surface-muted hover:text-content",
+                        ? "bg-brand-400/15 text-brand-700 ring-1 ring-inset ring-brand-line/60 dark:bg-brand-500/10 dark:text-brand-400 dark:ring-0"
+                        : "text-content-muted hover:bg-brand-50 hover:text-brand-800 dark:hover:bg-surface-muted dark:hover:text-content",
                       !showLabels && "justify-center px-2"
                     )
                   }
                   title={!showLabels ? label : undefined}
                 >
-                  <Icon className="h-4 w-4 shrink-0" />
-                  {showLabels && label}
+                  {({ isActive }) => (
+                    <>
+                      {isActive && (
+                        <span
+                          className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full bg-brand-fluo dark:bg-brand-500"
+                          aria-hidden
+                        />
+                      )}
+                      <Icon className="h-4 w-4 shrink-0" />
+                      {showLabels && label}
+                    </>
+                  )}
                 </NavLink>
               </li>
             ))}

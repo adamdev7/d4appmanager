@@ -5,9 +5,10 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Ca
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
-import { Store, Plus, CheckCircle } from "lucide-react";
+import { Store, Plus, CheckCircle, Unplug, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { api } from "@/lib/api";
+import type { Store as StoreType } from "@/types";
 
 export function StoresSettingsPage() {
   const { stores, activeStore, setActiveStoreId, refresh } = useStore();
@@ -15,6 +16,7 @@ export function StoresSettingsPage() {
   const [showConnect, setShowConnect] = useState(false);
   const [shopDomain, setShopDomain] = useState("");
   const [connecting, setConnecting] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const connected = searchParams.get("connected") === "1";
 
@@ -30,6 +32,11 @@ export function StoresSettingsPage() {
     }
   }, [connected, refresh, searchParams, setSearchParams]);
 
+  const startShopifyOAuth = async (shop: string) => {
+    const { authorize_url } = await api.stores.shopifyInstall(shop);
+    window.location.href = authorize_url;
+  };
+
   const handleConnectShopify = async () => {
     setError("");
     setConnecting(true);
@@ -39,12 +46,55 @@ export function StoresSettingsPage() {
         setError("Enter your store domain");
         return;
       }
-      const { authorize_url } = await api.stores.shopifyInstall(shop);
-      window.location.href = authorize_url;
+      await startShopifyOAuth(shop);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start Shopify authorization");
     } finally {
       setConnecting(false);
+    }
+  };
+
+  const handleDisconnect = async (store: StoreType) => {
+    setError("");
+    setBusyId(store.id);
+    try {
+      await api.stores.disconnect(store.id);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not disconnect store");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleReconnect = async (store: StoreType) => {
+    setError("");
+    setBusyId(store.id);
+    try {
+      await startShopifyOAuth(store.domain);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start Shopify reconnection");
+      setBusyId(null);
+    }
+  };
+
+  const handleDelete = async (store: StoreType) => {
+    const ok = window.confirm(
+      `Remove ${store.name} (${store.domain}) from App Manager? Related automation, tracking, and analytics data for this store will be deleted. You can connect it again later.`
+    );
+    if (!ok) return;
+    setError("");
+    setBusyId(store.id);
+    try {
+      await api.stores.delete(store.id);
+      if (activeStore?.id === store.id) {
+        localStorage.removeItem("active_store_id");
+      }
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete store");
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -70,6 +120,8 @@ export function StoresSettingsPage() {
         </div>
       )}
 
+      {error && <p className="text-sm text-red-500">{error}</p>}
+
       {showConnect && (
         <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}>
           <Card padding="lg" className="border-brand-500/30 bg-brand-500/5">
@@ -91,7 +143,6 @@ export function StoresSettingsPage() {
                 Authorize with Shopify
               </Button>
             </div>
-            {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
             <p className="mt-3 text-xs text-content-subtle">
               For local dev, set <code>APP_URL</code> to your public URL (e.g. ngrok) so Shopify
               can reach OAuth and webhooks.
@@ -133,6 +184,7 @@ export function StoresSettingsPage() {
                             ? "warning"
                             : "muted"
                       }
+                      className="capitalize"
                     >
                       {store.status}
                     </Badge>
@@ -146,12 +198,45 @@ export function StoresSettingsPage() {
                     <span>{store.currency}</span>
                   </div>
                 </div>
-                <div className="flex flex-col gap-2 shrink-0">
-                  {store.id !== activeStore?.id && (
+                <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+                  {store.id !== activeStore?.id && store.status === "connected" && (
                     <Button size="sm" variant="outline" onClick={() => setActiveStoreId(store.id)}>
                       Set active
                     </Button>
                   )}
+                  {store.status === "connected" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busyId === store.id}
+                      isLoading={busyId === store.id}
+                      onClick={() => handleDisconnect(store)}
+                    >
+                      <Unplug className="h-3.5 w-3.5" />
+                      Disconnect
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={busyId === store.id}
+                      isLoading={busyId === store.id}
+                      onClick={() => handleReconnect(store)}
+                    >
+                      Reconnect
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Delete ${store.name}`}
+                    title="Delete store"
+                    disabled={busyId === store.id}
+                    onClick={() => handleDelete(store)}
+                    className="text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
             </Card>

@@ -18,9 +18,10 @@ export function Card({ children, className, hover, padding = "md", ...props }: C
   return (
     <div
       className={cn(
-        "rounded-xl border border-border bg-surface shadow-card transition-all duration-200 min-w-0",
+        "rounded-xl border border-brand-line/30 dark:border-border bg-surface shadow-card transition-all duration-200 min-w-0",
         paddingMap[padding],
-        hover && "hover:shadow-elevated hover:border-border-strong cursor-pointer",
+        hover &&
+          "hover:shadow-elevated hover:border-brand-line/65 dark:hover:border-border-strong cursor-pointer",
         className
       )}
       {...props}

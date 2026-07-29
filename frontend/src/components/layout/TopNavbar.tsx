@@ -35,7 +35,7 @@ export function TopNavbar({ title, mobileNavOpen, onMobileNavToggle }: TopNavbar
 
   return (
     <header
-      className="sticky top-0 z-30 flex h-14 xl:h-16 items-center gap-2 sm:gap-4 border-b border-border glass"
+      className="sticky top-0 z-30 flex h-14 xl:h-16 items-center gap-2 sm:gap-4 border-b border-brand-line/50 dark:border-border glass"
       style={{
         paddingLeft: "var(--page-gutter-x)",
         paddingRight: "var(--page-gutter-x)",

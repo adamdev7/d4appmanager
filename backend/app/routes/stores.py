@@ -78,3 +78,14 @@ async def disconnect_store(
     if not _stores.disconnect_store(db, user, store_id):
         raise HTTPException(status_code=404, detail="Store not found")
     return {"message": "Store disconnected"}
+
+
+@router.post("/{store_id}/delete")
+async def delete_store(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    if not _stores.delete_store(db, user, store_id):
+        raise HTTPException(status_code=404, detail="Store not found")
+    return {"message": "Store deleted"}

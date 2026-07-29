@@ -259,6 +259,8 @@ export const api = {
       ),
     disconnect: (storeId: string) =>
       request(`/stores/${storeId}/disconnect`, { method: "POST" }),
+    delete: (storeId: string) =>
+      request(`/stores/${storeId}/delete`, { method: "POST" }),
   },
   gmail: {
     accounts: (storeId?: string) =>

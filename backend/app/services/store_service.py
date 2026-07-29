@@ -121,3 +121,11 @@ class StoreService:
         store.status = StoreStatus.DISCONNECTED.value
         db.commit()
         return True
+
+    def delete_store(self, db: Session, user: User, store_id: str) -> bool:
+        store = db.get(Store, store_id)
+        if not store or store.owner_id != user.id:
+            return False
+        db.delete(store)
+        db.commit()
+        return True

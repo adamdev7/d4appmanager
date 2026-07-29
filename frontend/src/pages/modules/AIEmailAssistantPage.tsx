@@ -1108,7 +1108,7 @@ export function AIEmailAssistantPage() {
       </div>
 
       {tab === "inbox" && (
-        <div className="rounded-xl border border-border bg-surface overflow-hidden shadow-card h-[min(820px,calc(100dvh-11rem))] sm:h-[min(860px,calc(100dvh-12rem))] xl:h-[calc(100dvh-9.5rem)] 2xl:h-[calc(100dvh-10rem)] flex flex-col lg:flex-row w-full min-w-0">
+        <div className="rounded-xl border border-brand-line/50 bg-surface overflow-hidden shadow-card h-[min(820px,calc(100dvh-11rem))] sm:h-[min(860px,calc(100dvh-12rem))] xl:h-[calc(100dvh-9.5rem)] 2xl:h-[calc(100dvh-10rem)] flex flex-col lg:flex-row w-full min-w-0 dark:border-border">
           {/* Thread list */}
           <aside
             className={cn(
@@ -1140,7 +1140,7 @@ export function AIEmailAssistantPage() {
                     className={cn(
                       "flex-1 min-w-0 rounded-md px-1.5 py-1.5 text-[11px] font-medium transition-colors",
                       inboxFilter === id
-                        ? "bg-surface text-content shadow-sm"
+                        ? "bg-surface text-brand-700 shadow-sm ring-1 ring-brand-line/50 dark:text-content dark:ring-0"
                         : "text-content-muted hover:text-content"
                     )}
                   >
@@ -1182,10 +1182,10 @@ export function AIEmailAssistantPage() {
                       type="button"
                       onClick={() => setSelectedId(item.id)}
                       className={cn(
-                        "w-full text-left px-4 py-3 transition-colors border-l-2",
+                        "w-full text-left px-4 py-3 transition-colors border-l-[3px]",
                         active
-                          ? "bg-surface-muted border-l-brand-500"
-                          : "border-l-transparent hover:bg-surface-muted/60"
+                          ? "bg-brand-50 border-l-brand-fluo dark:bg-surface-muted dark:border-l-brand-500"
+                          : "border-l-transparent hover:bg-brand-50/70 dark:hover:bg-surface-muted/60"
                       )}
                     >
                       <div className="flex items-center gap-2.5">
@@ -1361,7 +1361,7 @@ export function AIEmailAssistantPage() {
                         {initials(displayName(selected.sender, selected.sender_email))}
                       </div>
                       <div className="min-w-0 max-w-[78%] sm:max-w-[70%]">
-                        <div className="rounded-2xl rounded-tl-md bg-surface border border-border px-3.5 py-2.5 text-content shadow-sm">
+                        <div className="rounded-2xl rounded-tl-md bg-surface border border-brand-line/55 fluo-bubble px-3.5 py-2.5 text-content dark:border-border">
                           <EmailBodyText text={selected.body_text} />
                         </div>
                         <p className="text-[11px] text-content-subtle mt-1 px-1">
@@ -1423,10 +1423,10 @@ export function AIEmailAssistantPage() {
                                 className={cn(
                                   "px-3.5 py-2.5 shadow-sm w-fit max-w-full",
                                   draft
-                                    ? "rounded-2xl rounded-tr-md bg-brand-500/10 border border-dashed border-brand-500/45 text-content"
+                                    ? "rounded-2xl rounded-tr-md bg-brand-400/15 border border-dashed border-brand-fluo/70 text-content dark:bg-brand-500/10 dark:border-brand-500/45"
                                     : mine
-                                      ? "rounded-2xl rounded-tr-md bg-brand-500 text-white"
-                                      : "rounded-2xl rounded-tl-md bg-surface border border-border text-content"
+                                      ? "rounded-2xl rounded-tr-md bg-brand-500 text-white fluo-bubble-out"
+                                      : "rounded-2xl rounded-tl-md bg-surface border border-brand-line/55 fluo-bubble text-content dark:border-border"
                                 )}
                               >
                                 <EmailBodyText
