@@ -61,21 +61,24 @@ Topics: `app/uninstalled`, `orders/create`
 
 In the app: **Settings → Stores → Connect store** → enter `your-store.myshopify.com`
 
-## 4. Gmail connection
+## 4. Gmail connection & Google sign-in
 
 1. [Google Cloud Console](https://console.cloud.google.com/) → APIs → enable **Gmail API**  
 2. OAuth consent screen (External) → add test users  
-3. Credentials → OAuth client (Web):
+3. Credentials → OAuth client (Web) — add **both** redirect URIs:
 
-   - Redirect URI: `http://127.0.0.1:8000/api/v1/gmail/oauth/callback`  
-     (or your ngrok URL + same path)
+   - `http://127.0.0.1:8000/api/v1/gmail/oauth/callback` — connect Gmail in Settings  
+   - `http://127.0.0.1:8000/api/v1/auth/google/callback` — Continue with Google (sign up / sign in)  
+     (or your ngrok URL + the same paths)
 
 ```env
 GOOGLE_CLIENT_ID=....apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=...
 ```
 
-In the app: **Settings → Gmail → Connect Gmail**
+In the app:
+- **Login / Register** → **Continue with Google** (creates or signs in a verified account)
+- **Settings → Gmail → Connect Gmail** (link a mailbox for sending)
 
 ## 5. Security checklist for production
 

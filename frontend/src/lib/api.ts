@@ -227,6 +227,8 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ email }),
       }),
+    googleAuthorize: () =>
+      request<{ authorize_url: string }>("/auth/google/authorize"),
   },
   dashboard: {
     overview: (storeId?: string) =>
@@ -290,7 +292,7 @@ export const api = {
     disconnect: (accountId: string) =>
       request(`/gmail/accounts/${accountId}/disconnect`, { method: "POST" }),
     delete: (accountId: string) =>
-      request(`/gmail/accounts/${accountId}`, { method: "DELETE" }),
+      request(`/gmail/accounts/${accountId}/delete`, { method: "POST" }),
   },
   modules: {
     list: () =>

@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
@@ -124,6 +125,43 @@ async def forgot_password(
         window_seconds=settings.auth_rate_window_seconds * 2,
     )
     return await _auth.request_password_reset(db, data.email)
+
+
+@router.get("/google/authorize")
+async def google_authorize(request: Request):
+    enforce_auth_rate_limit(
+        request,
+        action="google-authorize",
+        email="google",
+        limit=settings.auth_login_rate_limit,
+        window_seconds=settings.auth_rate_window_seconds,
+    )
+    return _auth.begin_google_auth()
+
+
+@router.get("/google/callback")
+async def google_callback(
+    db: Session = Depends(get_db),
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+):
+    if error:
+        return RedirectResponse(_auth.google_auth_error_redirect("Google sign-in was cancelled."))
+    if not code or not state:
+        return RedirectResponse(
+            _auth.google_auth_error_redirect("Google sign-in failed. Missing authorization code.")
+        )
+    try:
+        token_payload = await _auth.complete_google_auth(db, code, state)
+        return RedirectResponse(_auth.google_auth_frontend_redirect(token_payload))
+    except HTTPException as exc:
+        message = exc.detail if isinstance(exc.detail, str) else "Google sign-in failed. Please try again."
+        return RedirectResponse(_auth.google_auth_error_redirect(message))
+    except Exception:
+        return RedirectResponse(
+            _auth.google_auth_error_redirect("Google sign-in failed. Please try again.")
+        )
 
 
 @router.get("/me")

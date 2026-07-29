@@ -55,7 +55,7 @@ async def disconnect_account(
     return {"message": "Account disconnected"}
 
 
-@router.delete("/accounts/{account_id}")
+@router.post("/accounts/{account_id}/delete")
 async def delete_account(
     account_id: str,
     user: User = Depends(get_verified_user),

@@ -80,6 +80,8 @@ class Settings(BaseSettings):
         "https://www.googleapis.com/auth/gmail.modify "
         "https://www.googleapis.com/auth/gmail.send"
     )
+    # Sign-in / sign-up with Google (no Gmail API scopes)
+    google_auth_scopes: str = "openid email profile"
 
     # OpenAI (AI Email Assistant — server-side only)
     openai_api_key: str = ""
@@ -102,6 +104,10 @@ class Settings(BaseSettings):
     @property
     def google_redirect_uri(self) -> str:
         return f"{self.app_url.rstrip('/')}{self.api_prefix}/gmail/oauth/callback"
+
+    @property
+    def google_auth_redirect_uri(self) -> str:
+        return f"{self.app_url.rstrip('/')}{self.api_prefix}/auth/google/callback"
 
 
 settings = Settings()

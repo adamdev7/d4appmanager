@@ -8,6 +8,7 @@ import { LoginPage } from "@/pages/auth/LoginPage";
 import { RegisterPage } from "@/pages/auth/RegisterPage";
 import { ForgotPasswordPage } from "@/pages/auth/ForgotPasswordPage";
 import { VerifyEmailPage } from "@/pages/auth/VerifyEmailPage";
+import { GoogleCallbackPage } from "@/pages/auth/GoogleCallbackPage";
 import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { GeneralSettingsPage } from "@/pages/settings/GeneralSettingsPage";
 import { StoresSettingsPage } from "@/pages/settings/StoresSettingsPage";
@@ -34,6 +35,7 @@ export default function App() {
               <Route path="/register" element={<RegisterPage />} />
               <Route path="/forgot-password" element={<ForgotPasswordPage />} />
               <Route path="/verify-email" element={<VerifyEmailPage />} />
+              <Route path="/auth/google/callback" element={<GoogleCallbackPage />} />
               <Route path="/privacy" element={<PrivacyPage />} />
               <Route path="/terms" element={<TermsPage />} />
 

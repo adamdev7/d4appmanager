@@ -1,5 +1,7 @@
 import logging
+import secrets
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
@@ -19,6 +21,7 @@ from app.core.security import (
     verify_password,
 )
 from app.db.models import User, VerificationCode, VerificationPurpose
+from app.integrations.google_auth import GoogleAuthClient
 from app.models.user import UserCreate, UserLogin
 
 logger = logging.getLogger(__name__)
@@ -296,3 +299,104 @@ class AuthService:
 
     def get_user(self, user: User) -> dict:
         return self._user_response(user)
+
+    def begin_google_auth(self) -> dict:
+        if not settings.google_client_id or not settings.google_client_secret:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Google sign-in is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
+            )
+        try:
+            state = GoogleAuthClient.create_state()
+            return {"authorize_url": GoogleAuthClient.build_authorize_url(state)}
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
+    async def complete_google_auth(self, db: Session, code: str, state: str) -> dict:
+        """Create or sign in a user via Google, then return a token response."""
+        if not GoogleAuthClient.verify_state(state):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired Google sign-in session. Try again.",
+            )
+
+        try:
+            token_data = await GoogleAuthClient.exchange_code_for_token(code)
+        except Exception as exc:
+            logger.exception("Google token exchange failed")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Google sign-in failed. Please try again.",
+            ) from exc
+
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Google did not return an access token.",
+            )
+
+        try:
+            info = await GoogleAuthClient.fetch_userinfo(access_token)
+        except Exception as exc:
+            logger.exception("Google userinfo fetch failed")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Could not read your Google account. Please try again.",
+            ) from exc
+
+        raw_email = (info.get("email") or "").strip()
+        if not raw_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Google account has no email address.",
+            )
+        if info.get("verified_email") is False:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Google email is not verified. Use a verified Google account.",
+            )
+
+        email = self._normalize_email(raw_email)
+        full_name = (info.get("name") or "").strip() or email.split("@")[0]
+
+        user = db.scalar(select(User).where(User.email == email))
+        if user:
+            if not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Account is disabled",
+                )
+            if not user.is_verified:
+                user.is_verified = True
+            if full_name and (not user.full_name or user.full_name == user.email.split("@")[0]):
+                user.full_name = full_name
+            db.commit()
+            db.refresh(user)
+            return self._token_response(user)
+
+        user = User(
+            email=email,
+            # Unusable random password — Google is the credential for this account
+            password_hash=hash_password(secrets.token_urlsafe(48)),
+            full_name=full_name,
+            is_verified=True,
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return self._token_response(user)
+
+    def google_auth_frontend_redirect(self, token_payload: dict) -> str:
+        token = quote(token_payload["access_token"], safe="")
+        return f"{settings.frontend_url.rstrip('/')}/auth/google/callback?token={token}"
+
+    def google_auth_error_redirect(self, message: str) -> str:
+        return (
+            f"{settings.frontend_url.rstrip('/')}/login"
+            f"?error={quote(message, safe='')}"
+        )

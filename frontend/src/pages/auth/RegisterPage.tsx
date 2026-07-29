@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AuthLayout } from "@/components/layout/AuthLayout";
+import { AuthDivider, GoogleAuthButton } from "@/components/auth/GoogleAuthButton";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useAuth } from "@/context/AuthContext";
@@ -31,7 +32,12 @@ export function RegisterPage() {
   };
 
   return (
-    <AuthLayout title="Create your account" subtitle="We'll email you a verification code">
+    <AuthLayout
+      title="Create your account"
+      subtitle="Use Google for one-click signup, or register with email."
+    >
+      <GoogleAuthButton label="Continue with Google" />
+      <AuthDivider />
       <form onSubmit={handleSubmit} className="space-y-4">
         <Input
           label="Full name"
