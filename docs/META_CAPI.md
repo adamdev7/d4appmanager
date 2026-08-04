@@ -1,74 +1,48 @@
-# Shopify → Meta Conversions API (Server-Side Tracking)
+# Meta CAPI enrichment + theme setup
 
-Production path inside App Manager (FastAPI), not a separate Node service. Uses the existing HMAC-verified Shopify webhook and SQLite for idempotency.
+## What App Manager now sends
 
-## Setup in the UI
+**Purchase** (orders/paid or orders/create):
+- Hashed: email, phone, name, city/state/zip/country, `external_id` (Shopify customer id)
+- Unhashed: IP, user agent, `fbp`, `fbc` (from note attributes or synthesized from `fbclid`)
+- Full `landing_site` / `meta_landing` as `event_source_url` (keeps UTMs + fbclid)
+- Custom: value, currency, contents, order_id, num_items, referring_site, UTMs
 
-1. Connect a Shopify store (Settings → Stores)
-2. Open **Apps → Server-Side Tracking**
-3. Enter **Pixel ID** + **CAPI access token** (or fall back to Analytics Meta Marketing token)
-4. Align **event_id scheme** with your browser Pixel Purchase `eventID`
-5. Set trigger to `orders/paid` (or `orders/create` for COD)
-6. Optional: **Test event code** from Events Manager → Test Events
-7. Enable and save
+**InitiateCheckout** (`checkouts/create`) when enabled in settings.
 
-## Webhook
+**ViewContent / AddToCart** from the theme via token-gated browser beacon.
 
-Already registered when the store connects (`orders/create`, `orders/paid`, …):
+## Theme changes (required for fbp/fbc + funnel)
 
-```
-POST {APP_URL}/api/v1/webhooks/shopify
-```
+Already added to `phx-3-0-checkout-builder` and `Theme_coded`:
 
-- HMAC verified (`X-Shopify-Hmac-Sha256`) before any processing
-- Rate-limited per IP
-- Responds quickly; Meta send runs asynchronously
-- Idempotent on `X-Shopify-Webhook-Id` and in-flight/sent order id
+| File | Purpose |
+|------|---------|
+| `assets/meta-capi-attribution.js` | Capture cookies, cart attributes, beacons |
+| `snippets/meta-capi-attribution.liquid` | Config + script include |
+| `layout/theme.liquid` | Renders snippet; Phoenix URL gets fbp/fbc/fbclid |
+| Theme setting group **Meta CAPI (App Manager)** | Store ID + browser token |
 
-Local tunnel:
+### Deploy steps
 
-```bash
-ngrok http 8000
-```
+1. Push/publish the updated theme (or copy files into the live PHX theme).
+2. In App Manager → **Server-Side Tracking → Settings**, copy **Theme browser event token**.
+3. In Shopify Admin → **Online Store → Themes → Customize → Theme settings → Meta CAPI (App Manager)**:
+   - Enable tracking
+   - API base: `https://appmanager.store/api/v1`
+   - Store ID: your App Manager store UUID
+   - Paste the browser event token
+4. Reconnect the Shopify store in App Manager (or re-register webhooks) so `checkouts/create` is subscribed.
+5. Clear **Test event code** when going live.
 
-Set `APP_URL` to the ngrok HTTPS URL and reconnect/register webhooks if needed.
+### Phoenix checkout note
 
-## Deduplication
+Orders go through `secureorder.luxory.online`. The theme now:
+1. Writes `_fbp` / `_fbc` / `fbclid` to **Shopify cart attributes** (become order note attributes when the order is created from that cart)
+2. Appends the same values to the Phoenix checkout URL
 
-Browser Pixel and CAPI must share the same Purchase `event_id`. Configurable schemes:
+If a specific Phoenix order is missing `fbp`/`fbc` in App Manager’s event log, confirm Phoenix is creating the Shopify order from the cart token (attributes travel with the cart).
 
-| Scheme | Value |
-|--------|--------|
-| `order_id` (default) | Shopify order `id` |
-| `checkout_token` | `checkout_token` / `cart_token` |
-| `order_name` | Order name without `#` |
+## EMQ checklist
 
-## Observability
-
-- Auth: `GET /api/v1/meta-capi/stores/{store_id}/stats`
-- Event log: `GET /api/v1/meta-capi/stores/{store_id}/events`
-- App health: `GET /health`
-
-## Code map
-
-| File | Role |
-|------|------|
-| `backend/app/integrations/meta/hashing.py` | PII SHA-256 normalize/hash |
-| `backend/app/integrations/meta/order_mapper.py` | Shopify order → CAPI Purchase |
-| `backend/app/integrations/meta/capi_client.py` | Graph `/events` + retries |
-| `backend/app/services/meta_capi_service.py` | Settings, claim, async send |
-| `backend/app/routes/meta_capi.py` | Authenticated API |
-| `backend/app/routes/webhooks.py` | Enqueue on matching topic |
-
-## Security
-
-- Secrets encrypted at rest; never logged
-- `.env` gitignored
-- Wrong HMAC → 401, payload not processed
-- 4xx from Meta → no retry; 5xx/network → exponential backoff (5s / 30s / 2min)
-
-## Follow-ups
-
-- Confirm storefront Pixel `eventID` scheme before going live
-- Capture `_fbp` / `_fbc` as order note attributes at checkout for match quality
-- Graph API version defaults to `v25.0` (current as of mid-2026)
+After a few live purchases, check Events Manager → Purchase → Event Match Quality. Aim for email + phone + fbp/fbc coverage.

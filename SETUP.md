@@ -76,7 +76,9 @@ Webhook path (already HMAC-verified): `{APP_URL}/api/v1/webhooks/shopify`
 
 Stats API (auth required): `GET /api/v1/meta-capi/stores/{store_id}/stats`
 
-**fbp / fbc:** if checkout writes `_fbp` / `_fbc` as Shopify order note attributes, they are included automatically. Otherwise add storefront capture as a follow-up for higher Event Match Quality.
+**Theme (required for best match quality):** publish the PHX theme updates (`meta-capi-attribution` snippet/JS), then in Theme settings → **Meta CAPI (App Manager)** paste the browser event token from Server-Side Tracking settings. This captures `fbp`/`fbc`/`fbclid`, sends ViewContent/AddToCart, and passes IDs into Phoenix checkout. See `docs/META_CAPI.md`.
+
+Reconnect the store (or re-register webhooks) so `checkouts/create` is subscribed for InitiateCheckout.
 
 ## 4. Gmail connection & Google sign-in
 

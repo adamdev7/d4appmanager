@@ -598,6 +598,10 @@ class StoreMetaCapiSettings(Base):
     # orders/paid (default) or orders/create (COD / no separate capture)
     trigger_topic: Mapped[str] = mapped_column(String(32), default="orders/paid")
     api_version: Mapped[str] = mapped_column(String(16), default="v25.0")
+    # Also send InitiateCheckout from checkouts/create when enabled
+    send_initiate_checkout: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Public token for theme/browser funnel beacons (ViewContent / AddToCart)
+    browser_event_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

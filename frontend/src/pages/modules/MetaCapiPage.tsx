@@ -69,6 +69,7 @@ export function MetaCapiPage() {
   const [eventIdScheme, setEventIdScheme] = useState("order_id");
   const [triggerTopic, setTriggerTopic] = useState("orders/paid");
   const [apiVersion, setApiVersion] = useState("v25.0");
+  const [sendInitiateCheckout, setSendInitiateCheckout] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState("");
@@ -104,6 +105,7 @@ export function MetaCapiPage() {
       setEventIdScheme(s.settings.event_id_scheme || "order_id");
       setTriggerTopic(s.settings.trigger_topic || "orders/paid");
       setApiVersion(s.settings.api_version || "v25.0");
+      setSendInitiateCheckout(s.settings.send_initiate_checkout !== false);
       setToken("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
@@ -130,6 +132,7 @@ export function MetaCapiPage() {
         trigger_topic: triggerTopic,
         api_version: apiVersion.trim() || "v25.0",
         test_event_code: testCode.trim() || null,
+        send_initiate_checkout: sendInitiateCheckout,
       };
       if (token.trim()) payload.meta_access_token = token.trim();
       if (!testCode.trim()) payload.clear_test_event_code = true;
@@ -413,6 +416,7 @@ export function MetaCapiPage() {
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-content-subtle">
                       <th className="py-2 pr-3 font-medium">When</th>
                       <th className="py-2 pr-3 font-medium">Order</th>
+                      <th className="py-2 pr-3 font-medium">Type</th>
                       <th className="py-2 pr-3 font-medium">Event ID</th>
                       <th className="py-2 pr-3 font-medium">Status</th>
                       <th className="py-2 pr-3 font-medium">Value</th>
@@ -426,6 +430,7 @@ export function MetaCapiPage() {
                           {formatTs(ev.sent_at || ev.created_at)}
                         </td>
                         <td className="py-2.5 pr-3 font-mono text-xs">{ev.shopify_order_id}</td>
+                        <td className="py-2.5 pr-3 text-xs">{ev.event_name || "Purchase"}</td>
                         <td className="py-2.5 pr-3 font-mono text-xs max-w-[140px] truncate" title={ev.event_id}>
                           {ev.event_id}
                         </td>
@@ -510,6 +515,30 @@ export function MetaCapiPage() {
                 </div>
                 <Switch checked={useAnalyticsToken} onChange={setUseAnalyticsToken} />
               </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-content">Send InitiateCheckout</p>
+                  <p className="text-xs text-content-muted">
+                    Also fire Meta InitiateCheckout on Shopify <code>checkouts/create</code> (native
+                    checkout). Phoenix checkout still gets Purchase from orders.
+                  </p>
+                </div>
+                <Switch checked={sendInitiateCheckout} onChange={setSendInitiateCheckout} />
+              </div>
+
+              {settings?.browser_event_token && (
+                <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-3 space-y-1">
+                  <p className="text-sm font-medium text-content">Theme browser event token</p>
+                  <p className="text-xs text-content-muted">
+                    Paste into Shopify theme settings → <strong>Meta CAPI (App Manager)</strong> →
+                    Browser event token. Used for ViewContent / AddToCart beacons.
+                  </p>
+                  <code className="block text-xs break-all text-content mt-1">
+                    {settings.browser_event_token}
+                  </code>
+                </div>
+              )}
 
               <Input
                 label="Test event code (optional)"

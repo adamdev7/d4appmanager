@@ -8,6 +8,8 @@ export type MetaCapiSettings = {
   event_id_scheme: string;
   trigger_topic: string;
   api_version: string;
+  send_initiate_checkout: boolean;
+  browser_event_token: string | null;
   configured: boolean;
   ready: boolean;
 };
@@ -27,6 +29,7 @@ export type MetaCapiEvent = {
   id: string;
   shopify_order_id: string;
   topic: string;
+  event_name?: string;
   event_id: string;
   status: string;
   attempts: number;

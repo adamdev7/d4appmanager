@@ -726,6 +726,34 @@ def _migrate_ai_email_null_store_scope() -> None:
                 )
 
 
+def _migrate_meta_capi_enrichment_columns() -> None:
+    """Add InitiateCheckout + browser beacon settings for Meta CAPI."""
+    insp = inspect(engine)
+    table = "store_meta_capi_settings"
+    if table not in insp.get_table_names():
+        return
+
+    cols = {c["name"] for c in insp.get_columns(table)}
+    dialect = engine.dialect.name
+    additions: list[tuple[str, str]] = [
+        (
+            "send_initiate_checkout",
+            "BOOLEAN DEFAULT 1" if dialect == "sqlite" else "BOOLEAN DEFAULT TRUE",
+        ),
+        ("browser_event_token", "VARCHAR(64)"),
+    ]
+    with engine.begin() as conn:
+        for name, col_type in additions:
+            if name in cols:
+                continue
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {col_type}")
+                )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -740,3 +768,4 @@ def init_db() -> None:
     _migrate_sync_delivered_to_shopify_column()
     _migrate_verification_code_attempts()
     _migrate_ai_email_null_store_scope()
+    _migrate_meta_capi_enrichment_columns()

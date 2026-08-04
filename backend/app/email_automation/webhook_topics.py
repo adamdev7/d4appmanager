@@ -5,6 +5,7 @@ AUTOMATION_WEBHOOK_TOPICS = [
     "orders/create",
     "orders/paid",
     "orders/fulfilled",
+    "checkouts/create",
     "customers/create",
     "fulfillments/create",
     "fulfillments/update",

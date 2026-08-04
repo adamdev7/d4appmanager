@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,7 +25,11 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.integrations.meta.capi_client import DEFAULT_API_VERSION, MetaCapiClient
 from app.integrations.meta.hashing import hash_email
-from app.integrations.meta.order_mapper import build_purchase_event
+from app.integrations.meta.order_mapper import (
+    build_browser_funnel_event,
+    build_initiate_checkout_event,
+    build_purchase_event,
+)
 from app.integrations.shopify.client import ShopifyClient
 from app.tracking.credentials import mask_api_key_hint
 
@@ -40,8 +45,15 @@ class MetaCapiService:
             select(StoreMetaCapiSettings).where(StoreMetaCapiSettings.store_id == store_id)
         )
         if row:
+            if not row.browser_event_token:
+                row.browser_event_token = secrets.token_urlsafe(24)
+                db.commit()
+                db.refresh(row)
             return row
-        row = StoreMetaCapiSettings(store_id=store_id)
+        row = StoreMetaCapiSettings(
+            store_id=store_id,
+            browser_event_token=secrets.token_urlsafe(24),
+        )
         db.add(row)
         db.commit()
         db.refresh(row)
@@ -74,6 +86,8 @@ class MetaCapiService:
             "event_id_scheme": row.event_id_scheme or "order_id",
             "trigger_topic": row.trigger_topic or "orders/paid",
             "api_version": row.api_version or DEFAULT_API_VERSION,
+            "send_initiate_checkout": bool(getattr(row, "send_initiate_checkout", True)),
+            "browser_event_token": row.browser_event_token,
             "configured": configured,
             "ready": bool(row.enabled and configured and row.meta_pixel_id),
         }
@@ -137,6 +151,15 @@ class MetaCapiService:
 
         if body.get("use_analytics_token") is not None:
             row.use_analytics_token = bool(body["use_analytics_token"])
+
+        if body.get("send_initiate_checkout") is not None:
+            row.send_initiate_checkout = bool(body["send_initiate_checkout"])
+
+        if body.get("rotate_browser_event_token"):
+            row.browser_event_token = secrets.token_urlsafe(24)
+
+        if not row.browser_event_token:
+            row.browser_event_token = secrets.token_urlsafe(24)
 
         db.commit()
         db.refresh(row)
@@ -310,6 +333,7 @@ class MetaCapiService:
                 "id": r.id,
                 "shopify_order_id": r.shopify_order_id,
                 "topic": r.topic,
+                "event_name": r.event_name,
                 "event_id": r.event_id,
                 "status": r.status,
                 "attempts": r.attempts,
@@ -327,8 +351,13 @@ class MetaCapiService:
     def should_handle_topic(self, settings: StoreMetaCapiSettings, topic: str) -> bool:
         if not settings.enabled:
             return False
+        t = topic.strip().lower()
         expected = (settings.trigger_topic or "orders/paid").strip().lower()
-        return topic.strip().lower() == expected
+        if t == expected:
+            return True
+        if t == "checkouts/create" and bool(getattr(settings, "send_initiate_checkout", True)):
+            return True
+        return False
 
     def try_claim_event(
         self,
@@ -339,16 +368,17 @@ class MetaCapiService:
         shopify_order_id: str,
         topic: str,
         event_id: str,
+        event_name: str = "Purchase",
         order_value: str | None,
         currency: str | None,
     ) -> MetaCapiEventLog | None:
         """Insert pending log row. Returns None if already processed (idempotent skip)."""
-        # Already sent or in-flight for this order?
+        # Already sent or in-flight for this entity + event?
         existing = db.scalar(
             select(MetaCapiEventLog).where(
                 MetaCapiEventLog.store_id == store_id,
                 MetaCapiEventLog.shopify_order_id == shopify_order_id,
-                MetaCapiEventLog.event_name == "Purchase",
+                MetaCapiEventLog.event_name == event_name,
                 MetaCapiEventLog.status.in_(
                     [
                         MetaCapiEventStatus.SENT.value,
@@ -359,9 +389,10 @@ class MetaCapiService:
         )
         if existing:
             logger.info(
-                "meta_capi skip duplicate order store=%s order=%s status=%s",
+                "meta_capi skip duplicate store=%s entity=%s event=%s status=%s",
                 store_id,
                 shopify_order_id,
+                event_name,
                 existing.status,
             )
             return None
@@ -386,7 +417,7 @@ class MetaCapiService:
             webhook_id=webhook_id or None,
             shopify_order_id=shopify_order_id,
             topic=topic,
-            event_name="Purchase",
+            event_name=event_name,
             event_id=event_id,
             status=MetaCapiEventStatus.PENDING.value,
             order_value=order_value,
@@ -425,22 +456,33 @@ class MetaCapiService:
         if not settings.meta_pixel_id:
             return {"queued": False, "reason": "missing_pixel"}
 
-        order_id = str(payload.get("id") or "")
-        if not order_id:
-            return {"queued": False, "reason": "missing_order_id"}
+        topic_l = topic.strip().lower()
+        if topic_l == "checkouts/create":
+            event = build_initiate_checkout_event(
+                payload, shop_domain=store.shop_domain or ""
+            )
+            entity_id = str(payload.get("token") or payload.get("id") or "")
+            event_kind = "InitiateCheckout"
+            payload_kind = "checkout"
+        else:
+            entity_id = str(payload.get("id") or "")
+            event = build_purchase_event(
+                payload,
+                shop_domain=store.shop_domain or "",
+                event_id_scheme=settings.event_id_scheme or "order_id",
+            )
+            event_kind = "Purchase"
+            payload_kind = "order"
 
-        # Stale events (>7 days) are rejected by Meta
-        event = build_purchase_event(
-            payload,
-            shop_domain=store.shop_domain or "",
-            event_id_scheme=settings.event_id_scheme or "order_id",
-        )
+        if not entity_id:
+            return {"queued": False, "reason": "missing_entity_id"}
+
         age_sec = int(datetime.now(UTC).timestamp()) - int(event.get("event_time") or 0)
         if age_sec > 7 * 24 * 3600:
             logger.warning(
-                "meta_capi skip stale order store=%s order=%s age_days=%.1f",
+                "meta_capi skip stale store=%s entity=%s age_days=%.1f",
                 store.id,
-                order_id,
+                entity_id,
                 age_sec / 86400,
             )
             return {"queued": False, "reason": "stale_event"}
@@ -450,22 +492,139 @@ class MetaCapiService:
             db,
             store_id=store.id,
             webhook_id=webhook_id,
-            shopify_order_id=order_id,
+            shopify_order_id=entity_id,
             topic=topic,
-            event_id=str(event.get("event_id") or order_id),
+            event_id=str(event.get("event_id") or entity_id),
+            event_name=event_kind,
             order_value=str(custom.get("value") if custom.get("value") is not None else ""),
             currency=str(custom.get("currency") or "") or None,
         )
         if not log_row:
             return {"queued": False, "reason": "duplicate"}
 
-        # Capture IDs before session closes in background task
         log_id = log_row.id
         store_id = store.id
         asyncio.create_task(
-            _send_capi_event_background(store_id=store_id, log_id=log_id, order_payload=payload)
+            _send_capi_event_background(
+                store_id=store_id,
+                log_id=log_id,
+                order_payload=payload,
+                payload_kind=payload_kind,
+            )
         )
-        return {"queued": True, "log_id": log_id, "event_id": event.get("event_id")}
+        return {
+            "queued": True,
+            "log_id": log_id,
+            "event_id": event.get("event_id"),
+            "event_name": event_kind,
+        }
+
+    async def ingest_browser_event(
+        self,
+        db: Session,
+        *,
+        store_id: str,
+        token: str,
+        body: dict[str, Any],
+        client_ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
+        """Public theme beacon for ViewContent / AddToCart (token-gated)."""
+        settings = db.scalar(
+            select(StoreMetaCapiSettings).where(StoreMetaCapiSettings.store_id == store_id)
+        )
+        store = db.get(Store, store_id)
+        if not settings or not store or not settings.enabled:
+            raise HTTPException(status_code=404, detail="Not found")
+        provided = (token or "").strip()
+        expected = settings.browser_event_token or ""
+        try:
+            token_ok = bool(expected) and bool(provided) and secrets.compare_digest(
+                expected, provided
+            )
+        except (TypeError, ValueError):
+            token_ok = False
+        if not token_ok:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        if not settings.meta_pixel_id or not self._resolve_access_token(db, settings):
+            raise HTTPException(status_code=400, detail="CAPI not configured")
+
+        event_name = str(body.get("event_name") or "").strip()
+        event_id = str(body.get("event_id") or "").strip()
+        if not event_name or not event_id:
+            raise HTTPException(status_code=400, detail="event_name and event_id required")
+
+        try:
+            value = body.get("value")
+            event = build_browser_funnel_event(
+                event_name=event_name,
+                event_id=event_id,
+                shop_domain=store.shop_domain or "",
+                event_source_url=body.get("event_source_url"),
+                value=float(value) if value is not None and value != "" else None,
+                currency=str(body.get("currency") or "USD"),
+                content_ids=list(body.get("content_ids") or []) or None,
+                contents=list(body.get("contents") or []) or None,
+                num_items=int(body["num_items"]) if body.get("num_items") is not None else None,
+                email=body.get("email"),
+                phone=body.get("phone"),
+                fbp=body.get("fbp"),
+                fbc=body.get("fbc"),
+                fbclid=body.get("fbclid"),
+                client_ip_address=body.get("client_ip_address") or client_ip,
+                client_user_agent=body.get("client_user_agent") or user_agent,
+                external_id=body.get("external_id"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        entity_key = f"browser:{event_name}:{event_id}"
+        log_row = self.try_claim_event(
+            db,
+            store_id=store_id,
+            webhook_id=f"browser:{event_id}:{event_name}",
+            shopify_order_id=entity_key[:64],
+            topic="browser/funnel",
+            event_id=event_id,
+            event_name=event_name,
+            order_value=str((event.get("custom_data") or {}).get("value") or ""),
+            currency=str((event.get("custom_data") or {}).get("currency") or "") or None,
+        )
+        if not log_row:
+            return {"ok": True, "skipped": True, "reason": "duplicate"}
+
+        access = self._resolve_access_token(db, settings) or ""
+        client = MetaCapiClient(
+            pixel_id=settings.meta_pixel_id or "",
+            access_token=access,
+            api_version=settings.api_version or DEFAULT_API_VERSION,
+            test_event_code=settings.test_event_code,
+        )
+        log_row.attempts = (log_row.attempts or 0) + 1
+        db.commit()
+        try:
+            result = await client.send_events([event])
+            log_row.status = MetaCapiEventStatus.SENT.value
+            log_row.sent_at = datetime.now(UTC)
+            log_row.meta_events_received = int(result.get("events_received") or 0)
+            log_row.meta_fbtrace_id = str(result.get("fbtrace_id") or "") or None
+            log_row.error_message = None
+            db.commit()
+            return {
+                "ok": True,
+                "skipped": False,
+                "event_name": event_name,
+                "event_id": event_id,
+                "events_received": log_row.meta_events_received,
+            }
+        except Exception as exc:
+            msg = str(exc)[:2000]
+            if access and access in msg:
+                msg = msg.replace(access, "[redacted]")
+            log_row.status = MetaCapiEventStatus.FAILED.value
+            log_row.error_message = msg
+            db.commit()
+            return {"ok": False, "error": msg[:500]}
 
     def _shopify_client(self, store: Store) -> ShopifyClient:
         if not store.access_token_encrypted:
@@ -706,7 +865,11 @@ class MetaCapiService:
 
 
 async def _send_capi_event_background(
-    *, store_id: str, log_id: str, order_payload: dict[str, Any]
+    *,
+    store_id: str,
+    log_id: str,
+    order_payload: dict[str, Any],
+    payload_kind: str = "order",
 ) -> None:
     """Open a fresh DB session and send to Meta (does not block Shopify webhook response)."""
     db = SessionLocal()
@@ -728,11 +891,16 @@ async def _send_capi_event_background(
             db.commit()
             return
 
-        event = build_purchase_event(
-            order_payload,
-            shop_domain=store.shop_domain or "",
-            event_id_scheme=settings.event_id_scheme or "order_id",
-        )
+        if payload_kind == "checkout":
+            event = build_initiate_checkout_event(
+                order_payload, shop_domain=store.shop_domain or ""
+            )
+        else:
+            event = build_purchase_event(
+                order_payload,
+                shop_domain=store.shop_domain or "",
+                event_id_scheme=settings.event_id_scheme or "order_id",
+            )
         client = MetaCapiClient(
             pixel_id=settings.meta_pixel_id,
             access_token=token,

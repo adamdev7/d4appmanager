@@ -25,6 +25,8 @@ class MetaCapiSettingsUpdate(BaseModel):
         default=None,
         description="If true, fall back to Analytics Meta Marketing token when CAPI token empty",
     )
+    send_initiate_checkout: bool | None = None
+    rotate_browser_event_token: bool | None = None
 
 
 class MetaCapiTestRequest(BaseModel):
@@ -51,3 +53,22 @@ class MetaCapiBackfillRecentRequest(BaseModel):
 
     hours: int = Field(default=24, ge=1, le=168)
     limit: int = Field(default=50, ge=1, le=100)
+
+
+class MetaCapiBrowserEventRequest(BaseModel):
+    event_name: str
+    event_id: str
+    event_source_url: str | None = None
+    value: float | None = None
+    currency: str | None = None
+    content_ids: list[str] | None = None
+    contents: list[dict] | None = None
+    num_items: int | None = None
+    email: str | None = None
+    phone: str | None = None
+    fbp: str | None = None
+    fbc: str | None = None
+    fbclid: str | None = None
+    external_id: str | None = None
+    client_ip_address: str | None = None
+    client_user_agent: str | None = None
