@@ -1438,18 +1438,9 @@ class AnalyticsService:
         elif meta_configured:
             meta_error = "Could not decrypt Meta credentials — re-save your access token."
 
-        # Meta billing currency is independent of Shopify/Stripe — never assume store currency.
-        # Default CAD when Meta is connected but currency lookup fails (common for this account).
+        # Meta Ads spend is always billed in CAD for this business — never Shopify/Stripe/GBP.
+        # Do not trust Meta account currency if it disagrees (can be mis-set on the ad account).
         meta_currency = "CAD"
-        if meta_client:
-            try:
-                detected_meta = await meta_client.get_account_currency()
-                if detected_meta:
-                    meta_currency = detected_meta
-            except Exception:
-                pass
-
-        # Preserve source-native Meta amounts before any display FX
         ad_spend_native = ad_spend
         meta_purchase_value_native = meta_purchase_value
         ad_spend_currency = meta_currency
@@ -2050,7 +2041,7 @@ class AnalyticsService:
                     "message": (
                         f"{stripe_fx_note}. "
                         f"Settlement net: {stripe_currency or '—'} {_money(stripe_net_native)}. "
-                        f"Meta Ads kept in {meta_currency} then converted to {pnl_currency}."
+                        f"Meta Ads billed in CAD then converted to {pnl_currency}."
                     ),
                     "action": None,
                 },
@@ -2350,8 +2341,8 @@ class AnalyticsService:
                     "message": (
                         f"Period revenue is Stripe net charges ({money(approx_revenue)}) in "
                         f"{currency} — subscriptions and one-time payments, converted with "
-                        f"historical daily FX when needed. Meta ad spend is converted from its "
-                        f"own ad-account currency into {currency}."
+                        f"historical daily FX when needed. Meta ad spend is always CAD and converted "
+                        f"into {currency} for display."
                     ),
                     "action": "MRR is current run-rate only and is shown separately.",
                 }

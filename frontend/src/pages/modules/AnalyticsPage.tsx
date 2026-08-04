@@ -220,24 +220,10 @@ export function AnalyticsPage() {
   const stripeBalance = summary?.stripe_balance;
   const balanceHolds = stripeBalance?.holds ?? [];
   const balanceHoldTotal =
-    balanceHolds.length > 0
-      ? balanceHolds.reduce((sum, h) => sum + h.amount, 0)
-      : stripeBalance && stripeBalance.pending > 0 && stripeBalance.delay_days != null
-        ? stripeBalance.pending
-        : 0;
-  const balanceHoldDays =
-    balanceHolds.length === 1
-      ? balanceHolds[0].days
-      : balanceHolds.length === 0 &&
-          stripeBalance &&
-          stripeBalance.delay_days != null &&
-          stripeBalance.pending > 0
-        ? stripeBalance.delay_days
-        : null;
-  const showBalanceHold =
-    !!stripeBalance &&
-    balanceHoldTotal > 0 &&
-    (balanceHolds.length > 0 || stripeBalance.delay_days != null);
+    balanceHolds.length > 0 ? balanceHolds.reduce((sum, h) => sum + h.amount, 0) : 0;
+  const balanceHoldDays = balanceHolds.length === 1 ? balanceHolds[0].days : null;
+  // Only show when Stripe risk reserve BTs exist — never use pending settlement as "on hold"
+  const showBalanceHold = !!stripeBalance && balanceHoldTotal > 0 && balanceHolds.length > 0;
   const rangeHint =
     period === "custom"
       ? formatRangeLabel(appliedSince, appliedUntil)
@@ -460,10 +446,15 @@ export function AnalyticsPage() {
                 />
                 <MetricCard
                   label="Ad Spend"
-                  value={formatMoney(summary.ad_spend, storeCurrency)}
+                  value={formatMoney(summary.ad_spend, currency)}
                   hint={
                     summary.ad_spend > 0
-                      ? `CPA ${formatMoney(summary.cpa || summary.meta_cpa, storeCurrency)} · Meta stays in ${storeCurrency}`
+                      ? [
+                          `CPA ${formatMoney(summary.cpa || 0, currency)}`,
+                          summary.ad_spend_native != null && currency !== "CAD"
+                            ? `native ${formatMoney(summary.ad_spend_native, "CAD")}`
+                            : "Meta billed in CAD",
+                        ].join(" · ")
                       : "Connect Meta in Settings"
                   }
                   icon={Megaphone}
@@ -561,8 +552,8 @@ export function AnalyticsPage() {
                           <div className="min-w-0">
                             <p className="text-sm font-medium text-content-muted">
                               {balanceHoldDays != null
-                                ? `On hold · ${balanceHoldDays} day${balanceHoldDays === 1 ? "" : "s"}`
-                                : "On hold"}
+                                ? `Risk reserve · ${balanceHoldDays} day${balanceHoldDays === 1 ? "" : "s"}`
+                                : "Risk reserve"}
                             </p>
                             {balanceHolds.length > 0 ? (
                               <button
@@ -587,11 +578,9 @@ export function AnalyticsPage() {
                               </p>
                             )}
                             <p className="mt-1 text-xs text-content-subtle">
-                              {balanceHolds.length > 0
-                                ? holdBreakdownOpen
-                                  ? "Click amount to hide unlock schedule"
-                                  : "Click amount to see unlock schedule"
-                                : `Pending funds clearing in ~${stripeBalance.delay_days} days`}
+                              {holdBreakdownOpen
+                                ? "Click amount to hide release schedule"
+                                : "Stripe risk reserve (Réserve pour risque) — not pending payments"}
                             </p>
                             {holdBreakdownOpen && balanceHolds.length > 0 && (
                               <ul className="mt-3 space-y-1.5 border-t border-border/60 pt-3">
@@ -601,7 +590,7 @@ export function AnalyticsPage() {
                                     className="flex justify-between gap-3 text-xs text-content-muted"
                                   >
                                     <span>
-                                      In {h.days} day{h.days === 1 ? "" : "s"}
+                                      Releases in {h.days} day{h.days === 1 ? "" : "s"}
                                     </span>
                                     <span className="font-medium tabular-nums text-content">
                                       {formatMoney(h.amount, currency)}
@@ -762,13 +751,11 @@ export function AnalyticsPage() {
                     {summary.stripe_revenue_native != null && summary.stripe_currency
                       ? ` · Stripe native ${formatMoney(summary.stripe_revenue_native, summary.stripe_currency)}`
                       : ""}
-                    {summary.ad_spend_native != null &&
-                    (dashboard.meta_currency || summary.ad_spend_currency)
-                      ? ` · Meta native ${formatMoney(
-                          summary.ad_spend_native,
-                          dashboard.meta_currency || summary.ad_spend_currency || "CAD"
-                        )}`
-                      : ""}
+                    {summary.ad_spend_native != null && currency !== "CAD"
+                      ? ` · Meta native ${formatMoney(summary.ad_spend_native, "CAD")}`
+                      : summary.ad_spend_native != null
+                        ? " · Meta billed in CAD"
+                        : ""}
                   </p>
                 </Card>
               )}
@@ -777,9 +764,7 @@ export function AnalyticsPage() {
                 <Card padding="md" className="border-border bg-surface-muted/40">
                   <p className="text-sm text-content-muted">
                     Showing {currency}
-                    {dashboard.meta_currency && dashboard.meta_currency !== currency
-                      ? ` · Meta Ads from ${dashboard.meta_currency}`
-                      : ""}
+                    {currency !== "CAD" ? " · Meta Ads from CAD" : ""}
                     {storeCurrency !== currency ? ` · Shopify from ${storeCurrency}` : ""}
                     .
                   </p>

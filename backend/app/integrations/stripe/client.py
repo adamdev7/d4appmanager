@@ -117,8 +117,8 @@ class StripeClient:
         hold_pages: int = 5,
     ) -> dict[str, Any]:
         """
-        Snapshot of Stripe cash balance: available to withdraw, pending, and
-        pending funds grouped by days until they become available (if any).
+        Snapshot of Stripe cash balance: available to withdraw, pending settlement,
+        and risk-reserve holds ("Réserve pour risque") — not ordinary pending charges.
         """
         preferred = _norm_currency(currency)
         result: dict[str, Any] = {
@@ -126,7 +126,9 @@ class StripeClient:
             "pending": Decimal("0"),
             "currency": None,
             "delay_days": None,
-            "holds": [],  # [{days, amount}] — only when pending funds have available_on
+            # Risk reserve only (Réserve pour risque), grouped by days until release
+            "holds": [],  # [{days, amount}]
+            "reserve_total": Decimal("0"),
             "error": None,
         }
 
@@ -185,7 +187,7 @@ class StripeClient:
                 result["pending"] = pend_amt
                 result["currency"] = cur.upper()
 
-            # Payout schedule delay (typical settlement hold in days)
+            # Payout schedule delay (typical settlement hold in days) — for pending card hint only
             try:
                 acct_resp = await client.get(
                     f"{STRIPE_API_BASE}/account",
@@ -204,12 +206,85 @@ class StripeClient:
             except Exception:
                 pass
 
-            # Break down pending funds by days until available_on (only if pending > 0)
-            if result["pending"] > 0:
-                holds: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
-                now_ts = int(time.time())
+            # Risk reserve only — never treat ordinary pending charges as "on hold"
+            holds: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+            now_ts = int(time.time())
+            seen_ids: set[str] = set()
+
+            def _add_held_bt(bt: dict) -> None:
+                bt_id = str(bt.get("id") or "")
+                if bt_id and bt_id in seen_ids:
+                    return
+                if bt_id:
+                    seen_ids.add(bt_id)
+
+                available_on = int(bt.get("available_on") or 0)
+                status = (bt.get("status") or "").lower()
+                still_held = available_on > now_ts or status == "pending"
+                if not still_held:
+                    return
+
+                bt_cur = _norm_currency(bt.get("currency")) or cur
+                if cur and bt_cur != cur:
+                    return
+
+                amt = abs(from_stripe_amount(bt.get("net"), bt_cur))
+                if amt <= 0:
+                    return
+
+                days = max(
+                    1,
+                    int((available_on - now_ts + 86399) // 86400)
+                    if available_on > now_ts
+                    else 1,
+                )
+                holds[days] += amt
+
+            async def _paginate_type(bt_type: str) -> None:
                 starting_after: str | None = None
-                try:
+                for _ in range(hold_pages):
+                    params: list[tuple[str, str | int]] = [
+                        ("limit", 100),
+                        ("type", bt_type),
+                    ]
+                    if starting_after:
+                        params.append(("starting_after", starting_after))
+                    if cur:
+                        params.append(("currency", cur))
+                    bt_resp = await client.get(
+                        f"{STRIPE_API_BASE}/balance_transactions",
+                        params=params,
+                        auth=(self.secret_key, ""),
+                    )
+                    if bt_resp.status_code != 200:
+                        break
+                    payload = bt_resp.json()
+                    batch = list(payload.get("data") or [])
+                    for bt in batch:
+                        _add_held_bt(bt)
+                    if not payload.get("has_more") or not batch:
+                        break
+                    starting_after = batch[-1].get("id")
+                    if not starting_after:
+                        break
+
+            try:
+                # Debit-side reserve types = money Stripe is holding for risk
+                for bt_type in (
+                    "reserved_funds",
+                    "payment_network_reserve_hold",
+                    "reserve_transaction",
+                ):
+                    await _paginate_type(bt_type)
+
+                # Fallback: reserve_hold credits if no debit-side rows
+                if not holds:
+                    await _paginate_type("reserve_hold")
+
+                # Last resort: scan recent BTs whose description mentions risk reserve
+                # (French Stripe Dashboard: "Réserve pour risque")
+                if not holds:
+                    starting_after = None
                     for _ in range(hold_pages):
                         params: list[tuple[str, str | int]] = [("limit", 100)]
                         if starting_after:
@@ -225,37 +300,50 @@ class StripeClient:
                             break
                         payload = bt_resp.json()
                         batch = list(payload.get("data") or [])
-                        all_past = True
                         for bt in batch:
-                            available_on = int(bt.get("available_on") or 0)
-                            if available_on <= now_ts:
-                                continue
-                            all_past = False
-                            if (bt.get("status") or "").lower() != "pending":
-                                continue
-                            bt_cur = _norm_currency(bt.get("currency")) or cur
-                            if cur and bt_cur != cur:
-                                continue
-                            net = from_stripe_amount(bt.get("net"), bt_cur)
-                            if net <= 0:
-                                continue
-                            days = max(
-                                1,
-                                int((available_on - now_ts + 86399) // 86400),
+                            desc = (bt.get("description") or "").lower()
+                            bt_type = (bt.get("type") or "").lower()
+                            is_reserve = (
+                                "réserve" in desc
+                                or "reserve" in desc
+                                or "risque" in desc
+                                or bt_type
+                                in (
+                                    "reserved_funds",
+                                    "reserve_hold",
+                                    "reserve_release",
+                                    "reserve_transaction",
+                                    "payment_network_reserve_hold",
+                                )
                             )
-                            holds[days] += net
-                        if not payload.get("has_more") or not batch or all_past:
+                            # Never count ordinary charge settlement as reserve
+                            if not is_reserve or bt_type in (
+                                "charge",
+                                "payment",
+                                "payment_refund",
+                                "refund",
+                                "stripe_fee",
+                                "payout",
+                            ):
+                                continue
+                            if bt_type in ("reserve_release", "payment_network_reserve_release"):
+                                continue
+                            _add_held_bt(bt)
+                        if not payload.get("has_more") or not batch:
                             break
                         starting_after = batch[-1].get("id")
                         if not starting_after:
                             break
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-                result["holds"] = [
-                    {"days": days, "amount": amount}
-                    for days, amount in sorted(holds.items())
-                ]
+            result["holds"] = [
+                {"days": days, "amount": amount}
+                for days, amount in sorted(holds.items())
+            ]
+            result["reserve_total"] = sum(
+                (h["amount"] for h in result["holds"]), Decimal("0")
+            )
 
         return result
 
