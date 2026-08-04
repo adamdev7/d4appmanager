@@ -8,6 +8,7 @@ import {
   Package,
   BarChart3,
   Megaphone,
+  Radar,
   CheckCircle2,
 } from "lucide-react";
 import { OverviewCards } from "@/components/dashboard/OverviewCards";
@@ -28,6 +29,7 @@ const QUICK_LINKS = [
   { to: "/modules/tracking", label: "Tracking", icon: Package },
   { to: "/modules/analytics", label: "Analytics", icon: BarChart3 },
   { to: "/modules/ads", label: "Ads", icon: Megaphone },
+  { to: "/modules/meta-capi", label: "CAPI", icon: Radar },
   { to: "/settings/stores", label: "Stores", icon: Store },
   { to: "/settings/gmail", label: "Gmail", icon: Mail },
 ] as const;

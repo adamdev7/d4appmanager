@@ -19,6 +19,7 @@ import { ModulePlaceholderPage } from "@/pages/modules/ModulePlaceholderPage";
 import { TrackingPage } from "@/pages/modules/TrackingPage";
 import { AnalyticsPage } from "@/pages/modules/AnalyticsPage";
 import { AdsPage } from "@/pages/modules/AdsPage";
+import { MetaCapiPage } from "@/pages/modules/MetaCapiPage";
 import { PrivacyPage } from "@/pages/legal/PrivacyPage";
 import { TermsPage } from "@/pages/legal/TermsPage";
 import { HomePage } from "@/pages/HomePage";
@@ -55,6 +56,7 @@ export default function App() {
                 <Route path="/modules/tracking" element={<TrackingPage />} />
                 <Route path="/modules/analytics" element={<AnalyticsPage />} />
                 <Route path="/modules/ads" element={<AdsPage />} />
+                <Route path="/modules/meta-capi" element={<MetaCapiPage />} />
                 <Route path="/modules/:slug" element={<ModulePlaceholderPage />} />
               </Route>
 

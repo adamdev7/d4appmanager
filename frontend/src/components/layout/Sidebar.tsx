@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   X,
   Megaphone,
+  Radar,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { BrandLogo } from "@/components/brand/BrandLogo";
@@ -24,6 +25,7 @@ const mainNav = [
   { to: "/modules/tracking", icon: Package, label: "Tracking" },
   { to: "/modules/analytics", icon: BarChart3, label: "Analytics" },
   { to: "/modules/ads", icon: Megaphone, label: "Ads" },
+  { to: "/modules/meta-capi", icon: Radar, label: "Server-Side Tracking" },
   { to: "/modules/sms", icon: MessageSquare, label: "SMS" },
   { to: "/modules/support", icon: Headphones, label: "Support" },
 ];

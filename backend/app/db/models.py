@@ -577,3 +577,62 @@ class AdsAiReport(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+
+class StoreMetaCapiSettings(Base):
+    """Per-store Meta Conversions API (server-side Purchase tracking) settings."""
+
+    __tablename__ = "store_meta_capi_settings"
+    __table_args__ = (UniqueConstraint("store_id", name="uq_store_meta_capi_settings_store"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    meta_pixel_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    meta_access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_access_token_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Prefer dedicated CAPI token; optionally fall back to Analytics Marketing token
+    use_analytics_token: Mapped[bool] = mapped_column(Boolean, default=True)
+    test_event_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Must match browser Pixel Purchase event_id: order_id | checkout_token | order_name
+    event_id_scheme: Mapped[str] = mapped_column(String(32), default="order_id")
+    # orders/paid (default) or orders/create (COD / no separate capture)
+    trigger_topic: Mapped[str] = mapped_column(String(32), default="orders/paid")
+    api_version: Mapped[str] = mapped_column(String(16), default="v25.0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MetaCapiEventStatus(str, enum.Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class MetaCapiEventLog(Base):
+    """Idempotency + send log for Shopify → Meta CAPI Purchase events."""
+
+    __tablename__ = "meta_capi_event_logs"
+    __table_args__ = (
+        UniqueConstraint("store_id", "webhook_id", name="uq_meta_capi_webhook"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    webhook_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    shopify_order_id: Mapped[str] = mapped_column(String(64), index=True)
+    topic: Mapped[str] = mapped_column(String(64), default="")
+    event_name: Mapped[str] = mapped_column(String(64), default="Purchase")
+    event_id: Mapped[str] = mapped_column(String(128), default="")
+    status: Mapped[str] = mapped_column(String(16), default=MetaCapiEventStatus.PENDING.value, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    meta_events_received: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    meta_fbtrace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    order_value: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

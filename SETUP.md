@@ -57,9 +57,26 @@ Webhooks are registered automatically to:
 
 `{APP_URL}/api/v1/webhooks/shopify`
 
-Topics: `app/uninstalled`, `orders/create`
+Topics: `app/uninstalled`, `orders/create`, `orders/paid`, fulfillments, etc. (see `webhook_topics.py`)
 
 In the app: **Settings → Stores → Connect store** → enter `your-store.myshopify.com`
+
+## 3b. Meta Conversions API (server-side Purchase tracking)
+
+Forwards Shopify paid orders to Meta CAPI so purchases still count when the browser Pixel is blocked.
+
+1. Open **Apps → Server-Side Tracking**
+2. Enter **Meta Pixel ID**
+3. Paste a **Conversions API access token** (Events Manager → Data sources → your Pixel → Settings → Generate access token), or enable fallback to the Analytics/Ads Marketing API token
+4. Set **event_id scheme** to match your storefront Pixel Purchase `eventID` (default: Shopify order id)
+5. Optionally set a **Test event code** from Events Manager → Test Events
+6. Enable and save → place a test order → confirm the event in Meta Test Events (should show **Deduplicated** if Pixel + CAPI share the same `event_id`)
+
+Webhook path (already HMAC-verified): `{APP_URL}/api/v1/webhooks/shopify`
+
+Stats API (auth required): `GET /api/v1/meta-capi/stores/{store_id}/stats`
+
+**fbp / fbc:** if checkout writes `_fbp` / `_fbc` as Shopify order note attributes, they are included automatically. Otherwise add storefront capture as a follow-up for higher Event Match Quality.
 
 ## 4. Gmail connection & Google sign-in
 

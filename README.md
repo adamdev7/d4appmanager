@@ -121,6 +121,10 @@ Copy `backend/.env.example` to `backend/.env` and set secrets when implementing 
 
 Never commit `.env` or hardcode credentials.
 
+## Meta Conversions API (Server-Side Tracking)
+
+Module at **Apps → Server-Side Tracking**. Shopify `orders/paid` (configurable) webhooks map to Meta CAPI Purchase events with hashed PII, idempotency (webhook id + order), and Pixel dedup via shared `event_id`. See `SETUP.md` §3b.
+
 ## Next phases (not implemented yet)
 
 - Shopify OAuth and Admin API

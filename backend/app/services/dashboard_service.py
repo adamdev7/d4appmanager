@@ -483,6 +483,14 @@ class DashboardService:
                 icon="megaphone",
             ),
             AppModule(
+                id="mod-meta-capi",
+                name="Server-Side Tracking",
+                description="Shopify orders → Meta Conversions API (Purchase) with Pixel dedup.",
+                slug="meta-capi",
+                status="active" if has_store else "setup",
+                icon="radar",
+            ),
+            AppModule(
                 id="mod-sms",
                 name="SMS Notifications",
                 description="Order updates and marketing via SMS.",

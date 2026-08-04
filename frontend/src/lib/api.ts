@@ -14,10 +14,16 @@ import type {
   AdsPeriod,
   AdsSettings,
 } from "@/lib/adsTypes";
+import type {
+  MetaCapiEvent,
+  MetaCapiSettings,
+  MetaCapiStats,
+} from "@/lib/metaCapiTypes";
 
 export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
 export type { ManualInvestment, ManualInvestmentsResponse };
 export type { AdsAiReport, AdsDashboard, AdsPeriod, AdsSettings };
+export type { MetaCapiEvent, MetaCapiSettings, MetaCapiStats };
 
 const API_BASE = "/api/v1";
 
@@ -867,6 +873,31 @@ export const api = {
       } = {}
     ) =>
       request<AdsAiReport>(`/ads/stores/${storeId}/reports/generate`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+  },
+  metaCapi: {
+    stats: (storeId: string) =>
+      request<MetaCapiStats>(`/meta-capi/stores/${storeId}/stats`),
+    events: (storeId: string, limit = 50) =>
+      request<{ events: MetaCapiEvent[] }>(
+        `/meta-capi/stores/${storeId}/events?limit=${limit}`
+      ),
+    getSettings: (storeId: string) =>
+      request<MetaCapiSettings>(`/meta-capi/stores/${storeId}/settings`),
+    updateSettings: (storeId: string, data: object) =>
+      request<MetaCapiSettings>(`/meta-capi/stores/${storeId}/settings`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    test: (storeId: string, data: object) =>
+      request<{
+        ok: boolean;
+        message: string;
+        events_received?: number;
+        fbtrace_id?: string;
+      }>(`/meta-capi/stores/${storeId}/test`, {
         method: "POST",
         body: JSON.stringify(data),
       }),

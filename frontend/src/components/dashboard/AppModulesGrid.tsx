@@ -10,6 +10,7 @@ import {
   ArrowRight,
   Sparkles,
   Megaphone,
+  Radar,
   Lock,
   Clock,
   Zap,
@@ -28,6 +29,7 @@ const ICON_MAP: Record<string, typeof Mail> = {
   headphones: Headphones,
   sparkles: Sparkles,
   megaphone: Megaphone,
+  radar: Radar,
 };
 
 const statusBadge = (s: string) => {
@@ -47,7 +49,12 @@ const statusLabel = (s: string) => {
 function moduleHref(mod: AppModule): string {
   if (mod.status === "coming_soon") return "#";
   if (mod.status === "setup") {
-    if (mod.slug === "tracking" || mod.slug === "analytics" || mod.slug === "ads") {
+    if (
+      mod.slug === "tracking" ||
+      mod.slug === "analytics" ||
+      mod.slug === "ads" ||
+      mod.slug === "meta-capi"
+    ) {
       return "/settings/stores";
     }
     if (mod.slug === "email" || mod.slug === "ai-email") return "/settings/gmail";

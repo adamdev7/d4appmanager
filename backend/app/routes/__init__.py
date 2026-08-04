@@ -8,6 +8,7 @@ from app.routes import (
     dashboard,
     email_automation,
     gmail,
+    meta_capi,
     modules,
     stores,
     track_order,
@@ -33,3 +34,4 @@ api_router.include_router(track_order.router, tags=["track-order"])
 api_router.include_router(tracking.router, prefix="/tracking", tags=["tracking"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 api_router.include_router(ads.router, prefix="/ads", tags=["ads"])
+api_router.include_router(meta_capi.router, prefix="/meta-capi", tags=["meta-capi"])
