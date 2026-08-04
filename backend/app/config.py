@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     # Autopilot scheduler tick (seconds between checks for due user automations)
     automation_poll_seconds: int = 60
 
+    # Meta CAPI — poll Shopify for paid orders not yet sent (never-miss safety net)
+    meta_capi_reconcile_seconds: int = 300
+    meta_capi_reconcile_hours: int = 48
+    meta_capi_max_send_attempts: int = 15
+
     # Order tracking page — optional carrier APIs
     track17_api_key: str = ""
     yunexpress_api_key: str = ""

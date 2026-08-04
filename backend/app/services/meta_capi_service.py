@@ -161,6 +161,15 @@ class MetaCapiService:
         if not row.browser_event_token:
             row.browser_event_token = secrets.token_urlsafe(24)
 
+        # Configuring credentials should turn tracking on unless explicitly disabled
+        configuring = any(
+            k in body
+            for k in ("meta_pixel_id", "meta_access_token", "use_analytics_token")
+        )
+        if configuring and body.get("enabled") is None:
+            if row.meta_pixel_id and self._resolve_access_token(db, row):
+                row.enabled = True
+
         db.commit()
         db.refresh(row)
         return self._settings_dict(row)
@@ -348,14 +357,29 @@ class MetaCapiService:
             for r in rows
         ]
 
-    def should_handle_topic(self, settings: StoreMetaCapiSettings, topic: str) -> bool:
+    _PAID_FINANCIAL = frozenset({"paid", "partially_paid"})
+
+    def should_handle_topic(
+        self,
+        settings: StoreMetaCapiSettings,
+        topic: str,
+        payload: dict[str, Any] | None = None,
+    ) -> bool:
         if not settings.enabled:
             return False
         t = topic.strip().lower()
+        if t == "checkouts/create" and bool(getattr(settings, "send_initiate_checkout", True)):
+            return True
+
         expected = (settings.trigger_topic or "orders/paid").strip().lower()
         if t == expected:
             return True
-        if t == "checkouts/create" and bool(getattr(settings, "send_initiate_checkout", True)):
+
+        # Never-miss Purchase: catch paid orders on create/update too (COD, delayed capture)
+        fin = str((payload or {}).get("financial_status") or "").lower()
+        if t == "orders/paid":
+            return True
+        if t in ("orders/create", "orders/updated") and fin in self._PAID_FINANCIAL:
             return True
         return False
 
@@ -450,7 +474,7 @@ class MetaCapiService:
         settings = db.scalar(
             select(StoreMetaCapiSettings).where(StoreMetaCapiSettings.store_id == store.id)
         )
-        if not settings or not self.should_handle_topic(settings, topic):
+        if not settings or not self.should_handle_topic(settings, topic, payload):
             return {"queued": False, "reason": "disabled_or_topic"}
 
         if not settings.meta_pixel_id:
@@ -862,6 +886,211 @@ class MetaCapiService:
             "failed": failed,
             "results": results,
         }
+
+    def _is_configured(self, db: Session, settings: StoreMetaCapiSettings) -> bool:
+        return bool(settings.meta_pixel_id) and bool(self._resolve_access_token(db, settings))
+
+    async def _resend_purchase_log(
+        self,
+        db: Session,
+        *,
+        store: Store,
+        settings: StoreMetaCapiSettings,
+        log_row: MetaCapiEventLog,
+        order: dict[str, Any],
+    ) -> bool:
+        """Retry an existing FAILED/PENDING Purchase log using the same event_id."""
+        from app.config import settings as app_settings
+
+        max_attempts = int(getattr(app_settings, "meta_capi_max_send_attempts", 15) or 15)
+        if (log_row.attempts or 0) >= max_attempts:
+            return False
+
+        token = self._resolve_access_token(db, settings)
+        if not token or not settings.meta_pixel_id:
+            return False
+
+        event = build_purchase_event(
+            order,
+            shop_domain=store.shop_domain or "",
+            event_id_scheme=settings.event_id_scheme or "order_id",
+        )
+        # Keep original event_id for Meta dedupe
+        if log_row.event_id:
+            event["event_id"] = log_row.event_id
+
+        age_sec = int(datetime.now(UTC).timestamp()) - int(event.get("event_time") or 0)
+        if age_sec > 7 * 24 * 3600:
+            log_row.status = MetaCapiEventStatus.FAILED.value
+            log_row.error_message = "Order older than 7 days — Meta will reject it"
+            db.commit()
+            return False
+
+        client = MetaCapiClient(
+            pixel_id=settings.meta_pixel_id,
+            access_token=token,
+            api_version=settings.api_version or DEFAULT_API_VERSION,
+            test_event_code=settings.test_event_code,
+        )
+        log_row.status = MetaCapiEventStatus.PENDING.value
+        log_row.attempts = (log_row.attempts or 0) + 1
+        db.commit()
+
+        try:
+            result = await client.send_events([event])
+            log_row.status = MetaCapiEventStatus.SENT.value
+            log_row.sent_at = datetime.now(UTC)
+            log_row.meta_events_received = int(result.get("events_received") or 0)
+            log_row.meta_fbtrace_id = str(result.get("fbtrace_id") or "") or None
+            log_row.error_message = None
+            db.commit()
+            return True
+        except Exception as exc:
+            msg = str(exc)
+            if token in msg:
+                msg = msg.replace(token, "[redacted]")
+            log_row.status = MetaCapiEventStatus.FAILED.value
+            log_row.error_message = msg[:2000]
+            db.commit()
+            return False
+
+    async def reconcile_store(self, db: Session, store_id: str) -> dict[str, Any]:
+        """Retry failures + pull recent paid Shopify orders missing a SENT Purchase."""
+        from app.config import settings as app_settings
+
+        store = db.get(Store, store_id)
+        settings = db.scalar(
+            select(StoreMetaCapiSettings).where(StoreMetaCapiSettings.store_id == store_id)
+        )
+        summary: dict[str, Any] = {
+            "store_id": store_id,
+            "retried": 0,
+            "sent": 0,
+            "skipped": 0,
+            "failed": 0,
+            "examined": 0,
+        }
+        if not store or not settings or not settings.enabled:
+            return summary
+        if not self._is_configured(db, settings):
+            return summary
+        if not store.access_token_encrypted:
+            return summary
+
+        max_attempts = int(getattr(app_settings, "meta_capi_max_send_attempts", 15) or 15)
+        hours = int(getattr(app_settings, "meta_capi_reconcile_hours", 48) or 48)
+        hours = max(1, min(hours, 168))
+        pending_timeout = datetime.now(UTC) - timedelta(minutes=15)
+        retry_since = datetime.now(UTC) - timedelta(days=7)
+
+        # Stuck PENDING → FAILED so we can resend
+        stuck = db.scalars(
+            select(MetaCapiEventLog).where(
+                MetaCapiEventLog.store_id == store_id,
+                MetaCapiEventLog.event_name == "Purchase",
+                MetaCapiEventLog.status == MetaCapiEventStatus.PENDING.value,
+                MetaCapiEventLog.created_at < pending_timeout,
+            )
+        ).all()
+        for row in stuck:
+            row.status = MetaCapiEventStatus.FAILED.value
+            row.error_message = row.error_message or "Timed out pending; scheduled for retry"
+        if stuck:
+            db.commit()
+
+        client = self._shopify_client(store)
+
+        failed_rows = db.scalars(
+            select(MetaCapiEventLog).where(
+                MetaCapiEventLog.store_id == store_id,
+                MetaCapiEventLog.event_name == "Purchase",
+                MetaCapiEventLog.status == MetaCapiEventStatus.FAILED.value,
+                MetaCapiEventLog.attempts < max_attempts,
+                MetaCapiEventLog.created_at >= retry_since,
+            )
+        ).all()
+        for log_row in failed_rows:
+            try:
+                order = await client.get_order(log_row.shopify_order_id)
+            except Exception as exc:
+                logger.warning(
+                    "meta_capi retry fetch failed store=%s order=%s err=%s",
+                    store_id,
+                    log_row.shopify_order_id,
+                    exc,
+                )
+                summary["failed"] += 1
+                continue
+            ok = await self._resend_purchase_log(
+                db, store=store, settings=settings, log_row=log_row, order=order
+            )
+            if ok:
+                summary["retried"] += 1
+            else:
+                summary["failed"] += 1
+
+        # Pull paid orders and send any without SENT
+        since = datetime.now(UTC) - timedelta(hours=hours)
+        try:
+            orders = await client.list_all_orders_in_range(
+                created_at_min=since.isoformat(),
+                financial_status="paid",
+                max_pages=4,
+            )
+        except Exception:
+            logger.exception("meta_capi reconcile list_orders failed store=%s", store_id)
+            return summary
+
+        summary["examined"] = len(orders)
+        for order in orders:
+            order_id = str(order.get("id") or "")
+            if not order_id:
+                continue
+            fin = str(order.get("financial_status") or "").lower()
+            if fin not in self._PAID_FINANCIAL:
+                continue
+            already = db.scalar(
+                select(MetaCapiEventLog).where(
+                    MetaCapiEventLog.store_id == store_id,
+                    MetaCapiEventLog.shopify_order_id == order_id,
+                    MetaCapiEventLog.event_name == "Purchase",
+                )
+            )
+            if already:
+                # SENT / PENDING / FAILED (retry path above) — don't create a second log
+                summary["skipped"] += 1
+                continue
+            row = await self._send_order_now(
+                db,
+                store=store,
+                settings=settings,
+                order=order,
+                topic="reconcile/paid",
+                force=False,
+            )
+            if row.get("skipped"):
+                summary["skipped"] += 1
+            elif row.get("ok"):
+                summary["sent"] += 1
+            else:
+                summary["failed"] += 1
+
+        return summary
+
+    async def reconcile_all_configured_stores(self, db: Session) -> dict[str, Any]:
+        """Background sweep across every store with CAPI enabled + credentials."""
+        rows = db.scalars(
+            select(StoreMetaCapiSettings).where(StoreMetaCapiSettings.enabled.is_(True))
+        ).all()
+        totals = {"stores": 0, "retried": 0, "sent": 0, "skipped": 0, "failed": 0, "examined": 0}
+        for settings in rows:
+            if not self._is_configured(db, settings):
+                continue
+            totals["stores"] += 1
+            part = await self.reconcile_store(db, settings.store_id)
+            for key in ("retried", "sent", "skipped", "failed", "examined"):
+                totals[key] += int(part.get(key) or 0)
+        return totals
 
 
 async def _send_capi_event_background(

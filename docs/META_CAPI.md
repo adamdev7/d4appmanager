@@ -1,8 +1,22 @@
 # Meta CAPI enrichment + theme setup
 
+## Reliability (never miss a sale)
+
+App Manager runs a background worker while the API is up:
+
+1. **Webhooks** — Purchase on `orders/paid`, plus `orders/create` / `orders/updated` when `financial_status` is paid (and InitiateCheckout on `checkouts/create`).
+2. **Retries** — Failed Meta sends are retried (up to 15 attempts) every few minutes.
+3. **Reconcile** — Every ~5 minutes, pulls paid Shopify orders from the last 48 hours and sends any Purchase that was never logged/sent.
+
+Env knobs (optional): `META_CAPI_RECONCILE_SECONDS=300`, `META_CAPI_RECONCILE_HOURS=48`, `META_CAPI_MAX_SEND_ATTEMPTS=15`.
+
+Reconnect the Shopify store after deploy so `orders/updated` is subscribed.
+
+---
+
 ## What App Manager now sends
 
-**Purchase** (orders/paid or orders/create):
+**Purchase** (orders/paid, or create/update when paid):
 - Hashed: email, phone, name, city/state/zip/country, `external_id` (Shopify customer id)
 - Unhashed: IP, user agent, `fbp`, `fbc` (from note attributes or synthesized from `fbclid`)
 - Full `landing_site` / `meta_landing` as `event_source_url` (keeps UTMs + fbclid)

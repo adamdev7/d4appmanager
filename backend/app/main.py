@@ -11,6 +11,7 @@ from app.config import settings
 from app.db.session import init_db
 from app.routes import api_router
 from app.routes import track_order as track_order_routes
+from app.services.meta_capi_worker import start_meta_capi_worker, stop_meta_capi_worker
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 _PROJECT_ROOT = _BACKEND_ROOT.parent
@@ -23,7 +24,9 @@ _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 async def lifespan(app: FastAPI):
     init_db()
     start_automation_worker()
+    start_meta_capi_worker()
     yield
+    await stop_meta_capi_worker()
     await stop_automation_worker()
 
 
