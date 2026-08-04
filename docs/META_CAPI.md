@@ -1,5 +1,20 @@
 # Meta CAPI enrichment + theme setup
 
+## Why Events Manager may say fbp / IP / UA / external_id are missing
+
+App Manager **does send** these when available. Gaps usually mean Shopify’s order payload didn’t include them (common with **Phoenix / external checkout**):
+
+| Parameter | Source | Fix |
+|-----------|--------|-----|
+| `fbp` / `fbc` | Cart note attributes / attribution cache | Publish theme script + theme settings (store ID + browser token) |
+| `client_ip_address` / `client_user_agent` | Shopify `browser_ip` / `client_details`, else theme Attribution ping cache | Theme must load so Attribution beacon can cache IP/UA before checkout |
+| `external_id` | Shopify `customer.id`, else hashed email/phone | Guest orders now fall back to email/phone |
+| Date of birth (`db`) | Not on Shopify orders | Cannot send — ignore this Meta suggestion |
+
+After publishing the theme, place a test order from an ad click and re-check EMQ in 24–48h.
+
+---
+
 ## Reliability (never miss a sale)
 
 App Manager runs a background worker while the API is up:

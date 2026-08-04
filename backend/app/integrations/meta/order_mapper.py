@@ -254,18 +254,29 @@ def _user_data_from_payload(
         if hashed:
             user_data[field] = [hashed]
 
-    # Stable shopper id (hashed) — strong EMQ signal
+    # Stable shopper id (hashed) — customer id, else email, else phone
     external = customer.get("id") or payload.get("user_id")
+    if external is None or not str(external).strip():
+        external = email or phone
     if external is not None and str(external).strip():
         ext_hash = sha256_normalize(str(external).strip())
         if ext_hash:
             user_data["external_id"] = [ext_hash]
 
-    browser_ip = payload.get("browser_ip")
+    notes = _note_attr_map(payload)
+    browser_ip = payload.get("browser_ip") or _cookie_from_notes(
+        notes, "browser_ip", "client_ip", "_client_ip", "client_ip_address"
+    )
     if browser_ip:
-        user_data["client_ip_address"] = str(browser_ip)
+        user_data["client_ip_address"] = str(browser_ip).strip()
+
     client_details = payload.get("client_details") or {}
-    ua = client_details.get("user_agent")
+    ua = (
+        client_details.get("user_agent")
+        or _cookie_from_notes(
+            notes, "user_agent", "client_user_agent", "_user_agent"
+        )
+    )
     if ua:
         user_data["client_user_agent"] = str(ua)
 
@@ -402,7 +413,7 @@ def build_browser_funnel_event(
     external_id: str | None = None,
 ) -> dict[str, Any]:
     """Build ViewContent / AddToCart (or similar) from browser beacon payload."""
-    allowed = {"ViewContent", "AddToCart", "InitiateCheckout", "Purchase"}
+    allowed = {"ViewContent", "AddToCart", "InitiateCheckout", "Purchase", "PageView", "Attribution"}
     if event_name not in allowed:
         raise ValueError(f"Unsupported event_name: {event_name}")
 

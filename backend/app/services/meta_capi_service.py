@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_value, encrypt_value
 from app.db.models import (
+    MetaCapiAttributionCache,
     MetaCapiEventLog,
     MetaCapiEventStatus,
     Store,
@@ -573,10 +574,23 @@ class MetaCapiService:
         if not settings.meta_pixel_id or not self._resolve_access_token(db, settings):
             raise HTTPException(status_code=400, detail="CAPI not configured")
 
+        # Always cache IP/UA/fbp for later Purchase enrichment (Phoenix omits Shopify browser fields)
+        self.remember_browser_attribution(
+            db,
+            store_id=store_id,
+            body=body,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+
         event_name = str(body.get("event_name") or "").strip()
         event_id = str(body.get("event_id") or "").strip()
         if not event_name or not event_id:
             raise HTTPException(status_code=400, detail="event_name and event_id required")
+
+        # Attribution-only ping — cache signals, do not spam Meta
+        if event_name == "Attribution":
+            return {"ok": True, "cached": True, "event_name": event_name}
 
         try:
             value = body.get("value")
@@ -712,6 +726,8 @@ class MetaCapiService:
         order_id = str(order.get("id") or "")
         if not order_id:
             raise HTTPException(status_code=400, detail="Order payload missing id")
+
+        order = self.enrich_order_payload(db, store_id=store.id, order=order)
 
         event = build_purchase_event(
             order,
@@ -887,6 +903,154 @@ class MetaCapiService:
             "results": results,
         }
 
+    def _upsert_attribution(
+        self,
+        db: Session,
+        *,
+        store_id: str,
+        lookup_key: str,
+        fbp: str | None = None,
+        fbc: str | None = None,
+        fbclid: str | None = None,
+        client_ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        key = (lookup_key or "").strip()[:191]
+        if not key:
+            return
+        row = db.scalar(
+            select(MetaCapiAttributionCache).where(
+                MetaCapiAttributionCache.store_id == store_id,
+                MetaCapiAttributionCache.lookup_key == key,
+            )
+        )
+        if not row:
+            row = MetaCapiAttributionCache(store_id=store_id, lookup_key=key)
+            db.add(row)
+        if fbp:
+            row.fbp = str(fbp)[:255]
+        if fbc:
+            row.fbc = str(fbc)[:512]
+        if fbclid:
+            row.fbclid = str(fbclid)[:255]
+        if client_ip:
+            row.client_ip = str(client_ip)[:64]
+        if user_agent:
+            row.user_agent = str(user_agent)[:2000]
+        row.updated_at = datetime.now(UTC)
+        db.commit()
+
+    def remember_browser_attribution(
+        self,
+        db: Session,
+        *,
+        store_id: str,
+        body: dict[str, Any],
+        client_ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        """Cache IP/UA/fbp from theme beacons for Purchase enrichment (Phoenix often omits them)."""
+        fbp = str(body.get("fbp") or "").strip() or None
+        fbc = str(body.get("fbc") or "").strip() or None
+        fbclid = str(body.get("fbclid") or "").strip() or None
+        cart_token = str(body.get("cart_token") or body.get("checkout_token") or "").strip() or None
+        ua = str(body.get("client_user_agent") or user_agent or "").strip() or None
+        ip = str(body.get("client_ip_address") or client_ip or "").strip() or None
+        if fbp:
+            self._upsert_attribution(
+                db,
+                store_id=store_id,
+                lookup_key=f"fbp:{fbp}",
+                fbp=fbp,
+                fbc=fbc,
+                fbclid=fbclid,
+                client_ip=ip,
+                user_agent=ua,
+            )
+        if cart_token:
+            self._upsert_attribution(
+                db,
+                store_id=store_id,
+                lookup_key=f"cart:{cart_token}",
+                fbp=fbp,
+                fbc=fbc,
+                fbclid=fbclid,
+                client_ip=ip,
+                user_agent=ua,
+            )
+
+    def enrich_order_payload(
+        self, db: Session, *, store_id: str, order: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fill missing browser_ip / UA / fbp from attribution cache into a copy of the order."""
+        payload = dict(order)
+        notes = {
+            str(a.get("name") or a.get("key") or "").strip(): str(a.get("value") or "").strip()
+            for a in (payload.get("note_attributes") or [])
+            if isinstance(a, dict)
+        }
+        attrs = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
+        for k, v in attrs.items():
+            if k and v is not None and str(v).strip():
+                notes[str(k)] = str(v).strip()
+
+        fbp = notes.get("_fbp") or notes.get("fbp") or ""
+        cart_token = (
+            str(payload.get("cart_token") or payload.get("checkout_token") or "").strip()
+            or notes.get("cart_token")
+            or ""
+        )
+
+        cache: MetaCapiAttributionCache | None = None
+        if cart_token:
+            cache = db.scalar(
+                select(MetaCapiAttributionCache).where(
+                    MetaCapiAttributionCache.store_id == store_id,
+                    MetaCapiAttributionCache.lookup_key == f"cart:{cart_token}",
+                )
+            )
+        if not cache and fbp:
+            cache = db.scalar(
+                select(MetaCapiAttributionCache).where(
+                    MetaCapiAttributionCache.store_id == store_id,
+                    MetaCapiAttributionCache.lookup_key == f"fbp:{fbp}",
+                )
+            )
+        if not cache:
+            return payload
+
+        if not payload.get("browser_ip") and cache.client_ip:
+            payload["browser_ip"] = cache.client_ip
+
+        details = dict(payload.get("client_details") or {})
+        if not details.get("user_agent") and cache.user_agent:
+            details["user_agent"] = cache.user_agent
+            payload["client_details"] = details
+
+        # Merge cookie signals into note_attributes when missing
+        merged = list(payload.get("note_attributes") or [])
+        existing_keys = {
+            str(a.get("name") or a.get("key") or "").lower()
+            for a in merged
+            if isinstance(a, dict)
+        }
+
+        def _add_note(name: str, value: str | None) -> None:
+            if not value:
+                return
+            if name.lower() in existing_keys:
+                return
+            merged.append({"name": name, "value": value})
+            existing_keys.add(name.lower())
+
+        _add_note("_fbp", cache.fbp)
+        _add_note("_fbc", cache.fbc)
+        _add_note("fbclid", cache.fbclid)
+        _add_note("user_agent", cache.user_agent)
+        _add_note("browser_ip", cache.client_ip)
+        payload["note_attributes"] = merged
+        return payload
+
     def _is_configured(self, db: Session, settings: StoreMetaCapiSettings) -> bool:
         return bool(settings.meta_pixel_id) and bool(self._resolve_access_token(db, settings))
 
@@ -909,6 +1073,8 @@ class MetaCapiService:
         token = self._resolve_access_token(db, settings)
         if not token or not settings.meta_pixel_id:
             return False
+
+        order = self.enrich_order_payload(db, store_id=store.id, order=order)
 
         event = build_purchase_event(
             order,
@@ -1125,6 +1291,9 @@ async def _send_capi_event_background(
                 order_payload, shop_domain=store.shop_domain or ""
             )
         else:
+            order_payload = service.enrich_order_payload(
+                db, store_id=store_id, order=order_payload
+            )
             event = build_purchase_event(
                 order_payload,
                 shop_domain=store.shop_domain or "",

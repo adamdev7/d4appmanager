@@ -648,3 +648,24 @@ class MetaCapiEventLog(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+
+class MetaCapiAttributionCache(Base):
+    """Browser session signals (IP/UA/fbp) keyed for later Purchase enrichment."""
+
+    __tablename__ = "meta_capi_attribution_cache"
+    __table_args__ = (
+        UniqueConstraint("store_id", "lookup_key", name="uq_meta_capi_attr_lookup"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    lookup_key: Mapped[str] = mapped_column(String(191), index=True)
+    fbp: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    fbc: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    fbclid: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
