@@ -79,9 +79,15 @@ class Store(Base):
     )
 
     owner: Mapped["User"] = relationship(back_populates="stores")
-    gmail_links: Mapped[list["GmailStoreLink"]] = relationship(back_populates="store")
-    email_templates: Mapped[list["EmailTemplate"]] = relationship(back_populates="store")
-    automation_rules: Mapped[list["EmailAutomationRule"]] = relationship(back_populates="store")
+    gmail_links: Mapped[list["GmailStoreLink"]] = relationship(
+        back_populates="store", cascade="all, delete-orphan", passive_deletes=True
+    )
+    email_templates: Mapped[list["EmailTemplate"]] = relationship(
+        back_populates="store", cascade="all, delete-orphan", passive_deletes=True
+    )
+    automation_rules: Mapped[list["EmailAutomationRule"]] = relationship(
+        back_populates="store", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class GmailAccountStatus(str, enum.Enum):

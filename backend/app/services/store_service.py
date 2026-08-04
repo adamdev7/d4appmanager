@@ -1,7 +1,8 @@
 import json
+import logging
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -12,6 +13,8 @@ from app.email_automation.default_templates import seed_store_automation_default
 from app.email_automation.webhook_topics import AUTOMATION_WEBHOOK_TOPICS
 from app.models.store import StoreSettingsUpdate
 from app.services.oauth_state_service import OAuthStateService
+
+logger = logging.getLogger(__name__)
 
 
 class StoreService:
@@ -126,6 +129,18 @@ class StoreService:
         store = db.get(Store, store_id)
         if not store or store.owner_id != user.id:
             return False
-        db.delete(store)
-        db.commit()
-        return True
+        # Use a Core DELETE so PostgreSQL ON DELETE CASCADE/SET NULL runs.
+        # ORM session.delete() was nulling email_templates.store_id (NOT NULL) and 500ing.
+        try:
+            result = db.execute(
+                delete(Store).where(Store.id == store_id, Store.owner_id == user.id)
+            )
+            db.commit()
+            return (result.rowcount or 0) > 0
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to delete store %s", store_id)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not delete store because related data could not be removed. Try again or contact support.",
+            ) from None
