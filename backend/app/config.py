@@ -6,6 +6,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Always load backend/.env (uvicorn reload only watches app/ — .env edits need a restart)
 _ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
+# Canonical production host — Shopify OAuth + webhooks use this unless a dev tunnel is explicitly allowed
+PRODUCTION_PUBLIC_URL = "https://appmanager.store"
+
+
+def _is_ephemeral_public_url(url: str) -> bool:
+    u = (url or "").lower()
+    return any(
+        marker in u
+        for marker in (
+            "ngrok",
+            "localhost",
+            "127.0.0.1",
+            "loca.lt",
+            "trycloudflare",
+            "cloudflare.com",
+        )
+    )
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -19,8 +37,12 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
 
     # Public URLs (OAuth redirects, email links)
-    app_url: str = "http://127.0.0.1:8000"
-    frontend_url: str = "http://localhost:5173"
+    app_url: str = PRODUCTION_PUBLIC_URL
+    frontend_url: str = PRODUCTION_PUBLIC_URL
+    # Shopify OAuth/webhooks always use this host (override only if needed)
+    shopify_public_url: str = PRODUCTION_PUBLIC_URL
+    # Set true ONLY for local Shopify testing with ngrok (also whitelist that tunnel in Partners)
+    shopify_allow_dev_tunnel: bool = False
 
     database_url: str = "sqlite:///./data/app_manager.db"
 
@@ -98,8 +120,31 @@ class Settings(BaseSettings):
     yunexpress_api_url: str = "https://api.yunexpress.com"
 
     @property
+    def shopify_oauth_base(self) -> str:
+        """Public origin used for Shopify OAuth redirect_uri and webhook registration."""
+        if self.shopify_allow_dev_tunnel and self.debug:
+            base = (self.app_url or PRODUCTION_PUBLIC_URL).rstrip("/")
+            return base
+        base = (self.shopify_public_url or PRODUCTION_PUBLIC_URL).rstrip("/")
+        if _is_ephemeral_public_url(base):
+            return PRODUCTION_PUBLIC_URL
+        return base
+
+    @property
     def shopify_redirect_uri(self) -> str:
-        return f"{self.app_url.rstrip('/')}{self.api_prefix}/stores/shopify/callback"
+        return f"{self.shopify_oauth_base}{self.api_prefix}/stores/shopify/callback"
+
+    @property
+    def shopify_webhook_base(self) -> str:
+        return self.shopify_oauth_base
+
+    @property
+    def public_frontend_url(self) -> str:
+        """Where browsers return after Shopify OAuth."""
+        fu = (self.frontend_url or PRODUCTION_PUBLIC_URL).rstrip("/")
+        if not self.debug and _is_ephemeral_public_url(fu):
+            return PRODUCTION_PUBLIC_URL
+        return fu
 
     @property
     def google_redirect_uri(self) -> str:

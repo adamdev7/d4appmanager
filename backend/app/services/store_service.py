@@ -48,6 +48,13 @@ class StoreService:
         shop_domain = shop.strip().lower()
         client = ShopifyClient(shop_domain)
         state = OAuthStateService.create(db, "shopify", user.id, {"shop": client.shop_domain})
+        # Shopify OAuth redirect is always the production host unless a tunnel is opted in
+        redirect = settings.shopify_redirect_uri
+        if "appmanager.store" not in redirect and not settings.shopify_allow_dev_tunnel:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Shopify OAuth is misconfigured: redirect must use https://appmanager.store",
+            )
         return client.build_install_url(state)
 
     async def complete_shopify_oauth(
@@ -89,7 +96,9 @@ class StoreService:
         db.commit()
         db.refresh(store)
 
-        webhook_url = f"{settings.app_url.rstrip('/')}{settings.api_prefix}/webhooks/shopify"
+        webhook_url = (
+            f"{settings.shopify_webhook_base}{settings.api_prefix}/webhooks/shopify"
+        )
         for topic in AUTOMATION_WEBHOOK_TOPICS:
             try:
                 await client.register_webhook(topic, webhook_url)

@@ -28,7 +28,10 @@ async def shopify_install(
     db: Session = Depends(get_db),
 ):
     url = _stores.begin_shopify_install(db, user, shop)
-    return {"authorize_url": url}
+    return {
+        "authorize_url": url,
+        "redirect_uri": settings.shopify_redirect_uri,
+    }
 
 
 @router.get("/shopify/callback")
@@ -40,7 +43,7 @@ async def shopify_callback(
 ):
     _, store = await _stores.complete_shopify_oauth(db, shop, code, state)
     return RedirectResponse(
-        f"{settings.frontend_url}/settings/stores?connected=1&store_id={store.id}"
+        f"{settings.public_frontend_url}/settings/stores?connected=1&store_id={store.id}"
     )
 
 
