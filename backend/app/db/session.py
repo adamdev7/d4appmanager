@@ -517,6 +517,7 @@ def _migrate_analytics_mrr_columns() -> None:
         ("mrr_manual_subscribers", "INTEGER DEFAULT 0"),
         ("mrr_manual_churn_pct", "VARCHAR(8) DEFAULT '0'"),
         ("mrr_currency", "VARCHAR(8)"),
+        ("display_currency", "VARCHAR(8)"),
         ("mrr_webhook_secret_encrypted", "TEXT"),
         ("mrr_webhook_secret_hint", "VARCHAR(8)"),
         ("mrr_last_synced_at", "TIMESTAMP" if dialect == "sqlite" else "TIMESTAMPTZ"),

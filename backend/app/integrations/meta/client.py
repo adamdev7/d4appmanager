@@ -77,6 +77,21 @@ class MetaAdsClient:
                 return False, f"Ad account '{name}' is not active (status {status})", name
             return True, f"Connected to {name}", name
 
+    async def get_account_currency(self) -> str | None:
+        """Return the Meta ad account billing currency (e.g. CAD). Never assume store currency."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{META_GRAPH_BASE}/{self.ad_account_id}",
+                params={
+                    "access_token": self.access_token,
+                    "fields": "currency",
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            raw = (resp.json().get("currency") or "").strip().upper()
+            return raw or None
+
     async def get_account_insights(
         self,
         *,

@@ -11,6 +11,8 @@ class AnalyticsSettingsUpdate(BaseModel):
     prior_external_revenue: float | None = None
     prior_external_costs: float | None = None
     prior_external_label: str | None = None
+    # Analytics display currency: USD | CAD | GBP (or "" to use store currency)
+    display_currency: str | None = None
     mrr_enabled: bool | None = None
     mrr_source: str | None = None  # manual | multi_stripe
     mrr_manual_amount: float | None = None

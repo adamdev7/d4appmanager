@@ -55,6 +55,8 @@ const PERIODS: Array<{ id: Exclude<AnalyticsPeriod, "custom">; label: string }> 
   { id: "all", label: "All time" },
 ];
 
+const DISPLAY_CURRENCIES = ["USD", "CAD", "GBP"] as const;
+
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -97,6 +99,7 @@ export function AnalyticsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [holdBreakdownOpen, setHoldBreakdownOpen] = useState(false);
+  const [savingCurrency, setSavingCurrency] = useState(false);
 
   const load = useCallback(async () => {
     if (!storeId) {
@@ -194,9 +197,25 @@ export function AnalyticsPage() {
     );
   }
 
-  const currency = dashboard?.currency ?? settings?.currency ?? "USD";
+  const currency = dashboard?.currency ?? settings?.display_currency ?? settings?.currency ?? "USD";
   const storeCurrency = dashboard?.store_currency ?? settings?.currency ?? currency;
-  const mrrCurrency = dashboard?.mrr?.currency || storeCurrency || currency;
+  const mrrCurrency = dashboard?.mrr?.currency || currency;
+
+  const setDisplayCurrency = async (code: string) => {
+    if (!storeId || savingCurrency || code === currency) return;
+    setSavingCurrency(true);
+    setError("");
+    try {
+      await api.analytics.updateSettings(storeId, { display_currency: code });
+      setRefreshing(true);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update currency");
+    } finally {
+      setSavingCurrency(false);
+    }
+  };
+
   const summary = dashboard?.summary;
   const stripeBalance = summary?.stripe_balance;
   const balanceHolds = stripeBalance?.holds ?? [];
@@ -306,16 +325,16 @@ export function AnalyticsPage() {
       )}
 
       {tab === "products" && (
-        <ProductCostsPanel storeId={storeId} currency={currency} />
+        <ProductCostsPanel storeId={storeId} currency={storeCurrency} />
       )}
 
       {tab === "investments" && (
-        <ManualInvestmentPanel storeId={storeId} currency={currency} onChanged={() => load()} />
+        <ManualInvestmentPanel storeId={storeId} currency={storeCurrency} onChanged={() => load()} />
       )}
 
       {tab === "dashboard" && (
         <>
-          {/* Period selector */}
+          {/* Period + currency selectors */}
           <div className="flex flex-wrap items-center gap-2">
             {PERIODS.map((p) => (
               <button
@@ -377,6 +396,25 @@ export function AnalyticsPage() {
                   </div>
                 </div>
               )}
+            </div>
+            <div className="flex items-center gap-1 sm:ml-auto border border-border rounded-lg p-0.5">
+              {DISPLAY_CURRENCIES.map((code) => (
+                <button
+                  key={code}
+                  type="button"
+                  disabled={savingCurrency}
+                  onClick={() => setDisplayCurrency(code)}
+                  title={`Show analytics in ${code}`}
+                  className={cn(
+                    "px-2.5 py-1.5 rounded-md text-xs font-semibold transition-colors",
+                    currency === code
+                      ? "bg-brand-600 text-white"
+                      : "text-content-muted hover:text-content"
+                  )}
+                >
+                  {code}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -722,9 +760,15 @@ export function AnalyticsPage() {
                   <p className="text-sm text-content-muted">
                     {summary.stripe_fx_note}
                     {summary.stripe_revenue_native != null && summary.stripe_currency
-                      ? ` · Native total ${formatMoney(summary.stripe_revenue_native, summary.stripe_currency)}`
+                      ? ` · Stripe native ${formatMoney(summary.stripe_revenue_native, summary.stripe_currency)}`
                       : ""}
-                    . Meta ad spend stays in {storeCurrency}.
+                    {summary.ad_spend_native != null &&
+                    (dashboard.meta_currency || summary.ad_spend_currency)
+                      ? ` · Meta native ${formatMoney(
+                          summary.ad_spend_native,
+                          dashboard.meta_currency || summary.ad_spend_currency || "CAD"
+                        )}`
+                      : ""}
                   </p>
                 </Card>
               )}
@@ -732,7 +776,12 @@ export function AnalyticsPage() {
               {currency !== storeCurrency && !summary.stripe_fx_note && (
                 <Card padding="md" className="border-border bg-surface-muted/40">
                   <p className="text-sm text-content-muted">
-                    P&amp;L currency is {currency}; store currency is {storeCurrency}.
+                    Showing {currency}
+                    {dashboard.meta_currency && dashboard.meta_currency !== currency
+                      ? ` · Meta Ads from ${dashboard.meta_currency}`
+                      : ""}
+                    {storeCurrency !== currency ? ` · Shopify from ${storeCurrency}` : ""}
+                    .
                   </p>
                 </Card>
               )}

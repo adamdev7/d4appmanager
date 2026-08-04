@@ -48,6 +48,33 @@ def _money(value: Decimal) -> float:
     return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+# User-selectable analytics display currencies (Shopify store currency remains the source of truth for COGS).
+ANALYTICS_DISPLAY_CURRENCIES = frozenset({"USD", "CAD", "GBP"})
+
+
+def _resolve_display_currency(raw: str | None, store_currency: str) -> str:
+    code = (raw or "").upper().strip()
+    if code in ANALYTICS_DISPLAY_CURRENCIES:
+        return code
+    return (store_currency or "USD").upper()
+
+
+async def _fx_to_display(
+    amount: Decimal,
+    *,
+    from_currency: str | None,
+    to_currency: str,
+) -> tuple[Decimal, Decimal]:
+    """Convert a source-native amount into the display currency. Returns (converted, rate)."""
+    src = (from_currency or "").upper().strip()
+    dst = (to_currency or "").upper().strip()
+    if not src or not dst or src == dst or amount == 0:
+        return amount, Decimal("1")
+    return await convert_amount_with_rate(
+        amount, from_currency=src, to_currency=dst
+    )
+
+
 def _pct(numerator: Decimal, denominator: Decimal) -> float:
     if denominator <= 0:
         return 0.0
@@ -115,6 +142,9 @@ class AnalyticsService:
             "store_name": store.name,
             "shop_domain": store.shop_domain,
             "currency": (store.currency or "USD").upper(),
+            "display_currency": _resolve_display_currency(
+                row.display_currency, store.currency or "USD"
+            ),
             "shopify_connected": store.status == StoreStatus.CONNECTED.value,
             "meta_configured": meta_configured,
             "meta_token_masked": self._masked_hint(row.meta_access_token_hint, bool(row.meta_access_token_encrypted)),
@@ -190,6 +220,19 @@ class AnalyticsService:
         if body.get("prior_external_label") is not None:
             label = str(body["prior_external_label"]).strip()[:64]
             row.prior_external_label = label or "Prior site (Stripe)"
+
+        if "display_currency" in body:
+            raw = body.get("display_currency")
+            if raw is None or str(raw).strip() == "":
+                row.display_currency = None
+            else:
+                code = str(raw).strip().upper()
+                if code not in ANALYTICS_DISPLAY_CURRENCIES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="display_currency must be USD, CAD, or GBP",
+                    )
+                row.display_currency = code
 
         if body.get("mrr_enabled") is not None:
             row.mrr_enabled = bool(body["mrr_enabled"])
@@ -1137,6 +1180,10 @@ class AnalyticsService:
             custom_until=custom_until,
         )
         currency = (store.currency or "USD").upper()
+        store_currency = currency
+        pnl_currency = _resolve_display_currency(settings_row.display_currency, store_currency)
+        display_fx_note: str | None = None
+        store_to_pnl_rate = Decimal("1")
 
         cost_map = {
             (r.shopify_product_id, r.shopify_variant_id): _d(r.cost_per_unit)
@@ -1391,12 +1438,135 @@ class AnalyticsService:
         elif meta_configured:
             meta_error = "Could not decrypt Meta credentials — re-save your access token."
 
-        # --- Stripe period revenue: settlement currency (usually CAD) ---
+        # Meta billing currency is independent of Shopify/Stripe — never assume store currency.
+        # Default CAD when Meta is connected but currency lookup fails (common for this account).
+        meta_currency = "CAD"
+        if meta_client:
+            try:
+                detected_meta = await meta_client.get_account_currency()
+                if detected_meta:
+                    meta_currency = detected_meta
+            except Exception:
+                pass
+
+        # Preserve source-native Meta amounts before any display FX
+        ad_spend_native = ad_spend
+        meta_purchase_value_native = meta_purchase_value
+        ad_spend_currency = meta_currency
+
+        fx_notes: list[str] = []
+
+        # --- Convert each source independently into display preference ---
+        # Shopify (store currency) → display
+        if store_currency != pnl_currency and (
+            revenue != 0
+            or cogs != 0
+            or shipping_costs != 0
+            or prior_revenue != 0
+            or prior_costs != 0
+        ):
+            try:
+                _, store_to_pnl_rate = await _fx_to_display(
+                    Decimal("1"),
+                    from_currency=store_currency,
+                    to_currency=pnl_currency,
+                )
+
+                def _fx_shopify(amount: Decimal) -> Decimal:
+                    if amount == 0 or store_to_pnl_rate == 1:
+                        return amount
+                    return (amount * store_to_pnl_rate).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+
+                revenue = _fx_shopify(revenue)
+                refunds = _fx_shopify(refunds)
+                cogs = _fx_shopify(cogs)
+                shipping_costs = _fx_shopify(shipping_costs)
+                transaction_fees = _fx_shopify(transaction_fees)
+                shipping_per_order = _fx_shopify(shipping_per_order)
+                prior_revenue = _fx_shopify(prior_revenue)
+                prior_costs = _fx_shopify(prior_costs)
+                for day_vals in daily_shopify.values():
+                    day_vals["revenue"] = _fx_shopify(day_vals["revenue"])
+                for ps in product_stats.values():
+                    ps["revenue"] = _fx_shopify(ps["revenue"])
+                    ps["cogs"] = _fx_shopify(ps["cogs"])
+                for order in orders_data:
+                    order["total"] = _money(_fx_shopify(_d(order["total"])))
+                    order["cogs"] = _money(_fx_shopify(_d(order["cogs"])))
+                    order["profit"] = _money(_fx_shopify(_d(order["profit"])))
+                fx_notes.append(
+                    f"Shopify {store_currency} → {pnl_currency} @ {float(store_to_pnl_rate):.4f}"
+                )
+            except FxError as e:
+                pnl_currency = store_currency
+                store_to_pnl_rate = Decimal("1")
+                meta_error = (
+                    f"{meta_error + '; ' if meta_error else ''}"
+                    f"Shopify FX {store_currency}→display failed: {e}"
+                )
+
+        # Meta (ad account currency, usually CAD) → display — separate from Shopify/Stripe
+        if meta_currency != pnl_currency and (
+            ad_spend != 0 or meta_purchase_value != 0 or campaigns
+        ):
+            try:
+                _, meta_to_pnl_rate = await _fx_to_display(
+                    Decimal("1"),
+                    from_currency=meta_currency,
+                    to_currency=pnl_currency,
+                )
+
+                def _fx_meta(amount: Decimal) -> Decimal:
+                    if amount == 0 or meta_to_pnl_rate == 1:
+                        return amount
+                    return (amount * meta_to_pnl_rate).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+
+                ad_spend = _fx_meta(ad_spend)
+                meta_purchase_value = _fx_meta(meta_purchase_value)
+                for day_vals in daily_meta.values():
+                    day_vals["spend"] = _fx_meta(day_vals["spend"])
+                    day_vals["purchase_value"] = _fx_meta(day_vals["purchase_value"])
+                for camp in campaigns:
+                    camp["spend"] = _money(_fx_meta(_d(camp["spend"])))
+                    camp["cpc"] = _money(_fx_meta(_d(camp["cpc"])))
+                    camp["purchase_value"] = _money(_fx_meta(_d(camp["purchase_value"])))
+                    camp["cpa"] = _money(_fx_meta(_d(camp["cpa"])))
+                fx_notes.append(
+                    f"Meta Ads {meta_currency} → {pnl_currency} @ {float(meta_to_pnl_rate):.4f}"
+                )
+            except FxError as e:
+                # Never mix Meta-native amounts into a different display currency P&L
+                ad_spend = Decimal("0")
+                meta_purchase_value = Decimal("0")
+                for day_vals in daily_meta.values():
+                    day_vals["spend"] = Decimal("0")
+                    day_vals["purchase_value"] = Decimal("0")
+                for camp in campaigns:
+                    camp["spend"] = 0
+                    camp["cpc"] = 0
+                    camp["purchase_value"] = 0
+                    camp["cpa"] = 0
+                meta_error = (
+                    f"{meta_error + '; ' if meta_error else ''}"
+                    f"Meta FX {meta_currency}→{pnl_currency} failed — ad spend excluded from P&L "
+                    f"until rates are available (native {meta_currency} {_money(ad_spend_native)}). {e}"
+                )
+
+        if fx_notes:
+            display_fx_note = (
+                f"Analytics shown in {pnl_currency}. " + "; ".join(fx_notes)
+            )
+
+        # --- Stripe period revenue: keep settlement-native, convert later to display ---
         store_currency = currency
         stripe_totals = await self._stripe_period_totals(
             db, store_id, since=since, until=until, currency=store_currency
         )
-        # Settlement-native amounts (balance_transaction currency — CAD for this MID)
+        # Settlement-native amounts (balance_transaction currency — may be CAD/USD/GBP)
         stripe_gross_native = Decimal(str(stripe_totals["gross"]))
         stripe_fees_native = Decimal(str(stripe_totals["fees"]))
         stripe_net_native = Decimal(str(stripe_totals["net"]))
@@ -1410,15 +1580,15 @@ class AnalyticsService:
         stripe_one_time_count = int(stripe_totals.get("one_time_count") or 0)
         stripe_refund_count = int(stripe_totals.get("refund_count") or 0)
         stripe_currency = (
-            str(stripe_totals.get("currency") or store_currency or "").upper() or None
+            str(stripe_totals.get("currency") or "").upper() or None
         )
         stripe_error = stripe_totals.get("error")
         stripe_connected = int(stripe_totals.get("account_count") or 0) > 0
 
         disputes_raw = stripe_totals.get("disputes") or {}
         dispute_currency = str(
-            disputes_raw.get("currency") or stripe_currency or store_currency or ""
-        ).upper() or store_currency
+            disputes_raw.get("currency") or stripe_currency or ""
+        ).upper() or None
         dispute_amount_native = Decimal(str(disputes_raw.get("amount") or 0))
         dispute_open_amount_native = Decimal(str(disputes_raw.get("open_amount") or 0))
         dispute_won_amount_native = Decimal(str(disputes_raw.get("won_amount") or 0))
@@ -1426,8 +1596,8 @@ class AnalyticsService:
 
         balance_raw = stripe_totals.get("balance") or {}
         balance_currency = str(
-            balance_raw.get("currency") or stripe_currency or store_currency or ""
-        ).upper() or store_currency
+            balance_raw.get("currency") or stripe_currency or ""
+        ).upper() or None
         balance_available_native = Decimal(str(balance_raw.get("available") or 0))
         balance_pending_native = Decimal(str(balance_raw.get("pending") or 0))
         balance_delay_days = balance_raw.get("delay_days")
@@ -1444,10 +1614,6 @@ class AnalyticsService:
             for h in (balance_raw.get("holds") or [])
             if int(h.get("days") or 0) > 0
         ]
-
-        pnl_currency = store_currency  # P&L always in store currency (CAD)
-        ad_spend_native = ad_spend
-        ad_spend_currency = store_currency  # Meta stays in store currency — never GBP
 
         daily_stripe_native = {
             d: Decimal(str(v)) for d, v in (stripe_totals.get("daily_net") or {}).items()
@@ -1466,7 +1632,7 @@ class AnalyticsService:
             d: Decimal(str(v)) for d, v in (stripe_totals.get("daily_gross") or {}).items()
         }
 
-        # Settlement totals are already usually CAD — only FX when settlement ≠ store
+        # Start from Stripe-native amounts; convert only stripe_currency → display
         stripe_net = stripe_net_native
         stripe_gross = stripe_gross_native
         stripe_fees = stripe_fees_native
@@ -1490,125 +1656,130 @@ class AnalyticsService:
         if (
             stripe_connected
             and stripe_currency
-            and stripe_currency != store_currency
+            and stripe_currency != pnl_currency
             and (stripe_net_native != 0 or stripe_gross_native > 0)
         ):
             try:
                 stripe_net, daily_stripe_cad = await convert_daily_map(
                     daily_stripe_native,
                     from_currency=stripe_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                     since=since,
                     until=until,
                 )
                 stripe_fees, _ = await convert_daily_map(
                     daily_fees_native_map,
                     from_currency=stripe_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                     since=since,
                     until=until,
                 )
                 stripe_sub_net, _ = await convert_daily_map(
                     daily_sub_native,
                     from_currency=stripe_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                     since=since,
                     until=until,
                 )
                 stripe_one_time_net, _ = await convert_daily_map(
                     daily_one_native,
                     from_currency=stripe_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                     since=since,
                     until=until,
                 )
                 stripe_gross, _ = await convert_daily_map(
                     daily_gross_native,
                     from_currency=stripe_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                     since=since,
                     until=until,
                 )
                 stripe_sub_gross = await convert_amount(
                     stripe_sub_gross_native,
                     from_currency=stripe_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
                 stripe_one_time_gross = await convert_amount(
                     stripe_one_time_gross_native,
                     from_currency=stripe_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
                 stripe_refunds = await convert_amount(
                     stripe_refunds_native,
                     from_currency=stripe_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
                 stripe_fx_note = (
-                    f"Stripe settlement {stripe_currency} → {store_currency} "
+                    f"Stripe settlement {stripe_currency} → {pnl_currency} "
                     f"using historical daily FX rates"
                 )
             except FxError as e:
                 stripe_error = (
                     f"{stripe_error + '; ' if stripe_error else ''}"
-                    f"FX {stripe_currency}→{store_currency} failed: {e}"
+                    f"FX {stripe_currency}→{pnl_currency} failed: {e}"
                 )
                 stripe_fx_note = None
-        elif stripe_connected and stripe_currency == store_currency:
+        elif stripe_connected and stripe_currency == pnl_currency:
             stripe_fx_note = (
-                f"Stripe settles in {store_currency} — charge presentment may differ "
+                f"Stripe settles in {pnl_currency} — charge presentment may differ "
                 f"(e.g. GBP/USD) but P&L uses Stripe balance amounts"
             )
 
-        # Dispute amounts may be in presentment currency (GBP) even when settlement is CAD
-        if dispute_currency and dispute_currency != store_currency and dispute_amount_native > 0:
+        if display_fx_note and not stripe_fx_note:
+            stripe_fx_note = display_fx_note
+        elif display_fx_note and stripe_fx_note and display_fx_note not in stripe_fx_note:
+            stripe_fx_note = f"{stripe_fx_note}. {display_fx_note}"
+
+        # Disputes keep their own Stripe dispute currency → display
+        if dispute_currency and dispute_currency != pnl_currency and dispute_amount_native > 0:
             try:
                 dispute_amount = await convert_amount(
                     dispute_amount_native,
                     from_currency=dispute_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
                 dispute_open_amount = await convert_amount(
                     dispute_open_amount_native,
                     from_currency=dispute_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
                 dispute_won_amount = await convert_amount(
                     dispute_won_amount_native,
                     from_currency=dispute_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
                 dispute_lost_amount = await convert_amount(
                     dispute_lost_amount_native,
                     from_currency=dispute_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
             except FxError:
                 pass
 
-        # Cash balance snapshot may settle in a different currency than the store
+        # Cash balance keeps its own Stripe balance currency → display
         if (
             balance_currency
-            and balance_currency != store_currency
+            and balance_currency != pnl_currency
             and (balance_available_native != 0 or balance_pending_native != 0)
         ):
             try:
                 balance_available = await convert_amount(
                     balance_available_native,
                     from_currency=balance_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
                 balance_pending = await convert_amount(
                     balance_pending_native,
                     from_currency=balance_currency,
-                    to_currency=store_currency,
+                    to_currency=pnl_currency,
                 )
                 converted_holds = []
                 for h in balance_holds_native:
                     amt = await convert_amount(
                         h["amount"],
                         from_currency=balance_currency,
-                        to_currency=store_currency,
+                        to_currency=pnl_currency,
                     )
                     converted_holds.append({"days": h["days"], "amount": amt})
                 balance_holds = converted_holds
@@ -1669,9 +1840,31 @@ class AnalyticsService:
             db, store_id, since=since, until=until
         )
         investment_cost = Decimal(str(investment_period.get("total") or 0))
+        investment_items = list(investment_period.get("items") or [])
+        # Manual investments are entered in store currency — convert separately from Meta/Stripe
+        if store_currency != pnl_currency and investment_cost != 0:
+            try:
+                investment_cost, inv_rate = await _fx_to_display(
+                    investment_cost,
+                    from_currency=store_currency,
+                    to_currency=pnl_currency,
+                )
+                investment_items = [
+                    {
+                        **it,
+                        "amount": float(
+                            (_d(it.get("amount")) * inv_rate).quantize(
+                                Decimal("0.01"), rounding=ROUND_HALF_UP
+                            )
+                        ),
+                    }
+                    for it in investment_items
+                ]
+            except FxError:
+                pass
         net_profit = (
             gross_profit - ad_spend - chargeback_cost - investment_cost
-        )  # ad_spend stays in store currency
+        )
 
         meta_est_variable_costs = Decimal("0")
         meta_est_gross_profit = Decimal("0")
@@ -1683,7 +1876,12 @@ class AnalyticsService:
             variable_cost_rate = (cogs + shipping_costs) / base_revenue
 
         mer = _money(display_revenue / ad_spend) if ad_spend > 0 and display_revenue > 0 else 0
-        meta_roas = _money(meta_purchase_value / ad_spend_native) if ad_spend_native > 0 and meta_purchase_value > 0 else 0
+        # Meta ROAS must use same-currency native amounts (never mix Meta CAD with display USD)
+        meta_roas = (
+            _money(meta_purchase_value_native / ad_spend_native)
+            if ad_spend_native > 0 and meta_purchase_value_native > 0
+            else 0
+        )
         roas = mer
         cpa = _money(ad_spend / _d(order_count)) if order_count > 0 and ad_spend > 0 else 0
         if order_count == 0 and stripe_charge_count > 0 and ad_spend > 0:
@@ -1695,7 +1893,7 @@ class AnalyticsService:
         if aov == 0 and stripe_charge_count > 0 and stripe_gross > 0:
             aov = _money(stripe_gross / _d(stripe_charge_count))
         meta_aov = (
-            _money(meta_purchase_value / _d(meta_purchases)) if meta_purchases > 0 else 0
+            _money(meta_purchase_value_native / _d(meta_purchases)) if meta_purchases > 0 else 0
         )
         margin_before_ads = _pct(gross_profit, display_revenue)
         net_margin = _pct(net_profit, display_revenue)
@@ -1851,9 +2049,19 @@ class AnalyticsService:
                     "title": "Currency conversion",
                     "message": (
                         f"{stripe_fx_note}. "
-                        f"Settlement net: {stripe_currency} {_money(stripe_net_native)}. "
-                        f"Meta ad spend remains in {store_currency}."
+                        f"Settlement net: {stripe_currency or '—'} {_money(stripe_net_native)}. "
+                        f"Meta Ads kept in {meta_currency} then converted to {pnl_currency}."
                     ),
+                    "action": None,
+                },
+            )
+        elif display_fx_note:
+            insights.insert(
+                0,
+                {
+                    "level": "info",
+                    "title": "Currency conversion",
+                    "message": display_fx_note,
                     "action": None,
                 },
             )
@@ -1868,7 +2076,7 @@ class AnalyticsService:
                     "title": "Chargebacks / disputes",
                     "message": (
                         f"{dispute_count} dispute(s) this period · "
-                        f"{store_currency} {_money(dispute_amount)} "
+                        f"{pnl_currency} {_money(dispute_amount)} "
                         f"({dispute_rate_pct:.2f}% of Stripe gross). "
                         f"Open {int(disputes_raw.get('open_count') or 0)}, "
                         f"lost {int(disputes_raw.get('lost_count') or 0)}, "
@@ -1886,13 +2094,13 @@ class AnalyticsService:
             db,
             store_id,
             settings_row,
-            store_currency=store_currency,
+            store_currency=pnl_currency,
             # MRR is billed in presentment currency (often GBP) — not settlement CAD
             stripe_native_currency=(settings_row.mrr_currency or None),
         )
         if mrr_block:
             if not mrr_block.get("currency"):
-                mrr_block["currency"] = store_currency or pnl_currency or currency
+                mrr_block["currency"] = pnl_currency
             if mrr_block["mrr"] > 0 and ad_spend > 0:
                 months_to_recover = float(ad_spend) / mrr_block["mrr"] if mrr_block["mrr"] else 0
                 insights.append(
@@ -1938,9 +2146,11 @@ class AnalyticsService:
         return {
             "store_id": store_id,
             "store_name": store.name,
-            # Primary display currency for revenue / profit = store currency (CAD)
+            # Primary display currency for revenue / profit (user preference)
             "currency": pnl_currency,
             "store_currency": store_currency,
+            "display_currency": pnl_currency,
+            "meta_currency": meta_currency,
             "stripe_currency": stripe_currency,
             "period": period,
             "chart_granularity": "monthly" if use_monthly else "daily",
@@ -1983,7 +2193,7 @@ class AnalyticsService:
                     # P&L uses lost + open only; won stays in / returns to profit
                     "pnl_cost": _money(chargeback_cost),
                     "recovered": _money(chargeback_recovered),
-                    "currency": store_currency,
+                    "currency": pnl_currency,
                     "native_currency": dispute_currency,
                     "rate_pct": dispute_rate_pct,
                     "reasons": disputes_raw.get("reasons") or {},
@@ -1991,7 +2201,7 @@ class AnalyticsService:
                 "stripe_balance": {
                     "available": _money(balance_available),
                     "pending": _money(balance_pending),
-                    "currency": store_currency,
+                    "currency": pnl_currency,
                     "native_currency": balance_currency,
                     "native_available": _money(balance_available_native),
                     "native_pending": _money(balance_pending_native),
@@ -2013,7 +2223,7 @@ class AnalyticsService:
                             "investment_date": it["investment_date"],
                             "note": it.get("note"),
                         }
-                        for it in (investment_period.get("items") or [])
+                        for it in investment_items
                     ],
                 },
                 "approx_revenue": _money(approx_revenue),
@@ -2140,7 +2350,8 @@ class AnalyticsService:
                     "message": (
                         f"Period revenue is Stripe net charges ({money(approx_revenue)}) in "
                         f"{currency} — subscriptions and one-time payments, converted with "
-                        f"historical daily FX when needed. Meta ad spend stays in {currency}."
+                        f"historical daily FX when needed. Meta ad spend is converted from its "
+                        f"own ad-account currency into {currency}."
                     ),
                     "action": "MRR is current run-rate only and is shown separately.",
                 }

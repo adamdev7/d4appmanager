@@ -454,6 +454,8 @@ class StoreAnalyticsSettings(Base):
     mrr_manual_churn_pct: Mapped[str] = mapped_column(String(8), default="0")
     # ISO currency of stored MRR amounts (Stripe native, e.g. GBP — converted to store CAD on read)
     mrr_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # Preferred analytics display currency (USD | CAD | GBP). Null = Shopify store currency.
+    display_currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
     mrr_webhook_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     mrr_webhook_secret_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
     mrr_last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

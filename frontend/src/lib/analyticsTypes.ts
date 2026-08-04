@@ -32,6 +32,8 @@ export type AnalyticsSettings = {
   store_name: string;
   shop_domain: string;
   currency: string;
+  /** Preferred analytics display currency (USD | CAD | GBP). Defaults to store currency. */
+  display_currency?: string;
   shopify_connected: boolean;
   meta_configured: boolean;
   meta_token_masked: string | null;
@@ -87,6 +89,9 @@ export type AnalyticsDashboard = {
   store_name: string;
   currency: string;
   store_currency?: string;
+  display_currency?: string;
+  /** Meta ad account billing currency (often CAD) — independent of Shopify/Stripe. */
+  meta_currency?: string;
   stripe_currency?: string | null;
   period: AnalyticsPeriod;
   chart_granularity: "daily" | "monthly";

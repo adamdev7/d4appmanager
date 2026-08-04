@@ -10,6 +10,7 @@ import {
   TestTube2,
   Trash2,
   Wallet,
+  CircleDollarSign,
 } from "lucide-react";
 import { api, type AnalyticsSettings } from "@/lib/api";
 import type { AnalyticsStripeAccount } from "@/lib/analyticsTypes";
@@ -18,6 +19,12 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Ca
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
+
+const DISPLAY_CURRENCIES = [
+  { code: "USD", label: "US Dollar ($)" },
+  { code: "CAD", label: "Canadian Dollar ($)" },
+  { code: "GBP", label: "British Pound (£)" },
+] as const;
 
 type Props = {
   storeId: string;
@@ -35,6 +42,7 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
   const [priorRevenue, setPriorRevenue] = useState("0");
   const [priorCosts, setPriorCosts] = useState("0");
   const [priorLabel, setPriorLabel] = useState("Prior site (Stripe)");
+  const [displayCurrency, setDisplayCurrency] = useState("USD");
   const [mrrEnabled, setMrrEnabled] = useState(false);
   const [mrrSource, setMrrSource] = useState<"manual" | "multi_stripe">("manual");
   const [mrrAmount, setMrrAmount] = useState("0");
@@ -61,6 +69,9 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
     setPriorRevenue(String(settings.prior_external_revenue ?? 0));
     setPriorCosts(String(settings.prior_external_costs ?? 0));
     setPriorLabel(settings.prior_external_label || "Prior site (Stripe)");
+    setDisplayCurrency(
+      (settings.display_currency || settings.currency || "USD").toUpperCase()
+    );
     setMrrEnabled(Boolean(settings.mrr_enabled));
     setMrrSource(settings.mrr_source === "multi_stripe" ? "multi_stripe" : "manual");
     setMrrAmount(String(settings.mrr_manual_amount ?? 0));
@@ -85,6 +96,7 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
         prior_external_revenue: parseFloat(priorRevenue) || 0,
         prior_external_costs: parseFloat(priorCosts) || 0,
         prior_external_label: priorLabel.trim() || "Prior site (Stripe)",
+        display_currency: displayCurrency,
         mrr_enabled: mrrEnabled,
         mrr_source: mrrSource,
         mrr_manual_amount: parseFloat(mrrAmount) || 0,
@@ -97,6 +109,7 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
       setMetaToken("");
       if (saved.mrr_webhook_secret) setFreshWebhookSecret(saved.mrr_webhook_secret);
       setStripeAccounts(saved.stripe_accounts ?? []);
+      if (saved.display_currency) setDisplayCurrency(saved.display_currency.toUpperCase());
       setMessage("Settings saved.");
       onSaved();
     } catch (err) {
@@ -209,6 +222,42 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
         </Card>
       )}
 
+      <Card padding="lg">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <CircleDollarSign className="h-5 w-5 text-brand-600" />
+            <CardTitle>Display currency</CardTitle>
+          </div>
+          <CardDescription>
+            Choose how revenue, spend, and profit are shown on the analytics dashboard. Amounts are
+            converted from your Shopify store currency
+            {settings?.currency ? ` (${settings.currency})` : ""} using live FX rates.
+          </CardDescription>
+        </CardHeader>
+
+        <div className="flex flex-wrap gap-2">
+          {DISPLAY_CURRENCIES.map((c) => (
+            <button
+              key={c.code}
+              type="button"
+              onClick={() => setDisplayCurrency(c.code)}
+              className={`px-3 py-1.5 rounded-lg text-sm border ${
+                displayCurrency === c.code
+                  ? "bg-brand-600 text-white border-brand-600"
+                  : "border-border text-content-muted hover:border-border-strong hover:text-content"
+              }`}
+            >
+              {c.code}
+              <span className="ml-1.5 opacity-80 font-normal hidden sm:inline">{c.label.split(" ")[0]}</span>
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-content-subtle mt-3">
+          Product costs and manual investments are still entered in store currency
+          {settings?.currency ? ` (${settings.currency})` : ""}.
+        </p>
+      </Card>
+
       <Card padding="lg" className="border-brand-500/20 bg-brand-500/5">
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -216,7 +265,7 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
             <CardTitle>MRR / Subscriptions</CardTitle>
           </div>
           <CardDescription>
-            MRR is converted into your Shopify store currency (e.g. CAD) with the latest FX rate —
+            MRR is converted into your selected display currency with the latest FX rate —
             Stripe may bill in GBP. Sync pulls unique subscribers and MRR from Billing subscriptions,
             or trailing 30-day net charges for charge-only MIDs.
           </CardDescription>
