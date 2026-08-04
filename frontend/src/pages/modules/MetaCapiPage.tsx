@@ -11,6 +11,7 @@ import {
   Settings2,
   TestTube2,
   Activity,
+  Upload,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import {
@@ -72,6 +73,11 @@ export function MetaCapiPage() {
   const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [orderRef, setOrderRef] = useState("");
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillRecentBusy, setBackfillRecentBusy] = useState(false);
+  const [backfillMsg, setBackfillMsg] = useState("");
+  const [backfillErr, setBackfillErr] = useState("");
 
   const load = useCallback(async () => {
     if (!storeId) {
@@ -156,6 +162,52 @@ export function MetaCapiPage() {
       setSaveError(err instanceof Error ? err.message : "Test failed");
     } finally {
       setTesting(false);
+    }
+  };
+
+  const backfillOne = async () => {
+    if (!storeId || !orderRef.trim()) return;
+    setBackfilling(true);
+    setBackfillErr("");
+    setBackfillMsg("");
+    try {
+      const res = await api.metaCapi.backfillOrder(storeId, {
+        order_ref: orderRef.trim(),
+      });
+      if (res.skipped) {
+        setBackfillMsg(`Already sent: order ${res.order_name || res.shopify_order_id}`);
+      } else if (res.ok) {
+        setBackfillMsg(
+          `Sent ${res.order_name || res.shopify_order_id} to Meta (event_id=${res.event_id}). Check Events Manager.`
+        );
+        setOrderRef("");
+        await load();
+      } else {
+        setBackfillErr(res.error || "Backfill failed");
+      }
+    } catch (err) {
+      setBackfillErr(err instanceof Error ? err.message : "Backfill failed");
+    } finally {
+      setBackfilling(false);
+    }
+  };
+
+  const backfillToday = async () => {
+    if (!storeId) return;
+    setBackfillRecentBusy(true);
+    setBackfillErr("");
+    setBackfillMsg("");
+    try {
+      const res = await api.metaCapi.backfillRecent(storeId, { hours: 24, limit: 50 });
+      setBackfillMsg(
+        `Last 24h: examined ${res.examined}, sent ${res.sent}, already sent ${res.skipped}, failed ${res.failed}.`
+      );
+      if (res.failed > 0) setBackfillErr(`${res.failed} order(s) failed — see event log.`);
+      await load();
+    } catch (err) {
+      setBackfillErr(err instanceof Error ? err.message : "Backfill failed");
+    } finally {
+      setBackfillRecentBusy(false);
     }
   };
 
@@ -255,6 +307,63 @@ export function MetaCapiPage() {
               </p>
             </Card>
           </div>
+
+          <Card padding="lg">
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Upload className="h-4 w-4 text-brand-600" />
+                <CardTitle>Backfill missed sales</CardTitle>
+              </div>
+              <CardDescription>
+                Orders that paid before server-side tracking was enabled were not sent to Meta.
+                Push them now (Meta accepts events up to 7 days old).
+              </CardDescription>
+            </CardHeader>
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2 items-end">
+                <div className="flex-1 min-w-[180px]">
+                  <Input
+                    label="Order number or ID"
+                    placeholder="#1042 or Shopify order id"
+                    value={orderRef}
+                    onChange={(e) => setOrderRef(e.target.value)}
+                  />
+                </div>
+                <Button
+                  type="button"
+                  onClick={() => void backfillOne()}
+                  disabled={backfilling || !orderRef.trim()}
+                >
+                  {backfilling ? "Sending…" : "Send this order"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void backfillToday()}
+                  disabled={backfillRecentBusy}
+                >
+                  {backfillRecentBusy ? "Scanning…" : "Backfill last 24 hours"}
+                </Button>
+              </div>
+              {(backfillMsg || backfillErr) && (
+                <div
+                  className={cn(
+                    "flex items-start gap-2 rounded-lg px-3 py-2 text-sm",
+                    backfillErr
+                      ? "border border-red-200 bg-red-50 text-red-800 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200"
+                      : "border border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/40 dark:bg-emerald-950/30 dark:text-emerald-200"
+                  )}
+                >
+                  {backfillErr ? (
+                    <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
+                  )}
+                  <span>{backfillErr || backfillMsg}</span>
+                </div>
+              )}
+            </div>
+          </Card>
 
           <Card padding="lg">
             <CardHeader>

@@ -31,3 +31,23 @@ class MetaCapiTestRequest(BaseModel):
     meta_pixel_id: str | None = None
     meta_access_token: str | None = None
     test_event_code: str | None = None
+
+
+class MetaCapiBackfillOrderRequest(BaseModel):
+    """Send one past Shopify order to Meta CAPI (missed before tracking was enabled)."""
+
+    order_ref: str = Field(
+        ...,
+        description="Shopify order id (numeric) or order name like #1042 / 1042",
+    )
+    force: bool = Field(
+        default=False,
+        description="Re-send even if this order was already marked sent",
+    )
+
+
+class MetaCapiBackfillRecentRequest(BaseModel):
+    """Backfill paid orders from the last N hours that were never sent to Meta."""
+
+    hours: int = Field(default=24, ge=1, le=168)
+    limit: int = Field(default=50, ge=1, le=100)

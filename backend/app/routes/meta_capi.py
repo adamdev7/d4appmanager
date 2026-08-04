@@ -6,7 +6,12 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import get_verified_user
 from app.db.models import User
 from app.db.session import get_db
-from app.models.meta_capi import MetaCapiSettingsUpdate, MetaCapiTestRequest
+from app.models.meta_capi import (
+    MetaCapiBackfillOrderRequest,
+    MetaCapiBackfillRecentRequest,
+    MetaCapiSettingsUpdate,
+    MetaCapiTestRequest,
+)
 from app.services.meta_capi_service import MetaCapiService
 
 router = APIRouter()
@@ -59,5 +64,31 @@ async def test_meta_capi(
     db: Session = Depends(get_db),
 ):
     return await _service.test_connection(
+        db, user, store_id, body.model_dump(exclude_unset=True)
+    )
+
+
+@router.post("/stores/{store_id}/backfill")
+async def backfill_meta_capi_order(
+    store_id: str,
+    body: MetaCapiBackfillOrderRequest,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    """Send one past Shopify order to Meta (for sales missed before CAPI was enabled)."""
+    return await _service.backfill_order(
+        db, user, store_id, body.model_dump(exclude_unset=True)
+    )
+
+
+@router.post("/stores/{store_id}/backfill-recent")
+async def backfill_meta_capi_recent(
+    store_id: str,
+    body: MetaCapiBackfillRecentRequest,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    """Send paid Shopify orders from the last N hours that were never sent to Meta."""
+    return await _service.backfill_recent(
         db, user, store_id, body.model_dump(exclude_unset=True)
     )

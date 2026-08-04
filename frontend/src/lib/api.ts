@@ -901,5 +901,34 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
+    backfillOrder: (storeId: string, data: { order_ref: string; force?: boolean }) =>
+      request<{
+        ok: boolean;
+        skipped?: boolean;
+        reason?: string;
+        shopify_order_id?: string;
+        order_name?: string;
+        event_id?: string;
+        events_received?: number;
+        fbtrace_id?: string;
+        error?: string;
+        value?: number;
+        currency?: string;
+      }>(`/meta-capi/stores/${storeId}/backfill`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    backfillRecent: (storeId: string, data: { hours?: number; limit?: number } = {}) =>
+      request<{
+        ok: boolean;
+        hours: number;
+        examined: number;
+        sent: number;
+        skipped: number;
+        failed: number;
+      }>(`/meta-capi/stores/${storeId}/backfill-recent`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
   },
 };

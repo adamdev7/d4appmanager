@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException
@@ -25,6 +25,7 @@ from app.db.session import SessionLocal
 from app.integrations.meta.capi_client import DEFAULT_API_VERSION, MetaCapiClient
 from app.integrations.meta.hashing import hash_email
 from app.integrations.meta.order_mapper import build_purchase_event
+from app.integrations.shopify.client import ShopifyClient
 from app.tracking.credentials import mask_api_key_hint
 
 logger = logging.getLogger(__name__)
@@ -465,6 +466,243 @@ class MetaCapiService:
             _send_capi_event_background(store_id=store_id, log_id=log_id, order_payload=payload)
         )
         return {"queued": True, "log_id": log_id, "event_id": event.get("event_id")}
+
+    def _shopify_client(self, store: Store) -> ShopifyClient:
+        if not store.access_token_encrypted:
+            raise HTTPException(status_code=400, detail="Store is not connected to Shopify")
+        try:
+            token = decrypt_value(store.access_token_encrypted)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Could not decrypt store token") from exc
+        return ShopifyClient(store.shop_domain, token)
+
+    async def _resolve_order_payload(
+        self, client: ShopifyClient, order_ref: str
+    ) -> dict[str, Any]:
+        ref = order_ref.strip()
+        if not ref:
+            raise HTTPException(status_code=400, detail="order_ref is required")
+
+        # Numeric Shopify order id
+        if ref.isdigit():
+            try:
+                return await client.get_order(ref)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=404, detail=f"Order {ref} not found in Shopify"
+                ) from exc
+
+        # Order name: #1042 or 1042
+        name = ref if ref.startswith("#") else f"#{ref}"
+        try:
+            matches = await client.list_orders(limit=5, status="any", name=name)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Shopify order lookup failed: {exc}"
+            ) from exc
+        if not matches:
+            # Retry without # — some stores search bare number
+            bare = ref.lstrip("#")
+            matches = await client.list_orders(limit=5, status="any", name=bare)
+        if not matches:
+            raise HTTPException(status_code=404, detail=f"No Shopify order matching {name}")
+        return matches[0]
+
+    async def _send_order_now(
+        self,
+        db: Session,
+        *,
+        store: Store,
+        settings: StoreMetaCapiSettings,
+        order: dict[str, Any],
+        topic: str = "manual/backfill",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Fetch-ready order dict → Meta CAPI Purchase (synchronous)."""
+        if not settings.meta_pixel_id:
+            raise HTTPException(status_code=400, detail="Meta Pixel ID is not configured")
+
+        token = self._resolve_access_token(db, settings)
+        if not token:
+            raise HTTPException(status_code=400, detail="Meta access token is not configured")
+
+        order_id = str(order.get("id") or "")
+        if not order_id:
+            raise HTTPException(status_code=400, detail="Order payload missing id")
+
+        event = build_purchase_event(
+            order,
+            shop_domain=store.shop_domain or "",
+            event_id_scheme=settings.event_id_scheme or "order_id",
+        )
+        age_sec = int(datetime.now(UTC).timestamp()) - int(event.get("event_time") or 0)
+        if age_sec > 7 * 24 * 3600:
+            raise HTTPException(
+                status_code=400,
+                detail="Order is older than 7 days — Meta will reject it",
+            )
+
+        existing = db.scalar(
+            select(MetaCapiEventLog).where(
+                MetaCapiEventLog.store_id == store.id,
+                MetaCapiEventLog.shopify_order_id == order_id,
+                MetaCapiEventLog.event_name == "Purchase",
+                MetaCapiEventLog.status == MetaCapiEventStatus.SENT.value,
+            )
+        )
+        if existing and not force:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "already_sent",
+                "shopify_order_id": order_id,
+                "event_id": existing.event_id,
+                "log_id": existing.id,
+            }
+
+        custom = event.get("custom_data") or {}
+        webhook_id = f"backfill:{order_id}:{int(datetime.now(UTC).timestamp())}"
+        log_row = MetaCapiEventLog(
+            store_id=store.id,
+            webhook_id=webhook_id,
+            shopify_order_id=order_id,
+            topic=topic,
+            event_name="Purchase",
+            event_id=str(event.get("event_id") or order_id),
+            status=MetaCapiEventStatus.PENDING.value,
+            order_value=str(custom.get("value") if custom.get("value") is not None else ""),
+            currency=str(custom.get("currency") or "") or None,
+        )
+        db.add(log_row)
+        db.commit()
+        db.refresh(log_row)
+
+        client = MetaCapiClient(
+            pixel_id=settings.meta_pixel_id,
+            access_token=token,
+            api_version=settings.api_version or DEFAULT_API_VERSION,
+            test_event_code=settings.test_event_code,
+        )
+        log_row.attempts = (log_row.attempts or 0) + 1
+        db.commit()
+
+        try:
+            result = await client.send_events([event])
+            log_row.status = MetaCapiEventStatus.SENT.value
+            log_row.sent_at = datetime.now(UTC)
+            log_row.meta_events_received = int(result.get("events_received") or 0)
+            log_row.meta_fbtrace_id = str(result.get("fbtrace_id") or "") or None
+            log_row.error_message = None
+            log_row.event_id = str(event.get("event_id") or log_row.event_id)
+            db.commit()
+            return {
+                "ok": True,
+                "skipped": False,
+                "shopify_order_id": order_id,
+                "order_name": order.get("name"),
+                "event_id": log_row.event_id,
+                "events_received": log_row.meta_events_received,
+                "fbtrace_id": log_row.meta_fbtrace_id,
+                "log_id": log_row.id,
+                "value": custom.get("value"),
+                "currency": custom.get("currency"),
+            }
+        except Exception as exc:
+            msg = str(exc)
+            if token in msg:
+                msg = msg.replace(token, "[redacted]")
+            log_row.status = MetaCapiEventStatus.FAILED.value
+            log_row.error_message = msg[:2000]
+            db.commit()
+            return {
+                "ok": False,
+                "skipped": False,
+                "shopify_order_id": order_id,
+                "order_name": order.get("name"),
+                "event_id": log_row.event_id,
+                "error": msg[:500],
+                "log_id": log_row.id,
+            }
+
+    async def backfill_order(
+        self, db: Session, user: User, store_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        store = self._ensure_store(db, user, store_id)
+        settings = self.get_or_create_settings(db, store_id)
+        if not settings.meta_pixel_id or not self._resolve_access_token(db, settings):
+            raise HTTPException(
+                status_code=400,
+                detail="Configure Pixel ID and access token before backfilling",
+            )
+
+        client = self._shopify_client(store)
+        order_ref = str(body.get("order_ref") or "")
+        force = bool(body.get("force"))
+        order = await self._resolve_order_payload(client, order_ref)
+        return await self._send_order_now(
+            db, store=store, settings=settings, order=order, force=force
+        )
+
+    async def backfill_recent(
+        self, db: Session, user: User, store_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        store = self._ensure_store(db, user, store_id)
+        settings = self.get_or_create_settings(db, store_id)
+        if not settings.meta_pixel_id or not self._resolve_access_token(db, settings):
+            raise HTTPException(
+                status_code=400,
+                detail="Configure Pixel ID and access token before backfilling",
+            )
+
+        hours = int(body.get("hours") or 24)
+        limit = int(body.get("limit") or 50)
+        hours = max(1, min(hours, 168))
+        limit = max(1, min(limit, 100))
+
+        since = datetime.now(UTC) - timedelta(hours=hours)
+        client = self._shopify_client(store)
+        try:
+            orders = await client.list_orders(
+                limit=limit,
+                status="any",
+                financial_status="paid",
+                created_at_min=since.isoformat(),
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Shopify list orders failed: {exc}"
+            ) from exc
+
+        results: list[dict[str, Any]] = []
+        sent = 0
+        skipped = 0
+        failed = 0
+        for order in orders:
+            row = await self._send_order_now(
+                db,
+                store=store,
+                settings=settings,
+                order=order,
+                topic="manual/backfill_recent",
+                force=False,
+            )
+            results.append(row)
+            if row.get("skipped"):
+                skipped += 1
+            elif row.get("ok"):
+                sent += 1
+            else:
+                failed += 1
+
+        return {
+            "ok": failed == 0,
+            "hours": hours,
+            "examined": len(orders),
+            "sent": sent,
+            "skipped": skipped,
+            "failed": failed,
+            "results": results,
+        }
 
 
 async def _send_capi_event_background(

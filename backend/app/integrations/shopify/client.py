@@ -83,6 +83,8 @@ class ShopifyClient:
         created_at_min: str | None = None,
         created_at_max: str | None = None,
         financial_status: str | None = None,
+        name: str | None = None,
+        ids: str | None = None,
     ) -> list[dict]:
         """Fetch recent orders from this Shopify store (Admin REST)."""
         if not self.access_token:
@@ -99,6 +101,10 @@ class ShopifyClient:
             params["created_at_max"] = created_at_max
         if financial_status:
             params["financial_status"] = financial_status
+        if name:
+            params["name"] = name
+        if ids:
+            params["ids"] = ids
         async with httpx.AsyncClient(timeout=45) as client:
             resp = await client.get(
                 f"{self.admin_api_base}/orders.json",
@@ -107,6 +113,18 @@ class ShopifyClient:
             )
             resp.raise_for_status()
             return list(resp.json().get("orders") or [])
+
+    async def get_order(self, order_id: str | int) -> dict:
+        """Fetch a single order by numeric Shopify id."""
+        if not self.access_token:
+            raise ValueError("No access token")
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.get(
+                f"{self.admin_api_base}/orders/{order_id}.json",
+                headers={"X-Shopify-Access-Token": self.access_token},
+            )
+            resp.raise_for_status()
+            return resp.json()["order"]
 
     async def list_all_orders_in_range(
         self,
