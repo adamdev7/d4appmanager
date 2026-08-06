@@ -604,6 +604,9 @@ class MetaCapiService:
                 content_ids=list(body.get("content_ids") or []) or None,
                 contents=list(body.get("contents") or []) or None,
                 num_items=int(body["num_items"]) if body.get("num_items") is not None else None,
+                search_string=body.get("search_string"),
+                content_name=body.get("content_name"),
+                content_category=body.get("content_category"),
                 email=body.get("email"),
                 phone=body.get("phone"),
                 fbp=body.get("fbp"),
@@ -1287,6 +1290,9 @@ async def _send_capi_event_background(
             return
 
         if payload_kind == "checkout":
+            order_payload = service.enrich_order_payload(
+                db, store_id=store_id, order=order_payload
+            )
             event = build_initiate_checkout_event(
                 order_payload, shop_domain=store.shop_domain or ""
             )

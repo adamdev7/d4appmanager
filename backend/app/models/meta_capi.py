@@ -64,6 +64,9 @@ class MetaCapiBrowserEventRequest(BaseModel):
     content_ids: list[str] | None = None
     contents: list[dict] | None = None
     num_items: int | None = None
+    search_string: str | None = None
+    content_name: str | None = None
+    content_category: str | None = None
     email: str | None = None
     phone: str | None = None
     fbp: str | None = None
@@ -72,3 +75,5 @@ class MetaCapiBrowserEventRequest(BaseModel):
     external_id: str | None = None
     client_ip_address: str | None = None
     client_user_agent: str | None = None
+    cart_token: str | None = None
+    checkout_token: str | None = None

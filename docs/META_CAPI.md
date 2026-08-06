@@ -29,17 +29,22 @@ Reconnect the Shopify store after deploy so `orders/updated` is subscribed.
 
 ---
 
-## What App Manager now sends
+## Funnel events Meta receives
 
-**Purchase** (orders/paid, or create/update when paid):
-- Hashed: email, phone, name, city/state/zip/country, `external_id` (Shopify customer id)
-- Unhashed: IP, user agent, `fbp`, `fbc` (from note attributes or synthesized from `fbclid`)
-- Full `landing_site` / `meta_landing` as `event_source_url` (keeps UTMs + fbclid)
-- Custom: value, currency, contents, order_id, num_items, referring_site, UTMs
+| Event | Source |
+|-------|--------|
+| **PageView** | Theme (once per path / session) |
+| **ViewContent** | Theme product pages |
+| **Search** | Theme search page / search form |
+| **AddToCart** | Theme form ATC + AJAX `/cart/add.js` |
+| **InitiateCheckout** | Theme on Phoenix redirect; Shopify `checkouts/create` when enabled |
+| **Purchase** | Shopify paid order webhooks + reconcile worker |
 
-**InitiateCheckout** (`checkouts/create`) when enabled in settings.
+Match quality: `fbp` / `fbc` / `fbclid`, IP, user agent, hashed email/phone, stable `external_id` (customer id or first-party guest id saved on the cart).
 
-**ViewContent / AddToCart** from the theme via token-gated browser beacon.
+**Not available without Phoenix-side code:** AddPaymentInfo (payment step is on `secureorder…`).
+
+---
 
 ## Theme changes (required for fbp/fbc + funnel)
 

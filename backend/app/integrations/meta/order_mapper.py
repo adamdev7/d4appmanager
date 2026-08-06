@@ -254,8 +254,11 @@ def _user_data_from_payload(
         if hashed:
             user_data[field] = [hashed]
 
-    # Stable shopper id (hashed) — customer id, else email, else phone
+    # Stable shopper id (hashed) — customer id, note attr, else email/phone
+    notes = _note_attr_map(payload)
     external = customer.get("id") or payload.get("user_id")
+    if external is None or not str(external).strip():
+        external = _cookie_from_notes(notes, "external_id", "_external_id", "meta_external_id")
     if external is None or not str(external).strip():
         external = email or phone
     if external is not None and str(external).strip():
@@ -263,7 +266,6 @@ def _user_data_from_payload(
         if ext_hash:
             user_data["external_id"] = [ext_hash]
 
-    notes = _note_attr_map(payload)
     browser_ip = payload.get("browser_ip") or _cookie_from_notes(
         notes, "browser_ip", "client_ip", "_client_ip", "client_ip_address"
     )
@@ -403,6 +405,9 @@ def build_browser_funnel_event(
     content_ids: list[str] | None = None,
     contents: list[dict[str, Any]] | None = None,
     num_items: int | None = None,
+    search_string: str | None = None,
+    content_name: str | None = None,
+    content_category: str | None = None,
     email: str | None = None,
     phone: str | None = None,
     fbp: str | None = None,
@@ -412,8 +417,27 @@ def build_browser_funnel_event(
     client_user_agent: str | None = None,
     external_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build ViewContent / AddToCart (or similar) from browser beacon payload."""
-    allowed = {"ViewContent", "AddToCart", "InitiateCheckout", "Purchase", "PageView", "Attribution"}
+    """Build standard Meta funnel events from theme/browser beacons."""
+    allowed = {
+        "PageView",
+        "ViewContent",
+        "Search",
+        "AddToCart",
+        "AddToWishlist",
+        "InitiateCheckout",
+        "AddPaymentInfo",
+        "Purchase",
+        "Lead",
+        "CompleteRegistration",
+        "Contact",
+        "CustomizeProduct",
+        "FindLocation",
+        "Schedule",
+        "StartTrial",
+        "SubmitApplication",
+        "Subscribe",
+        "Attribution",  # cache-only upstream; not normally sent
+    }
     if event_name not in allowed:
         raise ValueError(f"Unsupported event_name: {event_name}")
 
@@ -443,8 +467,10 @@ def build_browser_funnel_event(
 
     custom_data: dict[str, Any] = {
         "currency": currency or "USD",
-        "content_type": "product",
     }
+    # PageView / Search don't need content_type; product events do
+    if event_name not in {"PageView", "Search", "Lead", "Contact", "CompleteRegistration"}:
+        custom_data["content_type"] = "product"
     if value is not None:
         custom_data["value"] = float(value)
     if content_ids:
@@ -453,6 +479,12 @@ def build_browser_funnel_event(
         custom_data["contents"] = contents
     if num_items is not None:
         custom_data["num_items"] = num_items
+    if search_string:
+        custom_data["search_string"] = str(search_string)[:500]
+    if content_name:
+        custom_data["content_name"] = str(content_name)[:500]
+    if content_category:
+        custom_data["content_category"] = str(content_category)[:250]
 
     source = event_source_url or _event_source_url({}, shop_domain)
     event: dict[str, Any] = {

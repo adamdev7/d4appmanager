@@ -241,8 +241,10 @@ export function MetaCapiPage() {
             </h1>
           </div>
           <p className="mt-1 text-sm text-content-muted max-w-xl">
-            Shopify order webhooks → Meta Conversions API Purchase events. Runs alongside your
-            browser Pixel and deduplicates when <code className="text-xs">event_id</code> matches.
+            Full Meta funnel via Conversions API: PageView, ViewContent, Search, AddToCart,
+            InitiateCheckout, and Purchase — with match-quality fields (fbp/fbc/IP/UA). Theme
+            beacons + Shopify webhooks; deduplicates when <code className="text-xs">event_id</code>{" "}
+            matches the browser Pixel.
           </p>
         </div>
         <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading}>
@@ -521,7 +523,7 @@ export function MetaCapiPage() {
                   <p className="text-sm font-medium text-content">Send InitiateCheckout</p>
                   <p className="text-xs text-content-muted">
                     Also fire Meta InitiateCheckout on Shopify <code>checkouts/create</code> (native
-                    checkout). Phoenix checkout still gets Purchase from orders.
+                    checkout). Phoenix checkout fires InitiateCheckout from the theme on redirect.
                   </p>
                 </div>
                 <Switch checked={sendInitiateCheckout} onChange={setSendInitiateCheckout} />
@@ -532,7 +534,8 @@ export function MetaCapiPage() {
                   <p className="text-sm font-medium text-content">Theme browser event token</p>
                   <p className="text-xs text-content-muted">
                     Paste into Shopify theme settings → <strong>Meta CAPI (App Manager)</strong> →
-                    Browser event token. Used for ViewContent / AddToCart beacons.
+                    Browser event token. Required for PageView, ViewContent, Search, AddToCart, and
+                    Phoenix InitiateCheckout.
                   </p>
                   <code className="block text-xs break-all text-content mt-1">
                     {settings.browser_event_token}
