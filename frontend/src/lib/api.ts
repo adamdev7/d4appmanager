@@ -16,6 +16,7 @@ import type {
 } from "@/lib/adsTypes";
 import type {
   MetaCapiEvent,
+  MetaCapiEventsResponse,
   MetaCapiSettings,
   MetaCapiStats,
 } from "@/lib/metaCapiTypes";
@@ -23,7 +24,7 @@ import type {
 export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
 export type { ManualInvestment, ManualInvestmentsResponse };
 export type { AdsAiReport, AdsDashboard, AdsPeriod, AdsSettings };
-export type { MetaCapiEvent, MetaCapiSettings, MetaCapiStats };
+export type { MetaCapiEvent, MetaCapiEventsResponse, MetaCapiSettings, MetaCapiStats };
 
 const API_BASE = "/api/v1";
 
@@ -880,10 +881,22 @@ export const api = {
   metaCapi: {
     stats: (storeId: string) =>
       request<MetaCapiStats>(`/meta-capi/stores/${storeId}/stats`),
-    events: (storeId: string, limit = 50) =>
-      request<{ events: MetaCapiEvent[] }>(
-        `/meta-capi/stores/${storeId}/events?limit=${limit}`
-      ),
+    events: (
+      storeId: string,
+      opts?: { limit?: number; event_name?: string; status?: string }
+    ) => {
+      const params = new URLSearchParams();
+      params.set("limit", String(opts?.limit ?? 100));
+      if (opts?.event_name && opts.event_name !== "all") {
+        params.set("event_name", opts.event_name);
+      }
+      if (opts?.status && opts.status !== "all") {
+        params.set("status", opts.status);
+      }
+      return request<MetaCapiEventsResponse>(
+        `/meta-capi/stores/${storeId}/events?${params.toString()}`
+      );
+    },
     getSettings: (storeId: string) =>
       request<MetaCapiSettings>(`/meta-capi/stores/${storeId}/settings`),
     updateSettings: (storeId: string, data: object) =>

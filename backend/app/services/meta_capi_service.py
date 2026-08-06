@@ -316,34 +316,76 @@ class MetaCapiService:
             or 0
         )
 
+        by_event_rows = db.execute(
+            select(MetaCapiEventLog.event_name, func.count())
+            .where(
+                MetaCapiEventLog.store_id == store_id,
+                MetaCapiEventLog.status == MetaCapiEventStatus.SENT.value,
+                MetaCapiEventLog.sent_at >= start_today,
+            )
+            .group_by(MetaCapiEventLog.event_name)
+        ).all()
+        sent_today_by_event = {
+            str(name or "Purchase"): int(cnt or 0) for name, cnt in by_event_rows
+        }
+
         return {
             "settings": settings,
             "sent_today": sent_today,
             "failed_today": failed_today,
             "skipped_today": skipped_today,
             "total_sent": total_sent,
+            "sent_today_by_event": sent_today_by_event,
             "last_successful_send_at": last_sent.sent_at.isoformat() if last_sent and last_sent.sent_at else None,
             "last_event_id": last_sent.event_id if last_sent else None,
             "last_order_id": last_sent.shopify_order_id if last_sent else None,
+            "last_event_name": last_sent.event_name if last_sent else None,
         }
 
     def list_events(
-        self, db: Session, user: User, store_id: str, *, limit: int = 50
-    ) -> list[dict[str, Any]]:
+        self,
+        db: Session,
+        user: User,
+        store_id: str,
+        *,
+        limit: int = 100,
+        event_name: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
         self._ensure_store(db, user, store_id)
-        limit = max(1, min(limit, 200))
+        limit = max(1, min(limit, 500))
+
+        filters = [MetaCapiEventLog.store_id == store_id]
+        name_filter = (event_name or "").strip()
+        if name_filter and name_filter.lower() not in {"all", "*"}:
+            filters.append(MetaCapiEventLog.event_name == name_filter)
+        status_filter = (status or "").strip().lower()
+        if status_filter and status_filter not in {"all", "*"}:
+            filters.append(MetaCapiEventLog.status == status_filter)
+
         rows = db.scalars(
             select(MetaCapiEventLog)
-            .where(MetaCapiEventLog.store_id == store_id)
+            .where(*filters)
             .order_by(MetaCapiEventLog.created_at.desc())
             .limit(limit)
         ).all()
-        return [
+
+        type_rows = db.execute(
+            select(MetaCapiEventLog.event_name, func.count())
+            .where(MetaCapiEventLog.store_id == store_id)
+            .group_by(MetaCapiEventLog.event_name)
+            .order_by(func.count().desc())
+        ).all()
+        event_type_counts = {
+            str(name or "Purchase"): int(cnt or 0) for name, cnt in type_rows
+        }
+
+        events = [
             {
                 "id": r.id,
                 "shopify_order_id": r.shopify_order_id,
                 "topic": r.topic,
-                "event_name": r.event_name,
+                "event_name": r.event_name or "Purchase",
                 "event_id": r.event_id,
                 "status": r.status,
                 "attempts": r.attempts,
@@ -357,6 +399,13 @@ class MetaCapiService:
             }
             for r in rows
         ]
+        return {
+            "events": events,
+            "event_type_counts": event_type_counts,
+            "limit": limit,
+            "event_name": name_filter or "all",
+            "status": status_filter or "all",
+        }
 
     _PAID_FINANCIAL = frozenset({"paid", "partially_paid"})
 

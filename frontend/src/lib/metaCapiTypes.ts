@@ -20,9 +20,11 @@ export type MetaCapiStats = {
   failed_today: number;
   skipped_today: number;
   total_sent: number;
+  sent_today_by_event?: Record<string, number>;
   last_successful_send_at: string | null;
   last_event_id: string | null;
   last_order_id: string | null;
+  last_event_name?: string | null;
 };
 
 export type MetaCapiEvent = {
@@ -40,4 +42,12 @@ export type MetaCapiEvent = {
   currency: string | null;
   sent_at: string | null;
   created_at: string | null;
+};
+
+export type MetaCapiEventsResponse = {
+  events: MetaCapiEvent[];
+  event_type_counts: Record<string, number>;
+  limit: number;
+  event_name: string;
+  status: string;
 };

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
   CheckCircle2,
   ExternalLink,
+  Filter,
   Info,
+  List,
   Radar,
   RefreshCw,
   Save,
@@ -27,12 +29,23 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Ca
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 
-type Tab = "overview" | "settings";
+type Tab = "overview" | "events" | "settings";
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Radar }> = [
   { id: "overview", label: "Overview", icon: Activity },
+  { id: "events", label: "Events", icon: List },
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
+
+const FUNNEL_EVENT_ORDER = [
+  "PageView",
+  "ViewContent",
+  "Search",
+  "AddToCart",
+  "InitiateCheckout",
+  "AddPaymentInfo",
+  "Purchase",
+] as const;
 
 function formatTs(iso: string | null | undefined) {
   if (!iso) return "—";
@@ -50,6 +63,21 @@ function statusVariant(status: string) {
   return "brand" as const;
 }
 
+function eventBadgeVariant(name: string) {
+  if (name === "Purchase") return "success" as const;
+  if (name === "InitiateCheckout" || name === "AddToCart") return "brand" as const;
+  return "muted" as const;
+}
+
+function formatEntity(ev: MetaCapiEvent) {
+  const raw = ev.shopify_order_id || "";
+  if (raw.startsWith("browser:")) {
+    const parts = raw.split(":");
+    return parts.slice(2).join(":") || raw;
+  }
+  return raw || "—";
+}
+
 export function MetaCapiPage() {
   const { activeStore, stores } = useStore();
   const storeId = activeStore?.id ?? stores[0]?.id ?? null;
@@ -58,7 +86,11 @@ export function MetaCapiPage() {
   const [stats, setStats] = useState<MetaCapiStats | null>(null);
   const [settings, setSettings] = useState<MetaCapiSettings | null>(null);
   const [events, setEvents] = useState<MetaCapiEvent[]>([]);
+  const [eventTypeCounts, setEventTypeCounts] = useState<Record<string, number>>({});
+  const [eventNameFilter, setEventNameFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [eventsLoading, setEventsLoading] = useState(false);
   const [error, setError] = useState("");
 
   const [enabled, setEnabled] = useState(false);
@@ -80,24 +112,43 @@ export function MetaCapiPage() {
   const [backfillMsg, setBackfillMsg] = useState("");
   const [backfillErr, setBackfillErr] = useState("");
 
+  const loadEvents = useCallback(async () => {
+    if (!storeId) {
+      setEvents([]);
+      setEventTypeCounts({});
+      return;
+    }
+    setEventsLoading(true);
+    try {
+      const e = await api.metaCapi.events(storeId, {
+        limit: 150,
+        event_name: eventNameFilter,
+        status: statusFilter,
+      });
+      setEvents(e.events);
+      setEventTypeCounts(e.event_type_counts || {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load events");
+    } finally {
+      setEventsLoading(false);
+    }
+  }, [storeId, eventNameFilter, statusFilter]);
+
   const load = useCallback(async () => {
     if (!storeId) {
       setLoading(false);
       setStats(null);
       setSettings(null);
       setEvents([]);
+      setEventTypeCounts({});
       return;
     }
     setLoading(true);
     setError("");
     try {
-      const [s, e] = await Promise.all([
-        api.metaCapi.stats(storeId),
-        api.metaCapi.events(storeId, 40),
-      ]);
+      const s = await api.metaCapi.stats(storeId);
       setStats(s);
       setSettings(s.settings);
-      setEvents(e.events);
       setEnabled(Boolean(s.settings.enabled));
       setPixelId(s.settings.meta_pixel_id ?? "");
       setUseAnalyticsToken(Boolean(s.settings.use_analytics_token));
@@ -117,6 +168,24 @@ export function MetaCapiPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void loadEvents();
+  }, [loadEvents]);
+
+  const filterOptions = useMemo(() => {
+    const known = new Set<string>([...FUNNEL_EVENT_ORDER]);
+    Object.keys(eventTypeCounts).forEach((k) => known.add(k));
+    Object.keys(stats?.sent_today_by_event || {}).forEach((k) => known.add(k));
+    const ordered = FUNNEL_EVENT_ORDER.filter((n) => known.has(n));
+    const extras = [...known].filter((n) => !FUNNEL_EVENT_ORDER.includes(n as (typeof FUNNEL_EVENT_ORDER)[number])).sort();
+    return ["all", ...ordered, ...extras];
+  }, [eventTypeCounts, stats?.sent_today_by_event]);
+
+  const totalLogged = useMemo(
+    () => Object.values(eventTypeCounts).reduce((a, b) => a + b, 0),
+    [eventTypeCounts]
+  );
 
   const save = async () => {
     if (!storeId) return;
@@ -247,7 +316,15 @@ export function MetaCapiPage() {
             matches the browser Pixel.
           </p>
         </div>
-        <Button type="button" variant="secondary" onClick={() => void load()} disabled={loading}>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => {
+            void load();
+            void loadEvents();
+          }}
+          disabled={loading}
+        >
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
           Refresh
         </Button>
@@ -406,35 +483,93 @@ export function MetaCapiPage() {
 
           <Card padding="lg">
             <CardHeader>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <CardTitle>Funnel today</CardTitle>
+                  <CardDescription>
+                    Sent events by type (PageView through Purchase). Open the Events tab to filter.
+                  </CardDescription>
+                </div>
+                <Button type="button" variant="secondary" onClick={() => setTab("events")}>
+                  <Filter className="h-4 w-4" />
+                  View all events
+                </Button>
+              </div>
+            </CardHeader>
+            {Object.keys(stats?.sent_today_by_event || {}).length === 0 && totalLogged === 0 ? (
+              <p className="text-sm text-content-muted">
+                No funnel events logged yet. Publish the theme with the browser token, then browse the
+                store.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {(Object.keys(stats?.sent_today_by_event || {}).length
+                  ? Object.entries(stats?.sent_today_by_event || {})
+                  : Object.entries(eventTypeCounts)
+                )
+                  .sort((a, b) => {
+                    const ai = FUNNEL_EVENT_ORDER.indexOf(a[0] as (typeof FUNNEL_EVENT_ORDER)[number]);
+                    const bi = FUNNEL_EVENT_ORDER.indexOf(b[0] as (typeof FUNNEL_EVENT_ORDER)[number]);
+                    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+                  })
+                  .map(([name, count]) => (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => {
+                        setEventNameFilter(name);
+                        setTab("events");
+                      }}
+                      className="rounded-lg border border-border bg-surface-muted/40 px-3 py-2 text-left hover:border-brand-400 transition-colors"
+                    >
+                      <p className="text-xs text-content-muted">{name}</p>
+                      <p className="text-lg font-semibold text-content">{count}</p>
+                    </button>
+                  ))}
+              </div>
+            )}
+          </Card>
+
+          <Card padding="lg">
+            <CardHeader>
               <CardTitle>Recent events</CardTitle>
-              <CardDescription>Idempotent send log (webhook + order dedup).</CardDescription>
+              <CardDescription>
+                Latest CAPI sends (all types). Use the Events tab for filters.
+              </CardDescription>
             </CardHeader>
             {events.length === 0 ? (
-              <p className="text-sm text-content-muted">No events yet. Place a test order or use Meta Test Events.</p>
+              <p className="text-sm text-content-muted">
+                No events yet. Theme beacons + paid orders will appear here.
+              </p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-content-subtle">
                       <th className="py-2 pr-3 font-medium">When</th>
-                      <th className="py-2 pr-3 font-medium">Order</th>
                       <th className="py-2 pr-3 font-medium">Type</th>
-                      <th className="py-2 pr-3 font-medium">Event ID</th>
+                      <th className="py-2 pr-3 font-medium">Ref</th>
                       <th className="py-2 pr-3 font-medium">Status</th>
                       <th className="py-2 pr-3 font-medium">Value</th>
                       <th className="py-2 font-medium">Meta</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {events.map((ev) => (
+                    {events.slice(0, 12).map((ev) => (
                       <tr key={ev.id} className="border-b border-border/60">
                         <td className="py-2.5 pr-3 text-content-muted whitespace-nowrap">
                           {formatTs(ev.sent_at || ev.created_at)}
                         </td>
-                        <td className="py-2.5 pr-3 font-mono text-xs">{ev.shopify_order_id}</td>
-                        <td className="py-2.5 pr-3 text-xs">{ev.event_name || "Purchase"}</td>
-                        <td className="py-2.5 pr-3 font-mono text-xs max-w-[140px] truncate" title={ev.event_id}>
-                          {ev.event_id}
+                        <td className="py-2.5 pr-3">
+                          <Badge variant={eventBadgeVariant(ev.event_name || "Purchase")}>
+                            {ev.event_name || "Purchase"}
+                          </Badge>
+                        </td>
+                        <td
+                          className="py-2.5 pr-3 font-mono text-xs max-w-[160px] truncate"
+                          title={ev.shopify_order_id}
+                        >
+                          {formatEntity(ev)}
                         </td>
                         <td className="py-2.5 pr-3">
                           <Badge variant={statusVariant(ev.status)}>{ev.status}</Badge>
@@ -452,6 +587,159 @@ export function MetaCapiPage() {
                           ) : (
                             <span title={ev.meta_fbtrace_id ?? undefined}>
                               recv={ev.meta_events_received ?? "—"}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {tab === "events" && (
+        <div className="space-y-4">
+          <Card padding="lg">
+            <CardHeader>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Event log</CardTitle>
+                  <CardDescription>
+                    All Meta CAPI events App Manager sent or tried to send ({totalLogged} logged).
+                  </CardDescription>
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => void loadEvents()}
+                  disabled={eventsLoading}
+                >
+                  <RefreshCw className={cn("h-4 w-4", eventsLoading && "animate-spin")} />
+                  Refresh
+                </Button>
+              </div>
+            </CardHeader>
+
+            <div className="space-y-3 mb-4">
+              <p className="text-xs font-medium uppercase tracking-wider text-content-subtle">
+                Event type
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {filterOptions.map((name) => {
+                  const count =
+                    name === "all" ? totalLogged : eventTypeCounts[name] || 0;
+                  const active = eventNameFilter === name;
+                  return (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => setEventNameFilter(name)}
+                      className={cn(
+                        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                        active
+                          ? "border-brand-500 bg-brand-50 text-brand-800 dark:bg-brand-950/40 dark:text-brand-200"
+                          : "border-border text-content-muted hover:text-content"
+                      )}
+                    >
+                      {name === "all" ? "All" : name}
+                      <span className="ml-1 opacity-70">({count})</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <p className="text-xs font-medium uppercase tracking-wider text-content-subtle pt-1">
+                Status
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {["all", "sent", "failed", "pending", "skipped"].map((st) => {
+                  const active = statusFilter === st;
+                  return (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setStatusFilter(st)}
+                      className={cn(
+                        "rounded-full border px-3 py-1 text-xs font-medium capitalize transition-colors",
+                        active
+                          ? "border-brand-500 bg-brand-50 text-brand-800 dark:bg-brand-950/40 dark:text-brand-200"
+                          : "border-border text-content-muted hover:text-content"
+                      )}
+                    >
+                      {st}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {eventsLoading && events.length === 0 ? (
+              <p className="text-sm text-content-muted">Loading events…</p>
+            ) : events.length === 0 ? (
+              <p className="text-sm text-content-muted">
+                No events match this filter. Try All, or confirm the theme browser token is set.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-content-subtle">
+                      <th className="py-2 pr-3 font-medium">When</th>
+                      <th className="py-2 pr-3 font-medium">Type</th>
+                      <th className="py-2 pr-3 font-medium">Source</th>
+                      <th className="py-2 pr-3 font-medium">Ref</th>
+                      <th className="py-2 pr-3 font-medium">Event ID</th>
+                      <th className="py-2 pr-3 font-medium">Status</th>
+                      <th className="py-2 pr-3 font-medium">Value</th>
+                      <th className="py-2 font-medium">Meta</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {events.map((ev) => (
+                      <tr key={ev.id} className="border-b border-border/60">
+                        <td className="py-2.5 pr-3 text-content-muted whitespace-nowrap">
+                          {formatTs(ev.sent_at || ev.created_at)}
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          <Badge variant={eventBadgeVariant(ev.event_name || "Purchase")}>
+                            {ev.event_name || "Purchase"}
+                          </Badge>
+                        </td>
+                        <td className="py-2.5 pr-3 text-xs text-content-muted">
+                          {ev.topic || "—"}
+                        </td>
+                        <td
+                          className="py-2.5 pr-3 font-mono text-xs max-w-[140px] truncate"
+                          title={ev.shopify_order_id}
+                        >
+                          {formatEntity(ev)}
+                        </td>
+                        <td
+                          className="py-2.5 pr-3 font-mono text-xs max-w-[140px] truncate"
+                          title={ev.event_id}
+                        >
+                          {ev.event_id}
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          <Badge variant={statusVariant(ev.status)}>{ev.status}</Badge>
+                        </td>
+                        <td className="py-2.5 pr-3">
+                          {ev.order_value != null && ev.order_value !== ""
+                            ? `${ev.currency ?? ""} ${ev.order_value}`.trim()
+                            : "—"}
+                        </td>
+                        <td className="py-2.5 text-xs text-content-muted max-w-[220px]">
+                          {ev.error_message ? (
+                            <span className="text-red-600 dark:text-red-400" title={ev.error_message}>
+                              {ev.error_message.slice(0, 100)}
+                            </span>
+                          ) : (
+                            <span title={ev.meta_fbtrace_id ?? undefined}>
+                              recv={ev.meta_events_received ?? "—"}
+                              {ev.attempts > 1 ? ` · try ${ev.attempts}` : ""}
                             </span>
                           )}
                         </td>

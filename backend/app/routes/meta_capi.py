@@ -33,11 +33,15 @@ async def meta_capi_stats(
 @router.get("/stores/{store_id}/events")
 async def meta_capi_events(
     store_id: str,
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(100, ge=1, le=500),
+    event_name: str | None = Query(None, description="Filter by event type, e.g. Purchase, PageView"),
+    status: str | None = Query(None, description="Filter by status: sent, failed, pending, skipped"),
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
-    return {"events": _service.list_events(db, user, store_id, limit=limit)}
+    return _service.list_events(
+        db, user, store_id, limit=limit, event_name=event_name, status=status
+    )
 
 
 @router.get("/stores/{store_id}/settings")
