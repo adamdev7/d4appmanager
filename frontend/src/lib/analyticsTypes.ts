@@ -147,6 +147,8 @@ export type AnalyticsDashboard = {
       native_available?: number;
       native_pending?: number;
       delay_days?: number | null;
+      /** Official Stripe risk reserve total (matches Dashboard). */
+      reserve_total?: number;
       holds?: Array<{ days: number; amount: number }>;
     };
     manual_investments?: {

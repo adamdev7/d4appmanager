@@ -219,11 +219,15 @@ export function AnalyticsPage() {
   const summary = dashboard?.summary;
   const stripeBalance = summary?.stripe_balance;
   const balanceHolds = stripeBalance?.holds ?? [];
-  const balanceHoldTotal =
+  const holdsSum =
     balanceHolds.length > 0 ? balanceHolds.reduce((sum, h) => sum + h.amount, 0) : 0;
+  const balanceHoldTotal =
+    stripeBalance?.reserve_total != null && stripeBalance.reserve_total > 0
+      ? stripeBalance.reserve_total
+      : holdsSum;
   const balanceHoldDays = balanceHolds.length === 1 ? balanceHolds[0].days : null;
-  // Only show when Stripe risk reserve BTs exist — never use pending settlement as "on hold"
-  const showBalanceHold = !!stripeBalance && balanceHoldTotal > 0 && balanceHolds.length > 0;
+  // Only show when Stripe risk reserve exists — never use pending settlement as "on hold"
+  const showBalanceHold = !!stripeBalance && balanceHoldTotal > 0;
   const rangeHint =
     period === "custom"
       ? formatRangeLabel(appliedSince, appliedUntil)

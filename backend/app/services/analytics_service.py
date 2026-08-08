@@ -806,6 +806,7 @@ class AnalyticsService:
                 "currency": None,
                 "delay_days": None,
                 "holds": [],
+                "reserve_total": Decimal("0"),
             },
         }
         if not accounts:
@@ -864,6 +865,7 @@ class AnalyticsService:
         balance_currency: str | None = None
         balance_delay_days: int | None = None
         balance_holds: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
+        balance_reserve_total = Decimal("0")
 
         for acct in accounts:
             try:
@@ -936,6 +938,9 @@ class AnalyticsService:
                         if not balance_currency or bal_cur == balance_currency:
                             balance_available += Decimal(str(bal.get("available") or 0))
                             balance_pending += Decimal(str(bal.get("pending") or 0))
+                            reserve_total = Decimal(str(bal.get("reserve_total") or 0))
+                            if reserve_total > 0:
+                                balance_reserve_total += reserve_total
                             for hold in bal.get("holds") or []:
                                 days = int(hold.get("days") or 0)
                                 if days > 0:
@@ -1001,6 +1006,9 @@ class AnalyticsService:
                     {"days": days, "amount": amount}
                     for days, amount in sorted(balance_holds.items())
                 ],
+                "reserve_total": balance_reserve_total
+                if balance_reserve_total > 0
+                else sum(balance_holds.values(), Decimal("0")),
             },
         }
 
@@ -1605,6 +1613,11 @@ class AnalyticsService:
             for h in (balance_raw.get("holds") or [])
             if int(h.get("days") or 0) > 0
         ]
+        balance_reserve_native = Decimal(str(balance_raw.get("reserve_total") or 0))
+        if balance_reserve_native <= 0 and balance_holds_native:
+            balance_reserve_native = sum(
+                (h["amount"] for h in balance_holds_native), Decimal("0")
+            )
 
         daily_stripe_native = {
             d: Decimal(str(v)) for d, v in (stripe_totals.get("daily_net") or {}).items()
@@ -1641,6 +1654,7 @@ class AnalyticsService:
         balance_holds = [
             {"days": h["days"], "amount": h["amount"]} for h in balance_holds_native
         ]
+        balance_reserve_total = balance_reserve_native
         stripe_fx_note: str | None = None
         daily_stripe_cad: dict[str, Decimal] = dict(daily_stripe_native)
 
@@ -1752,7 +1766,11 @@ class AnalyticsService:
         if (
             balance_currency
             and balance_currency != pnl_currency
-            and (balance_available_native != 0 or balance_pending_native != 0)
+            and (
+                balance_available_native != 0
+                or balance_pending_native != 0
+                or balance_reserve_native != 0
+            )
         ):
             try:
                 balance_available = await convert_amount(
@@ -1765,6 +1783,12 @@ class AnalyticsService:
                     from_currency=balance_currency,
                     to_currency=pnl_currency,
                 )
+                if balance_reserve_native != 0:
+                    balance_reserve_total = await convert_amount(
+                        balance_reserve_native,
+                        from_currency=balance_currency,
+                        to_currency=pnl_currency,
+                    )
                 converted_holds = []
                 for h in balance_holds_native:
                     amt = await convert_amount(
@@ -2197,6 +2221,7 @@ class AnalyticsService:
                     "native_available": _money(balance_available_native),
                     "native_pending": _money(balance_pending_native),
                     "delay_days": balance_delay_days,
+                    "reserve_total": _money(balance_reserve_total),
                     "holds": [
                         {"days": int(h["days"]), "amount": _money(h["amount"])}
                         for h in balance_holds

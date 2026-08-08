@@ -150,6 +150,13 @@ class StripeClient:
             available_rows = list(data.get("available") or [])
             pending_rows = list(data.get("pending") or [])
 
+            def _sum_currency_rows(rows: list, currency: str) -> Decimal:
+                total = Decimal("0")
+                for row in rows or []:
+                    if _norm_currency(row.get("currency")) == currency:
+                        total += from_stripe_amount(row.get("amount"), currency)
+                return total
+
             # Prefer store/settlement currency when present in either bucket
             def _pick_row(rows: list) -> dict | None:
                 if not rows:
@@ -175,17 +182,29 @@ class StripeClient:
                         break
 
             if cur:
-                avail_amt = Decimal("0")
-                pend_amt = Decimal("0")
-                for row in available_rows:
-                    if _norm_currency(row.get("currency")) == cur:
-                        avail_amt += from_stripe_amount(row.get("amount"), cur)
-                for row in pending_rows:
-                    if _norm_currency(row.get("currency")) == cur:
-                        pend_amt += from_stripe_amount(row.get("amount"), cur)
-                result["available"] = avail_amt
-                result["pending"] = pend_amt
+                result["available"] = _sum_currency_rows(available_rows, cur)
+                result["pending"] = _sum_currency_rows(pending_rows, cur)
                 result["currency"] = cur.upper()
+
+            # Official risk reserve from Balance API (matches Dashboard "Réserves pour risques")
+            official_reserve = Decimal("0")
+            risk_reserved = data.get("risk_reserved")
+            if not isinstance(risk_reserved, dict) and cur:
+                # Newer Balance field; request preview version only for this read
+                try:
+                    risk_resp = await client.get(
+                        f"{STRIPE_API_BASE}/balance",
+                        auth=(self.secret_key, ""),
+                        headers={"Stripe-Version": "2026-03-25.preview"},
+                    )
+                    if risk_resp.status_code == 200:
+                        risk_reserved = risk_resp.json().get("risk_reserved")
+                except Exception:
+                    risk_reserved = None
+            if isinstance(risk_reserved, dict) and cur:
+                official_reserve = _sum_currency_rows(
+                    list(risk_reserved.get("available") or []), cur
+                ) + _sum_currency_rows(list(risk_reserved.get("pending") or []), cur)
 
             # Payout schedule delay (typical settlement hold in days) — for pending card hint only
             try:
@@ -206,38 +225,65 @@ class StripeClient:
             except Exception:
                 pass
 
-            # Risk reserve only — never treat ordinary pending charges as "on hold"
+            # Release schedule from reserve BTs — never treat ordinary pending charges as holds
             holds: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
             now_ts = int(time.time())
             seen_ids: set[str] = set()
 
             def _add_held_bt(bt: dict) -> None:
+                """Count outstanding reserve holds only (not releases / pending settlement)."""
                 bt_id = str(bt.get("id") or "")
                 if bt_id and bt_id in seen_ids:
                     return
-                if bt_id:
-                    seen_ids.add(bt_id)
+
+                bt_type = (bt.get("type") or "").lower()
+                if bt_type in ("reserve_release", "payment_network_reserve_release"):
+                    return
+                if bt_type in (
+                    "charge",
+                    "payment",
+                    "payment_refund",
+                    "refund",
+                    "stripe_fee",
+                    "payout",
+                ):
+                    return
 
                 available_on = int(bt.get("available_on") or 0)
-                status = (bt.get("status") or "").lower()
-                still_held = available_on > now_ts or status == "pending"
-                if not still_held:
+                # Release date in the future = still in reserve. Do NOT use status==pending:
+                # reserved_funds credits (releases back to payments) are often pending and
+                # were previously abs()-counted, inflating the risk-reserve total.
+                if available_on <= now_ts:
                     return
 
                 bt_cur = _norm_currency(bt.get("currency")) or cur
                 if cur and bt_cur != cur:
                     return
 
-                amt = abs(from_stripe_amount(bt.get("net"), bt_cur))
+                net = from_stripe_amount(bt.get("net"), bt_cur)
+                # reserved_funds / reserve_transaction: negative = into reserve, positive = release
+                if bt_type in ("reserved_funds", "reserve_transaction"):
+                    if net >= 0:
+                        return
+                    amt = -net
+                # reserve_hold*: credit into risk_reserved bucket
+                elif bt_type in ("reserve_hold", "payment_network_reserve_hold"):
+                    if net <= 0:
+                        return
+                    amt = net
+                else:
+                    # Description fallback — only debit-style (negative) amounts
+                    if net >= 0:
+                        return
+                    amt = -net
+
                 if amt <= 0:
                     return
 
-                days = max(
-                    1,
-                    int((available_on - now_ts + 86399) // 86400)
-                    if available_on > now_ts
-                    else 1,
-                )
+                if bt_id:
+                    seen_ids.add(bt_id)
+
+                days = max(1, int((available_on - now_ts + 86399) // 86400))
                 holds[days] += amt
 
             async def _paginate_type(bt_type: str) -> None:
@@ -269,17 +315,15 @@ class StripeClient:
                         break
 
             try:
-                # Debit-side reserve types = money Stripe is holding for risk
-                for bt_type in (
-                    "reserved_funds",
-                    "payment_network_reserve_hold",
-                    "reserve_transaction",
-                ):
+                # Prefer risk_reserved-side holds (do not also sum reserved_funds — same event,
+                # two BTs, would double-count Connect-style reserves).
+                for bt_type in ("reserve_hold", "payment_network_reserve_hold"):
                     await _paginate_type(bt_type)
 
-                # Fallback: reserve_hold credits if no debit-side rows
+                # Classic rolling reserve: only payments-side debits still scheduled to release
                 if not holds:
-                    await _paginate_type("reserve_hold")
+                    for bt_type in ("reserved_funds", "reserve_transaction"):
+                        await _paginate_type(bt_type)
 
                 # Last resort: scan recent BTs whose description mentions risk reserve
                 # (French Stripe Dashboard: "Réserve pour risque")
@@ -311,22 +355,11 @@ class StripeClient:
                                 in (
                                     "reserved_funds",
                                     "reserve_hold",
-                                    "reserve_release",
                                     "reserve_transaction",
                                     "payment_network_reserve_hold",
                                 )
                             )
-                            # Never count ordinary charge settlement as reserve
-                            if not is_reserve or bt_type in (
-                                "charge",
-                                "payment",
-                                "payment_refund",
-                                "refund",
-                                "stripe_fee",
-                                "payout",
-                            ):
-                                continue
-                            if bt_type in ("reserve_release", "payment_network_reserve_release"):
+                            if not is_reserve:
                                 continue
                             _add_held_bt(bt)
                         if not payload.get("has_more") or not batch:
@@ -337,13 +370,41 @@ class StripeClient:
             except Exception:
                 pass
 
-            result["holds"] = [
+            hold_rows = [
                 {"days": days, "amount": amount}
                 for days, amount in sorted(holds.items())
+                if amount > 0
             ]
-            result["reserve_total"] = sum(
-                (h["amount"] for h in result["holds"]), Decimal("0")
-            )
+            bt_total = sum((h["amount"] for h in hold_rows), Decimal("0"))
+
+            # Dashboard total wins when Balance.risk_reserved is present
+            if official_reserve > 0:
+                result["reserve_total"] = official_reserve
+                if hold_rows and bt_total > 0:
+                    # Keep release schedule; scale if BT sum drifted from official balance
+                    if abs(bt_total - official_reserve) <= Decimal("0.05"):
+                        result["holds"] = hold_rows
+                    else:
+                        scale = official_reserve / bt_total
+                        result["holds"] = [
+                            {
+                                "days": h["days"],
+                                "amount": (h["amount"] * scale).quantize(Decimal("0.01")),
+                            }
+                            for h in hold_rows
+                        ]
+                        # Fix residual cents on the largest bucket
+                        scaled_sum = sum(
+                            (h["amount"] for h in result["holds"]), Decimal("0")
+                        )
+                        drift = official_reserve - scaled_sum
+                        if result["holds"] and drift != 0:
+                            result["holds"][-1]["amount"] += drift
+                else:
+                    result["holds"] = [{"days": 1, "amount": official_reserve}]
+            else:
+                result["holds"] = hold_rows
+                result["reserve_total"] = bt_total
 
         return result
 
