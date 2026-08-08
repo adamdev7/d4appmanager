@@ -17,7 +17,7 @@ const STEPS = [
   },
   {
     title: "Customers track on your Shopify page",
-    body: "Your theme page calls our public API with order number + email. They see status (pending / in transit / delivered) and updates.",
+    body: "Your theme page calls our public API with order number + email. Placed orders without a tracking number still return successfully with status “Not shipped yet”; shipped orders show tracking and updates.",
   },
 ];
 

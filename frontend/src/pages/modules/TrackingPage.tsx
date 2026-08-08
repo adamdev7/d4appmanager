@@ -53,7 +53,8 @@ function statusBadgeVariant(status: string) {
   return "muted" as const;
 }
 
-function statusLabel(status: string) {
+function statusLabel(status: string, shipped?: boolean | null, trackingNumber?: string | null) {
+  if (shipped === false || (!trackingNumber && status === "pending")) return "Not shipped yet";
   if (status === "in_transit") return "On the way";
   if (status === "delivered") return "Delivered";
   return "Preparing";
@@ -85,11 +86,11 @@ function CopyButton({ value, label }: { value: string; label: string }) {
 function buildShopifySnippet(storeId: string, apiBase: string) {
   const apiUrl = apiBase.replace(/\/$/, "");
   return `{% comment %} App Manager — Track Your Order {% endcomment %}
-<div id="track-order-app" style="max-width:520px;margin:2rem auto;">
+<div id="track-order-app" style="max-width:560px;margin:2rem auto;font-family:inherit;">
   <form id="track-order-form" style="display:grid;gap:1rem;">
-    <label>Order number<input type="text" name="order_number" required placeholder="#1001" style="width:100%"></label>
-    <label>Email<input type="email" name="email" required style="width:100%"></label>
-    <button type="submit">Track order</button>
+    <label>Order number<input type="text" name="order_number" required placeholder="#1001" style="width:100%;padding:0.6rem;box-sizing:border-box;"></label>
+    <label>Email<input type="email" name="email" required style="width:100%;padding:0.6rem;box-sizing:border-box;"></label>
+    <button type="submit" style="padding:0.75rem 1rem;cursor:pointer;">Track order</button>
   </form>
   <div id="track-order-result" style="margin-top:1.5rem;"></div>
 </div>
@@ -99,6 +100,40 @@ function buildShopifySnippet(storeId: string, apiBase: string) {
   var API_BASE = ${JSON.stringify(apiUrl)};
   var form = document.getElementById("track-order-form");
   var resultEl = document.getElementById("track-order-result");
+  function esc(s){
+    return String(s == null ? "" : s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;");
+  }
+  function render(d){
+    var shipped = d.shipped === true || !!(d.tracking_number);
+    var label = d.status_label || (shipped ? (d.status === "delivered" ? "Delivered" : "On the way") : "Not shipped yet");
+    var message = d.message || (shipped
+      ? (d.status === "delivered" ? "Your order has been delivered." : "Your order has shipped and is on the way.")
+      : "Your order has been placed and is being prepared. It has not shipped yet.");
+    var html = '<div style="border:1px solid #e5e5e5;border-radius:12px;padding:1.25rem;">';
+    html += '<p style="margin:0 0 0.35rem;font-size:0.85rem;opacity:0.7;">Order ' + esc(d.order_number) + '</p>';
+    html += '<p style="margin:0 0 0.75rem;font-size:1.25rem;font-weight:600;">' + esc(label) + '</p>';
+    html += '<p style="margin:0 0 1rem;line-height:1.5;">' + esc(message) + '</p>';
+    if (shipped && d.tracking_number) {
+      html += '<p style="margin:0 0 0.35rem;"><strong>Tracking:</strong> ' + esc(d.tracking_number) + '</p>';
+      if (d.carrier) html += '<p style="margin:0 0 0.75rem;"><strong>Carrier:</strong> ' + esc(d.carrier) + '</p>';
+    }
+    if (Array.isArray(d.timeline) && d.timeline.length) {
+      html += '<ul style="margin:0.75rem 0 0;padding-left:1.1rem;line-height:1.6;">';
+      d.timeline.forEach(function(ev){
+        html += '<li>' + esc(ev.description || "");
+        if (ev.at) {
+          try { html += ' <span style="opacity:0.65;font-size:0.85em;">(' + esc(new Date(ev.at).toLocaleString()) + ')</span>'; }
+          catch(e) {}
+        }
+        html += '</li>';
+      });
+      html += '</ul>';
+    }
+    html += '</div>';
+    resultEl.innerHTML = html;
+  }
   form.addEventListener("submit", function(e){
     e.preventDefault();
     resultEl.textContent = "Looking up…";
@@ -110,10 +145,7 @@ function buildShopifySnippet(storeId: string, apiBase: string) {
       .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, data: d }; }); })
       .then(function(res){
         if (!res.ok) { resultEl.textContent = res.data.detail || "Order not found."; return; }
-        var d = res.data;
-        resultEl.innerHTML = "<p><strong>Status:</strong> " + d.status + "</p>"
-          + (d.tracking_number ? "<p><strong>Tracking:</strong> " + d.tracking_number + "</p>" : "")
-          + (d.carrier ? "<p><strong>Carrier:</strong> " + d.carrier + "</p>" : "");
+        render(res.data);
       })
       .catch(function(){ resultEl.textContent = "Could not reach tracking service."; });
   });
@@ -428,14 +460,25 @@ export function TrackingPage() {
                   <Truck className="h-4 w-4 text-brand-600" />
                   <span className="font-medium text-content">{testResult.order_number}</span>
                   <Badge variant={statusBadgeVariant(testResult.status)}>
-                    {statusLabel(testResult.status)}
+                    {testResult.status_label ||
+                      statusLabel(
+                        testResult.status,
+                        testResult.shipped,
+                        testResult.tracking_number
+                      )}
                   </Badge>
                 </div>
+                {testResult.message && (
+                  <p className="text-sm text-content-muted">{testResult.message}</p>
+                )}
                 {testResult.tracking_number && (
                   <p className="text-sm text-content-muted">
                     Tracking: <span className="text-content">{testResult.tracking_number}</span>
                     {testResult.carrier ? ` · ${testResult.carrier}` : ""}
                   </p>
+                )}
+                {!testResult.tracking_number && (
+                  <p className="text-sm text-content-muted">No tracking number yet — order not shipped.</p>
                 )}
                 {testResult.timeline.length > 0 && (
                   <ul className="text-sm text-content-muted space-y-1 mt-2 border-t border-border pt-2">
@@ -603,7 +646,8 @@ export function TrackingPage() {
                 <CardTitle>Customer track page</CardTitle>
                 <CardDescription>
                   Add a simple &quot;Track your order&quot; page on your Shopify store so customers
-                  can check status with their order number and email.
+                  can check status with their order number and email. Orders without a tracking
+                  number still load — customers see &quot;Not shipped yet&quot;.
                 </CardDescription>
               </CardHeader>
               <div className="px-6 pb-6 space-y-4">
@@ -637,8 +681,9 @@ export function TrackingPage() {
                     </pre>
                     <CopyButton value={shopifySnippet} label="Copy install code" />
                     <p className="text-xs text-content-subtle">
-                      This code is already set up for your store. You usually don&apos;t need to
-                      change anything.
+                      This code is already set up for your store. Re-paste it into your theme if you
+                      installed an older version — unshipped orders need the updated snippet to show
+                      &quot;Not shipped yet&quot;.
                     </p>
                   </div>
                 )}

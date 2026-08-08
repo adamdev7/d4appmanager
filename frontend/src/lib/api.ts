@@ -176,10 +176,23 @@ export type TrackingSyncResult = {
 
 export type TrackOrderResult = {
   order_number: string;
+  order_placed_at?: string | null;
+  order_total?: string | null;
+  currency?: string | null;
+  line_items?: Array<{
+    title: string;
+    variant?: string;
+    quantity?: number;
+    image_url?: string;
+    price?: string;
+  }>;
   tracking_number: string | null;
   carrier: string | null;
   status: string;
-  timeline: Array<{ status: string; description: string; at: string }>;
+  shipped?: boolean;
+  status_label?: string;
+  message?: string;
+  timeline: Array<{ status: string; description: string; location?: string; at: string }>;
   last_updated_at: string | null;
 };
 

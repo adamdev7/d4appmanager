@@ -28,6 +28,9 @@ from app.tracking.payload_parser import (
 logger = logging.getLogger(__name__)
 
 _CARRIER_REFRESH_MINUTES = 30
+_NOT_SHIPPED_MESSAGE = (
+    "Your order has been placed and is being prepared. It has not shipped yet."
+)
 
 
 class TrackOrderService:
@@ -91,6 +94,56 @@ class TrackOrderService:
         return self._row_to_response(row, tracking_number, carrier, status, events, last_updated)
 
     @staticmethod
+    def _customer_facing_fields(
+        *,
+        tracking_number: str,
+        status: str,
+    ) -> dict[str, Any]:
+        """Labels/messages for the Shopify track page (including unshipped orders)."""
+        shipped = bool((tracking_number or "").strip())
+        if not shipped:
+            return {
+                "shipped": False,
+                "status": "pending",
+                "status_label": "Not shipped yet",
+                "message": _NOT_SHIPPED_MESSAGE,
+            }
+        if status == "delivered":
+            return {
+                "shipped": True,
+                "status": "delivered",
+                "status_label": "Delivered",
+                "message": "Your order has been delivered.",
+            }
+        return {
+            "shipped": True,
+            "status": status if status in ("in_transit", "delivered") else "in_transit",
+            "status_label": "On the way",
+            "message": "Your order has shipped and is on the way.",
+        }
+
+    @staticmethod
+    def _ensure_not_shipped_timeline(
+        events: list[dict[str, str]],
+        *,
+        shipped: bool,
+        order_placed_at: datetime | None,
+        last_updated: datetime | None,
+        updated_at: datetime | None,
+    ) -> list[dict[str, str]]:
+        if shipped or events:
+            return events
+        at = order_placed_at or last_updated or updated_at or datetime.now(UTC)
+        return [
+            {
+                "status": "pending",
+                "description": "Order placed — not shipped yet",
+                "location": "",
+                "at": at.isoformat(),
+            }
+        ]
+
+    @staticmethod
     def _row_to_response(
         row: OrderTracking,
         tracking_number: str,
@@ -100,6 +153,17 @@ class TrackOrderService:
         last_updated: datetime | None,
     ) -> dict[str, Any]:
         line_items = TrackOrderService._load_line_items(row.line_items_json)
+        facing = TrackOrderService._customer_facing_fields(
+            tracking_number=tracking_number,
+            status=status,
+        )
+        timeline = TrackOrderService._ensure_not_shipped_timeline(
+            events,
+            shipped=bool(facing["shipped"]),
+            order_placed_at=row.order_placed_at,
+            last_updated=last_updated,
+            updated_at=row.updated_at,
+        )
         return {
             "order_number": row.order_number_display,
             "order_placed_at": row.order_placed_at.isoformat() if row.order_placed_at else None,
@@ -108,8 +172,11 @@ class TrackOrderService:
             "line_items": line_items,
             "tracking_number": tracking_number or None,
             "carrier": carrier or None,
-            "status": status,
-            "timeline": events,
+            "status": facing["status"],
+            "shipped": facing["shipped"],
+            "status_label": facing["status_label"],
+            "message": facing["message"],
+            "timeline": timeline,
             "last_updated_at": (last_updated or row.updated_at).isoformat()
             if last_updated or row.updated_at
             else None,

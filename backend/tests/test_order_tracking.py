@@ -207,6 +207,51 @@ def test_should_not_force_refresh_when_carrier_events_exist():
     assert TrackOrderService._should_refresh_carrier(Row()) is False
 
 
+def test_customer_facing_fields_not_shipped():
+    fields = TrackOrderService._customer_facing_fields(tracking_number="", status="pending")
+    assert fields["shipped"] is False
+    assert fields["status"] == "pending"
+    assert fields["status_label"] == "Not shipped yet"
+    assert "not shipped yet" in fields["message"].lower()
+
+
+def test_customer_facing_fields_in_transit():
+    fields = TrackOrderService._customer_facing_fields(
+        tracking_number="YT123", status="in_transit"
+    )
+    assert fields["shipped"] is True
+    assert fields["status_label"] == "On the way"
+
+
+def test_ensure_not_shipped_timeline_when_empty():
+    placed = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+    events = TrackOrderService._ensure_not_shipped_timeline(
+        [],
+        shipped=False,
+        order_placed_at=placed,
+        last_updated=None,
+        updated_at=None,
+    )
+    assert len(events) == 1
+    assert events[0]["status"] == "pending"
+    assert "not shipped yet" in events[0]["description"].lower()
+    assert events[0]["at"] == placed.isoformat()
+
+
+def test_ensure_not_shipped_timeline_skips_when_shipped():
+    existing = [{"status": "in_transit", "description": "In transit", "location": "", "at": "x"}]
+    assert (
+        TrackOrderService._ensure_not_shipped_timeline(
+            existing,
+            shipped=True,
+            order_placed_at=None,
+            last_updated=None,
+            updated_at=None,
+        )
+        == existing
+    )
+
+
 def test_fulfillment_targets_for_delivered_sync():
     from app.tracking.shopify_delivery_sync import _fulfillment_targets
 

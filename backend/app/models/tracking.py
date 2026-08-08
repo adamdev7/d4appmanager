@@ -24,5 +24,8 @@ class TrackOrderResponse(BaseModel):
     tracking_number: str | None = None
     carrier: str | None = None
     status: str
+    shipped: bool = False
+    status_label: str = "Not shipped yet"
+    message: str = "Your order has been placed and is being prepared. It has not shipped yet."
     timeline: list[TimelineEvent] = Field(default_factory=list)
     last_updated_at: str | None = None
