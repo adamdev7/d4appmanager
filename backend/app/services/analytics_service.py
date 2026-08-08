@@ -1812,24 +1812,21 @@ class AnalyticsService:
             dispute_rate_pct = float(disputes_raw.get("rate_pct") or 0)
 
         # --- Revenue (P&L in store currency; Meta spend never converted to GBP) ---
-        shopify_revenue = revenue
+        # Shopify is storefront/checkout only — payments settle on Stripe MID(s).
+        # Never use Shopify order totals as P&L revenue (no fallback / no switch).
+        shopify_revenue = revenue  # diagnostic / attribution only
         fees_already_net = False
-        has_stripe_revenue = stripe_connected and (stripe_net != 0 or stripe_gross > 0)
 
-        if has_stripe_revenue:
+        if stripe_connected:
             base_revenue = stripe_net
             revenue_source = "stripe"
             transaction_fees = Decimal("0")
             fees_already_net = True
             revenue = stripe_net
-        elif shopify_revenue > 0:
-            base_revenue = shopify_revenue
-            revenue_source = "shopify"
-            if fee_pct == 0 and fee_fixed == 0 and stripe_fees > 0:
-                transaction_fees = stripe_fees
         else:
             base_revenue = Decimal("0")
             revenue_source = "none"
+            revenue = Decimal("0")
 
         meta_approx_revenue = Decimal("0")
         approx_revenue = base_revenue
@@ -1904,8 +1901,8 @@ class AnalyticsService:
         meta_cpa = (
             _money(ad_spend_native / _d(meta_purchases)) if meta_purchases > 0 and ad_spend_native > 0 else 0
         )
-        aov = _money(shopify_revenue / _d(order_count)) if order_count > 0 else 0
-        if aov == 0 and stripe_charge_count > 0 and stripe_gross > 0:
+        aov = 0.0
+        if stripe_charge_count > 0 and stripe_gross > 0:
             aov = _money(stripe_gross / _d(stripe_charge_count))
         meta_aov = (
             _money(meta_purchase_value_native / _d(meta_purchases)) if meta_purchases > 0 else 0
@@ -1969,7 +1966,7 @@ class AnalyticsService:
                 )
             day_shopify_rev = s["revenue"]
             day_meta_rev = m["purchase_value"]
-            # Prefer Stripe period revenue (FX'd to store currency) over Shopify for charts
+            # Charts always use Stripe settlement — Shopify is not a revenue source.
             day_stripe_rev = Decimal("0")
             if use_monthly:
                 month_prefix = key[:7]
@@ -1978,18 +1975,11 @@ class AnalyticsService:
                         day_stripe_rev += amt
             else:
                 day_stripe_rev = daily_stripe_cad.get(key, Decimal("0"))
-            day_rev = day_stripe_rev if day_stripe_rev != 0 else day_shopify_rev
+            day_rev = day_stripe_rev if revenue_source == "stripe" else Decimal("0")
             day_spend = m["spend"]  # Meta spend stays in store currency
             day_orders = s["orders"] if s["orders"] else (1 if day_stripe_rev != 0 else 0)
+            # Fees already in Stripe net; shipping/COGS allocated at period level only
             day_cost = Decimal("0")
-            if day_shopify_rev > 0 and day_stripe_rev == 0:
-                if not fees_already_net:
-                    if fee_pct > 0:
-                        day_cost += day_rev * fee_pct
-                    elif transaction_fees > 0 and shopify_revenue > 0:
-                        day_cost += transaction_fees * (day_rev / shopify_revenue)
-                if shipping_per_order > 0:
-                    day_cost += shipping_per_order * _d(day_orders)
             day_gross = day_rev - day_cost
             daily_chart.append(
                 {
@@ -2344,7 +2334,7 @@ class AnalyticsService:
                 {
                     "level": "warning",
                     "title": "Connect Shopify",
-                    "message": "Link your store to see real revenue, orders, and product profitability.",
+                    "message": "Link your store for orders, product COGS, and shipping. Revenue always comes from Stripe processors — never Shopify checkout totals.",
                     "action": "Go to Settings → Stores and connect Shopify.",
                 }
             )
@@ -2353,7 +2343,7 @@ class AnalyticsService:
                 {
                     "level": "info",
                     "title": "Add Meta Ads credentials",
-                    "message": "Connect Meta to track ad spend and campaign performance. Revenue always comes from orders/Stripe — never Meta purchase value.",
+                    "message": "Connect Meta to track ad spend and campaign performance. Revenue always comes from Stripe processors — never Meta purchase value or Shopify checkout totals.",
                     "action": "Open the Analytics Settings tab and paste your Meta token + ad account ID.",
                 }
             )
@@ -2362,14 +2352,25 @@ class AnalyticsService:
             insights.append(
                 {
                     "level": "info",
-                    "title": "Revenue from Stripe (all transactions)",
+                    "title": "Revenue from Stripe processors only",
                     "message": (
-                        f"Period revenue is Stripe net charges ({money(approx_revenue)}) in "
-                        f"{currency} — subscriptions and one-time payments, converted with "
-                        f"historical daily FX when needed. Meta ad spend is always CAD and converted "
-                        f"into {currency} for display."
+                        f"Period revenue is Stripe net ({money(approx_revenue)}) in {currency} "
+                        f"across connected MID(s). Shopify is storefront/checkout only — "
+                        f"order totals are never used as revenue (payments settle on Stripe)."
                     ),
-                    "action": "MRR is current run-rate only and is shown separately.",
+                    "action": "Shopify still feeds orders, COGS, and product stats.",
+                }
+            )
+        elif not stripe_connected:
+            insights.append(
+                {
+                    "level": "warning",
+                    "title": "Connect Stripe for revenue",
+                    "message": (
+                        "P&L revenue comes only from Stripe payment processor account(s). "
+                        "Shopify checkout totals are not counted as revenue."
+                    ),
+                    "action": "Add Stripe secret keys in Analytics Settings for each MID.",
                 }
             )
 
@@ -2504,8 +2505,8 @@ class AnalyticsService:
                 }
             )
 
-        # Cost structure
-        rev_for_costs = shopify_revenue if shopify_revenue > 0 else approx_revenue
+        # Cost structure vs Stripe P&L revenue
+        rev_for_costs = approx_revenue
         if rev_for_costs > 0:
             cogs_pct = _pct(cogs, rev_for_costs)
             ship_pct = _pct(shipping_costs, rev_for_costs)

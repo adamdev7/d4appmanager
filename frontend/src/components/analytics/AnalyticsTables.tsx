@@ -231,8 +231,8 @@ export function ProfitBreakdown({
     {
       label:
         summary.revenue_source === "stripe"
-          ? "Revenue (Stripe total, net of fees)"
-          : "Revenue (orders + subscriptions)",
+          ? "Revenue (Stripe processors, net of fees)"
+          : "Revenue (Stripe required)",
       value: summary.revenue - (summary.prior_external_revenue || 0),
       type: "positive" as const,
     },
@@ -341,10 +341,11 @@ export function ProfitBreakdown({
       <CardHeader>
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
-          P&amp;L is in store currency (CAD). Stripe revenue uses settlement balance amounts —
-          FX only when settlement currency differs. Meta ad spend, lost/open chargebacks, and
-          dated manual investments are deducted after gross profit. Won chargebacks stay in
-          Stripe revenue (original charge) and are not deducted. MRR uses spot FX.
+          P&amp;L is in store currency (CAD). When Stripe is connected, revenue is Stripe
+          settlement only (Shopify orders are not added — same sales settle in Stripe). FX only
+          when settlement currency differs. Meta ad spend, lost/open chargebacks, and dated
+          manual investments are deducted after gross profit. Won chargebacks stay in Stripe
+          revenue and are not deducted. MRR uses spot FX.
         </CardDescription>
       </CardHeader>
 

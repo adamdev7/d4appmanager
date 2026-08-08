@@ -251,8 +251,8 @@ export function AnalyticsPage() {
             Store Analytics
           </h1>
           <p className="text-content-muted mt-1 max-w-2xl text-sm sm:text-base xl:text-lg">
-            Triple Whale-style profitability dashboard — Shopify revenue and Meta ad spend in one
-            place, with real net profit tracking.
+            Profitability dashboard — revenue from Stripe payment processors, ad spend from Meta.
+            Shopify is storefront/checkout only (orders &amp; COGS), never counted as revenue.
           </p>
           {rangeHint && (
             <p className="text-xs text-content-subtle mt-2 break-words">{rangeHint}</p>
@@ -443,7 +443,9 @@ export function AnalyticsPage() {
                   hint={
                     summary.revenue_source === "stripe"
                       ? `Stripe settlement net (${currency}) · gross ${formatMoney(summary.stripe_revenue_gross || 0, currency)} · ${summary.stripe_charges ?? 0} charges`
-                      : `${summary.orders} orders · AOV ${formatMoney(summary.aov, storeCurrency)}`
+                      : summary.revenue_source === "none"
+                        ? "Connect Stripe MID(s) — Shopify is not used for revenue"
+                        : `${summary.orders} orders · AOV ${formatMoney(summary.aov, storeCurrency)}`
                   }
                   icon={ShoppingBag}
                   accent="brand"
