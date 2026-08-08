@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import base64
+import logging
 import re
 import secrets
 from urllib.parse import urlencode
@@ -8,6 +9,8 @@ from urllib.parse import urlencode
 import httpx
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class ShopifyClient:
@@ -84,6 +87,7 @@ class ShopifyClient:
         created_at_max: str | None = None,
         financial_status: str | None = None,
         name: str | None = None,
+        query: str | None = None,
         ids: str | None = None,
     ) -> list[dict]:
         """Fetch recent orders from this Shopify store (Admin REST)."""
@@ -103,6 +107,8 @@ class ShopifyClient:
             params["financial_status"] = financial_status
         if name:
             params["name"] = name
+        if query:
+            params["query"] = query
         if ids:
             params["ids"] = ids
         async with httpx.AsyncClient(timeout=45) as client:
@@ -113,6 +119,108 @@ class ShopifyClient:
             )
             resp.raise_for_status()
             return list(resp.json().get("orders") or [])
+
+    async def find_orders_by_name(self, order_number: str, *, limit: int = 10) -> list[dict]:
+        """
+        Find orders by customer-facing name (#1042 / 1042).
+
+        Shopify's REST `name=` filter is unreliable with the default `#` prefix
+        (often returns unrelated recent orders or nothing). We try several
+        query forms, always filter client-side for an exact name match, then
+        fall back to GraphQL and a recent-order scan.
+        """
+        from app.tracking.payload_parser import normalize_order_number, order_name_matches
+
+        bare = normalize_order_number(order_number)
+        if not bare:
+            return []
+        hashed = f"#{bare}"
+
+        async def _exact(orders: list[dict]) -> list[dict]:
+            return [o for o in orders if order_name_matches(str(o.get("name") or ""), bare)]
+
+        attempts: list[dict[str, str | int]] = [
+            {"query": f"name:{hashed}", "status": "any", "limit": limit},
+            {"query": f"name:{bare}", "status": "any", "limit": limit},
+            {"name": hashed, "status": "any", "limit": limit},
+            {"name": bare, "status": "any", "limit": limit},
+        ]
+        for params in attempts:
+            try:
+                kwargs = {k: v for k, v in params.items()}
+                matched = await _exact(await self.list_orders(**kwargs))  # type: ignore[arg-type]
+                if matched:
+                    return matched
+            except Exception:
+                logger.debug(
+                    "Shopify order name search attempt failed for %s params=%s",
+                    self.shop_domain,
+                    params,
+                    exc_info=True,
+                )
+
+        gql_ids = await self._graphql_order_ids_by_name(hashed, bare)
+        if gql_ids:
+            found: list[dict] = []
+            for oid in gql_ids[:limit]:
+                try:
+                    found.append(await self.get_order(oid))
+                except Exception:
+                    continue
+            matched = await _exact(found)
+            if matched:
+                return matched
+
+        try:
+            recent = await self.list_orders(limit=100, status="any")
+            matched = await _exact(recent)
+            if matched:
+                return matched
+        except Exception:
+            pass
+        return []
+
+    async def _graphql_order_ids_by_name(self, hashed: str, bare: str) -> list[str]:
+        """Return Shopify numeric order ids matching the customer-facing name."""
+        if not self.access_token:
+            return []
+        query = """
+        query OrdersByName($q: String!) {
+          orders(first: 5, query: $q) {
+            edges { node { legacyResourceId name } }
+          }
+        }
+        """
+        headers = {
+            "X-Shopify-Access-Token": self.access_token,
+            "Content-Type": "application/json",
+        }
+        ids: list[str] = []
+        async with httpx.AsyncClient(timeout=45) as client:
+            for q in (f"name:{hashed}", f"name:{bare}", hashed, bare):
+                try:
+                    resp = await client.post(
+                        f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
+                        headers=headers,
+                        json={"query": query, "variables": {"q": q}},
+                    )
+                    resp.raise_for_status()
+                    edges = (
+                        ((resp.json().get("data") or {}).get("orders") or {}).get("edges") or []
+                    )
+                    for edge in edges:
+                        node = (edge or {}).get("node") or {}
+                        oid = str(node.get("legacyResourceId") or "").strip()
+                        name = str(node.get("name") or "")
+                        from app.tracking.payload_parser import order_name_matches
+
+                        if oid and order_name_matches(name, bare) and oid not in ids:
+                            ids.append(oid)
+                    if ids:
+                        return ids
+                except Exception:
+                    continue
+        return ids
 
     async def get_order(self, order_id: str | int) -> dict:
         """Fetch a single order by numeric Shopify id."""

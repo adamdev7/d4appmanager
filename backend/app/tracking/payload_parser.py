@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,10 +12,19 @@ def normalize_email(email: str | None) -> str:
 
 
 def normalize_order_number(value: str | None) -> str:
+    """Customer-facing order name without leading # / 'Order' prefix."""
     raw = (value or "").strip()
+    raw = re.sub(r"^(order|commande)\s*[#:]?\s*", "", raw, flags=re.IGNORECASE)
     if raw.startswith("#"):
         raw = raw[1:].strip()
     return raw
+
+
+def order_name_matches(order_name: str | None, requested: str | None) -> bool:
+    """True when Shopify order name matches what the customer typed."""
+    left = normalize_order_number(order_name)
+    right = normalize_order_number(requested)
+    return bool(left) and left.casefold() == right.casefold()
 
 
 def order_number_variants(value: str | None) -> list[str]:
@@ -28,7 +38,13 @@ def order_number_variants(value: str | None) -> list[str]:
 
 def recipient_email(payload: dict[str, Any]) -> str:
     customer = payload.get("customer") or {}
-    email = customer.get("email") or payload.get("email") or payload.get("contact_email")
+    email = (
+        customer.get("email")
+        or payload.get("email")
+        or payload.get("contact_email")
+        or (payload.get("billing_address") or {}).get("email")
+        or (payload.get("shipping_address") or {}).get("email")
+    )
     if email and isinstance(email, str):
         return normalize_email(email)
     return ""

@@ -197,26 +197,9 @@ class TrackOrderService:
         except ValueError:
             return None
 
-        display_number = order_number.strip()
-        if not display_number.startswith("#"):
-            search_name = f"#{normalize_order_number(display_number)}"
-        else:
-            search_name = display_number
-
         try:
-            import httpx
-
-            from app.integrations.shopify.client import ShopifyClient
-
             client = ShopifyClient(store.shop_domain, token)
-            async with httpx.AsyncClient(timeout=30) as http:
-                resp = await http.get(
-                    f"{client.admin_api_base}/orders.json",
-                    params={"name": search_name, "status": "any", "limit": 5},
-                    headers={"X-Shopify-Access-Token": token},
-                )
-                resp.raise_for_status()
-                orders = resp.json().get("orders") or []
+            orders = await client.find_orders_by_name(order_number, limit=5)
         except Exception:
             logger.exception("Shopify order summary refresh failed for store %s", store.id)
             return None
@@ -237,7 +220,7 @@ class TrackOrderService:
     ) -> OrderTracking | None:
         variants = {normalize_order_number(v) for v in order_number_variants(normalized_number)}
         variants.discard("")
-        if not variants:
+        if not variants or not normalized_email:
             return None
 
         return self._db.scalar(
@@ -263,25 +246,18 @@ class TrackOrderService:
             return None
 
         client = ShopifyClient(store.shop_domain, token)
-        display_number = order_number.strip()
-        if not display_number.startswith("#"):
-            search_name = f"#{normalize_order_number(display_number)}"
-        else:
-            search_name = display_number
-
         try:
-            import httpx
-
-            async with httpx.AsyncClient(timeout=30) as http:
-                resp = await http.get(
-                    f"{client.admin_api_base}/orders.json",
-                    params={"name": search_name, "status": "any", "limit": 5},
-                    headers={"X-Shopify-Access-Token": token},
-                )
-                resp.raise_for_status()
-                orders = resp.json().get("orders") or []
+            orders = await client.find_orders_by_name(order_number, limit=10)
         except Exception:
             logger.exception("Shopify order lookup failed for store %s", store.id)
+            return None
+
+        if not orders:
+            logger.info(
+                "No Shopify order matched name %r for store %s",
+                order_number,
+                store.id,
+            )
             return None
 
         for order in orders:
@@ -295,6 +271,11 @@ class TrackOrderService:
                 normalized_email,
             )
 
+        logger.info(
+            "Shopify order(s) matched name %r for store %s but email did not match",
+            order_number,
+            store.id,
+        )
         return None
 
     @staticmethod

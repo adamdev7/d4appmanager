@@ -19,6 +19,17 @@ from app.tracking.timeline_normalize import normalize_timeline
 def test_normalize_order_number():
     assert normalize_order_number("#1001") == "1001"
     assert normalize_order_number("1001") == "1001"
+    assert normalize_order_number("Order #1001") == "1001"
+    assert normalize_order_number("order 1001") == "1001"
+
+
+def test_order_name_matches():
+    from app.tracking.payload_parser import order_name_matches
+
+    assert order_name_matches("#1042", "1042")
+    assert order_name_matches("#1042", "#1042")
+    assert order_name_matches("#1042", "Order #1042")
+    assert not order_name_matches("#1042", "1043")
 
 
 def test_order_number_variants():
