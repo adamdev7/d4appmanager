@@ -175,6 +175,43 @@ def test_order_summary_from_shopify_order():
     assert summary["line_items"][0]["title"] == "Solitaire Diamond Ring"
 
 
+def test_order_summary_prefers_presentment_gbp():
+    summary = order_summary_from_payload(
+        {
+            "created_at": "2026-08-06T21:21:26+00:00",
+            "currency": "USD",
+            "presentment_currency": "GBP",
+            "total_price": "13.39",
+            "current_total_price_set": {
+                "shop_money": {"amount": "13.39", "currency_code": "USD"},
+                "presentment_money": {"amount": "9.95", "currency_code": "GBP"},
+            },
+            "line_items": [
+                {
+                    "title": "Ring",
+                    "variant_title": "Gold",
+                    "quantity": 1,
+                    "price": "13.39",
+                    "price_set": {
+                        "shop_money": {"amount": "13.39", "currency_code": "USD"},
+                        "presentment_money": {"amount": "9.95", "currency_code": "GBP"},
+                    },
+                }
+            ],
+        }
+    )
+    assert summary["currency"] == "GBP"
+    assert summary["total_display"] == "£9.95"
+    assert summary["line_items"][0]["price"] == "£9.95"
+
+
+def test_format_money_gbp():
+    from app.tracking.payload_parser import format_money
+
+    assert format_money("9.95", "GBP") == "£9.95"
+    assert format_money("13.39", "USD") == "$13.39"
+
+
 def test_normalize_timeline_newest_first_and_filters_internal():
     from datetime import UTC, datetime
 

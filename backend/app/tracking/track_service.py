@@ -66,12 +66,12 @@ class TrackOrderService:
         if not emails_match(row.customer_email, normalized_email):
             return None
 
-        if not row.order_placed_at or not row.order_total_display:
-            refreshed = await self._refresh_order_summary_from_shopify(
-                store, row, order_number, normalized_email
-            )
-            if refreshed:
-                row = refreshed
+        # Always refresh money/summary from Shopify so presentment currency stays correct.
+        refreshed = await self._refresh_order_summary_from_shopify(
+            store, row, order_number, normalized_email
+        )
+        if refreshed:
+            row = refreshed
 
         tracking_number = row.tracking_number or ""
         carrier = row.carrier or ""

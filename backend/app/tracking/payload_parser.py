@@ -328,19 +328,51 @@ def timeline_event(
 
 
 def format_money(amount: str | float | int | None, currency: str | None) -> str:
-    """Format Shopify money for storefront display."""
-    code = (currency or "USD").upper()
+    """Format Shopify money for storefront display (customer-facing currency)."""
+    code = (currency or "USD").strip().upper() or "USD"
     try:
         value = float(amount or 0)
     except (TypeError, ValueError):
         return str(amount or "")
-    if code == "USD":
-        return f"${value:,.2f}"
-    if code == "EUR":
-        return f"€{value:,.2f}"
-    if code == "GBP":
-        return f"£{value:,.2f}"
-    return f"{value:,.2f} {code}"
+    symbols = {
+        "USD": "$",
+        "CAD": "CA$",
+        "AUD": "A$",
+        "NZD": "NZ$",
+        "EUR": "€",
+        "GBP": "£",
+        "JPY": "¥",
+    }
+    symbol = symbols.get(code)
+    if code == "JPY":
+        formatted = f"{value:,.0f}"
+    else:
+        formatted = f"{value:,.2f}"
+    if symbol:
+        return f"{symbol}{formatted}"
+    return f"{formatted} {code}"
+
+
+def _money_from_set(money_set: Any, *, prefer_presentment: bool = True) -> tuple[str | None, str | None]:
+    """Return (amount, currency_code) from a Shopify MoneyBagSet."""
+    if not isinstance(money_set, dict):
+        return None, None
+    presentment = money_set.get("presentment_money") or {}
+    shop = money_set.get("shop_money") or {}
+    primary = presentment if prefer_presentment and presentment else shop
+    fallback = shop if primary is presentment else presentment
+    amount = None
+    currency = None
+    if isinstance(primary, dict):
+        amount = primary.get("amount")
+        currency = primary.get("currency_code")
+    if (amount is None or currency is None) and isinstance(fallback, dict):
+        amount = amount if amount is not None else fallback.get("amount")
+        currency = currency or fallback.get("currency_code")
+    return (
+        str(amount) if amount is not None else None,
+        str(currency).upper() if currency else None,
+    )
 
 
 def _parse_placed_at(raw: str | None) -> datetime | None:
@@ -367,13 +399,24 @@ def _line_item_image_url(item: dict[str, Any]) -> str:
 
 
 def order_summary_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Extract order summary fields from a Shopify order (or webhook) payload."""
-    currency = str(payload.get("currency") or payload.get("presentment_currency") or "USD")
+    """Extract order summary fields from a Shopify order (or webhook) payload.
+
+    Uses presentment (what the customer paid) when available, not shop currency.
+    """
+    total_amount, total_currency = _money_from_set(
+        payload.get("current_total_price_set") or payload.get("total_price_set")
+    )
+    currency = (
+        total_currency
+        or str(payload.get("presentment_currency") or "").strip().upper()
+        or str(payload.get("currency") or "").strip().upper()
+        or "USD"
+    )
     placed_at = _parse_placed_at(
         str(payload.get("created_at") or payload.get("processed_at") or "")
     )
 
-    total_raw = payload.get("total_price") or payload.get("current_total_price")
+    total_raw = total_amount or payload.get("current_total_price") or payload.get("total_price")
     total_display = format_money(total_raw, currency)
 
     line_items: list[dict[str, Any]] = []
@@ -381,17 +424,22 @@ def order_summary_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(item, dict):
             continue
         qty = int(item.get("quantity") or 1)
-        unit_price = item.get("price") or item.get("original_unit_price")
+        unit_amount, unit_currency = _money_from_set(item.get("price_set"))
+        item_currency = unit_currency or currency
+        unit_price = unit_amount if unit_amount is not None else (
+            item.get("price") or item.get("original_unit_price")
+        )
+        try:
+            line_total = float(unit_price or 0) * qty
+        except (TypeError, ValueError):
+            line_total = unit_price
         line_items.append(
             {
                 "title": str(item.get("title") or item.get("name") or "Item"),
                 "variant": str(item.get("variant_title") or "").strip(),
                 "quantity": qty,
                 "image_url": _line_item_image_url(item),
-                "price": format_money(
-                    float(unit_price or 0) * qty if unit_price is not None else item.get("price"),
-                    currency,
-                ),
+                "price": format_money(line_total, item_currency),
             }
         )
 
