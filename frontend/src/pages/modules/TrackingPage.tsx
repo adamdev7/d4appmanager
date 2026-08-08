@@ -105,6 +105,20 @@ function buildShopifySnippet(storeId: string, apiBase: string) {
       .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
       .replace(/"/g,"&quot;");
   }
+  function cleanOrder(v){
+    var raw = String(v || "").trim();
+    raw = raw.replace(/^[("'\[\({]+/, "").replace(/[)"'\]\}.,;:]+$/, "").trim();
+    raw = raw.replace(/^(order|commande)\\s*/i, "").trim();
+    if (raw.charAt(0) === "#") raw = raw.slice(1).trim();
+    return raw.replace(/\\s+/g, "");
+  }
+  function cleanEmail(v){
+    var raw = String(v || "").trim();
+    raw = raw.replace(/^mailto:/i, "").trim();
+    var m = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);
+    if (m) raw = m[0];
+    return raw.replace(/^[("'\\[<({]+/, "").replace(/[)"'\\]>)}.,;:]+$/g, "").replace(/\\s+/g, "").toLowerCase();
+  }
   function render(d){
     var shipped = d.shipped === true || !!(d.tracking_number);
     var label = d.status_label || (shipped ? (d.status === "delivered" ? "Delivered" : "On the way") : "Not shipped yet");
@@ -138,8 +152,8 @@ function buildShopifySnippet(storeId: string, apiBase: string) {
     e.preventDefault();
     resultEl.textContent = "Looking up…";
     var url = new URL(API_BASE + "/api/track-order");
-    url.searchParams.set("order_number", form.order_number.value.trim());
-    url.searchParams.set("email", form.email.value.trim());
+    url.searchParams.set("order_number", cleanOrder(form.order_number.value));
+    url.searchParams.set("email", cleanEmail(form.email.value));
     url.searchParams.set("store_id", STORE_ID);
     fetch(url.toString(), { headers: { Accept: "application/json" } })
       .then(function(r){ return r.json().then(function(d){ return { ok: r.ok, data: d }; }); })

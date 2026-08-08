@@ -19,8 +19,10 @@ from app.tracking.enrichment_service import CarrierEnrichmentService
 from app.tracking.order_sync import OrderTrackingSyncService
 from app.tracking.timeline_normalize import normalize_timeline
 from app.tracking.payload_parser import (
+    emails_match,
     normalize_email,
     normalize_order_number,
+    order_name_matches,
     order_number_variants,
     recipient_email,
 )
@@ -61,7 +63,7 @@ class TrackOrderService:
         if not row:
             return None
 
-        if not row.customer_email or row.customer_email != normalized_email:
+        if not emails_match(row.customer_email, normalized_email):
             return None
 
         if not row.order_placed_at or not row.order_total_display:
@@ -205,7 +207,7 @@ class TrackOrderService:
             return None
 
         for order in orders:
-            if normalize_email(recipient_email(order)) != normalized_email:
+            if not emails_match(recipient_email(order), normalized_email):
                 continue
             self._sync._apply_order_summary(row, order)
             self._db.commit()
@@ -219,17 +221,47 @@ class TrackOrderService:
         normalized_email: str,
     ) -> OrderTracking | None:
         variants = {normalize_order_number(v) for v in order_number_variants(normalized_number)}
+        variants |= {v.casefold() for v in list(variants) if v}
         variants.discard("")
         if not variants or not normalized_email:
             return None
 
-        return self._db.scalar(
+        # Prefer exact normalized + cleaned email match.
+        rows = self._db.scalars(
             select(OrderTracking).where(
                 OrderTracking.store_id == store_id,
-                OrderTracking.customer_email == normalized_email,
-                OrderTracking.order_number_normalized.in_(variants),
+                or_(
+                    OrderTracking.order_number_normalized.in_(variants),
+                    OrderTracking.order_number_display.in_(
+                        {v for v in order_number_variants(normalized_number) if v}
+                    ),
+                ),
             )
-        )
+        ).all()
+
+        for row in rows:
+            if emails_match(row.customer_email, normalized_email) and (
+                normalize_order_number(row.order_number_normalized) in variants
+                or order_name_matches(row.order_number_display, normalized_number)
+                or order_name_matches(row.order_number_normalized, normalized_number)
+            ):
+                return row
+
+        # Fallback: same email, match order name flexibly among recent rows.
+        email_rows = self._db.scalars(
+            select(OrderTracking)
+            .where(OrderTracking.store_id == store_id)
+            .order_by(OrderTracking.updated_at.desc())
+            .limit(300)
+        ).all()
+        for row in email_rows:
+            if not emails_match(row.customer_email, normalized_email):
+                continue
+            if order_name_matches(row.order_number_display, normalized_number):
+                return row
+            if order_name_matches(row.order_number_normalized, normalized_number):
+                return row
+        return None
 
     async def _fetch_from_shopify(
         self,
@@ -246,8 +278,12 @@ class TrackOrderService:
             return None
 
         client = ShopifyClient(store.shop_domain, token)
+        # Search with cleaned number (with and without # handled inside client).
+        search_value = normalize_order_number(order_number) or order_number
         try:
-            orders = await client.find_orders_by_name(order_number, limit=10)
+            orders = await client.find_orders_by_name(search_value, limit=10)
+            if not orders and search_value != order_number.strip():
+                orders = await client.find_orders_by_name(order_number, limit=10)
         except Exception:
             logger.exception("Shopify order lookup failed for store %s", store.id)
             return None
@@ -261,7 +297,7 @@ class TrackOrderService:
             return None
 
         for order in orders:
-            if normalize_email(recipient_email(order)) != normalized_email:
+            if not emails_match(recipient_email(order), normalized_email):
                 continue
             self._sync.upsert_from_shopify_order(store.id, order)
             self._db.commit()

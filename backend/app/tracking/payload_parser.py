@@ -6,17 +6,79 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+# Invisible / copy-paste junk often stuck to emails and order numbers.
+_INVISIBLE_CHARS = re.compile(r"[\u200b-\u200f\u202a-\u202e\ufeff\u00a0\u2060]")
+_EMAIL_IN_ANGLES = re.compile(r"<([^<>@\s]+@[^<>@\s]+)>")
+_EMAIL_LOOSE = re.compile(r"([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})", re.IGNORECASE)
+_ORDER_PREFIX = re.compile(
+    r"^(order|commande|ord\.?|no\.?|number|num\.?)\s*[#:]?\s*",
+    re.IGNORECASE,
+)
+
 
 def normalize_email(email: str | None) -> str:
-    return (email or "").strip().lower()
+    """
+    Clean customer email for lookup.
+
+    Handles copy/paste junk: parentheses, angle brackets, quotes, mailto:,
+    display names, invisible characters, trailing punctuation.
+    Examples:
+      (jane@shop.com)  → jane@shop.com
+      Jane <jane@x.com> → jane@x.com
+      mailto:jane@x.com → jane@x.com
+    """
+    raw = _INVISIBLE_CHARS.sub("", (email or "")).strip()
+    if not raw:
+        return ""
+
+    raw = re.sub(r"^mailto:\s*", "", raw, flags=re.IGNORECASE).strip()
+
+    angled = _EMAIL_IN_ANGLES.search(raw)
+    if angled:
+        raw = angled.group(1).strip()
+    else:
+        # Unwrap matching (), [], {} when the whole value is wrapped.
+        while len(raw) >= 2 and raw[0] in "([{" and raw[-1] in ")]}":
+            inner = raw[1:-1].strip()
+            if "@" not in inner:
+                break
+            raw = inner
+
+        # Pull an email out of leftover junk like: "Jane (jane@x.com)"
+        loose = _EMAIL_LOOSE.search(raw)
+        if loose:
+            raw = loose.group(1)
+
+    raw = raw.strip().strip("'\"`").strip()
+    raw = re.sub(r"\s+", "", raw)
+    raw = raw.rstrip(".,;:)")
+    raw = raw.lstrip("(<[{")
+    return raw.lower()
 
 
 def normalize_order_number(value: str | None) -> str:
-    """Customer-facing order name without leading # / 'Order' prefix."""
-    raw = (value or "").strip()
-    raw = re.sub(r"^(order|commande)\s*[#:]?\s*", "", raw, flags=re.IGNORECASE)
-    if raw.startswith("#"):
-        raw = raw[1:].strip()
+    """
+    Customer-facing order name without # / labels / wrapping punctuation.
+
+    Accepts: 1042, #1042, Order #1042, (#1042), "1042"
+    """
+    raw = _INVISIBLE_CHARS.sub("", (value or "")).strip()
+    if not raw:
+        return ""
+
+    while len(raw) >= 2 and raw[0] in "'\"`([{" and raw[-1] in "'\"`)]}":
+        raw = raw[1:-1].strip()
+
+    raw = _ORDER_PREFIX.sub("", raw).strip()
+
+    if "#" in raw:
+        raw = raw.split("#")[-1].strip()
+    else:
+        raw = raw.lstrip("#").strip()
+
+    raw = raw.strip().strip("'\"`").rstrip(".,;:")
+    # Keep internal hyphens/underscores (custom prefixes), drop spaces.
+    raw = re.sub(r"\s+", "", raw)
     return raw
 
 
@@ -32,8 +94,20 @@ def order_number_variants(value: str | None) -> list[str]:
     normalized = normalize_order_number(value)
     if not normalized:
         return []
-    variants = {normalized, f"#{normalized}"}
+    variants = {normalized, f"#{normalized}", normalized.casefold(), f"#{normalized.casefold()}"}
+    # Numeric-only alias when the typed value has a store prefix like LX-1001
+    digits = re.sub(r"\D", "", normalized)
+    if digits and digits != normalized:
+        variants.add(digits)
+        variants.add(f"#{digits}")
     return list(variants)
+
+
+def emails_match(left: str | None, right: str | None) -> bool:
+    """Compare emails after cleaning both sides."""
+    a = normalize_email(left)
+    b = normalize_email(right)
+    return bool(a) and a == b
 
 
 def recipient_email(payload: dict[str, Any]) -> str:

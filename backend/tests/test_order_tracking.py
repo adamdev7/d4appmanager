@@ -5,6 +5,7 @@ from app.tracking.track_service import TrackOrderService
 from app.tracking.payload_parser import (
     fulfillments_from_payload,
     map_shipment_status_to_tracking_status,
+    normalize_email,
     normalize_order_number,
     order_number_from_payload,
     order_number_variants,
@@ -21,6 +22,18 @@ def test_normalize_order_number():
     assert normalize_order_number("1001") == "1001"
     assert normalize_order_number("Order #1001") == "1001"
     assert normalize_order_number("order 1001") == "1001"
+    assert normalize_order_number("(#1001)") == "1001"
+    assert normalize_order_number("(1001)") == "1001"
+    assert normalize_order_number("  #1001. ") == "1001"
+
+
+def test_normalize_email_strips_junk():
+    assert normalize_email("(jane@shop.com)") == "jane@shop.com"
+    assert normalize_email("Jane Doe <jane@shop.com>") == "jane@shop.com"
+    assert normalize_email("mailto:jane@shop.com") == "jane@shop.com"
+    assert normalize_email(" jane@shop.com. ") == "jane@shop.com"
+    assert normalize_email("Jane (jane@shop.com)") == "jane@shop.com"
+    assert normalize_email("[jane@shop.com]") == "jane@shop.com"
 
 
 def test_order_name_matches():
@@ -29,11 +42,14 @@ def test_order_name_matches():
     assert order_name_matches("#1042", "1042")
     assert order_name_matches("#1042", "#1042")
     assert order_name_matches("#1042", "Order #1042")
+    assert order_name_matches("#1042", "(#1042)")
     assert not order_name_matches("#1042", "1043")
 
 
 def test_order_number_variants():
-    assert set(order_number_variants("1001")) == {"1001", "#1001"}
+    assert "1001" in set(order_number_variants("1001"))
+    assert "#1001" in set(order_number_variants("1001"))
+    assert "1001" in set(order_number_variants("#1001"))
 
 
 def test_order_number_from_shopify_order():
