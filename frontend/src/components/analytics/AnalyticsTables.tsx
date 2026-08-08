@@ -231,7 +231,7 @@ export function ProfitBreakdown({
     {
       label:
         summary.revenue_source === "stripe"
-          ? "Revenue (Stripe processors, net of fees)"
+          ? "Revenue (Stripe Volume net)"
           : "Revenue (Stripe required)",
       value: summary.revenue - (summary.prior_external_revenue || 0),
       type: "positive" as const,
@@ -269,9 +269,9 @@ export function ProfitBreakdown({
       value: -summary.ad_spend,
       type: "negative" as const,
     },
-    // Only lost + open hit P&L. Won disputes stay in Stripe revenue (original charge
-    // is still in the revenue total) — do not deduct or re-add, or we'd double-count.
-    ...((summary.chargebacks?.lost_amount ?? 0) > 0
+    // Chargebacks already in Stripe Volume net — only show as P&L lines if not included
+    ...(!summary.chargebacks?.included_in_revenue &&
+    (summary.chargebacks?.lost_amount ?? 0) > 0
       ? [
           {
             label: `Chargebacks lost (${summary.chargebacks!.lost_count})`,
@@ -280,7 +280,8 @@ export function ProfitBreakdown({
           },
         ]
       : []),
-    ...((summary.chargebacks?.open_amount ?? 0) > 0
+    ...(!summary.chargebacks?.included_in_revenue &&
+    (summary.chargebacks?.open_amount ?? 0) > 0
       ? [
           {
             label: `Chargebacks open (${summary.chargebacks!.open_count})`,
@@ -313,7 +314,7 @@ export function ProfitBreakdown({
       : null;
   const stripeGrossNote =
     summary.revenue_source === "stripe" && (summary.stripe_revenue_gross || 0) > 0
-      ? `Stripe settlement gross ${money(summary.stripe_revenue_gross || 0, currency)} · refunds ${money(summary.stripe_refunds || 0, currency)} (${summary.stripe_refund_count ?? 0})`
+      ? `Stripe gross volume ${money(summary.stripe_revenue_gross || 0, currency)} · refunds ${money(summary.stripe_refunds || 0, currency)} (${summary.stripe_refund_count ?? 0}) · matches Dashboard Volume net for revenue`
       : null;
   const stripeBreakdownNote =
     summary.revenue_source === "stripe"
@@ -329,11 +330,11 @@ export function ProfitBreakdown({
           .join(" · ")
       : null;
   const cb = summary.chargebacks;
-  const pnlCost =
-    cb?.pnl_cost ?? (cb ? (cb.lost_amount || 0) + (cb.open_amount || 0) : 0);
   const chargebackNote =
     cb && cb.count > 0
-      ? `Net chargeback cost ${money(pnlCost, currency)} (lost ${cb.lost_count} + open ${cb.open_count}). Won ${cb.won_count} (${money(cb.won_amount || 0, currency)}) stays in Stripe revenue — not deducted again.`
+      ? cb.included_in_revenue
+        ? `Disputes ${cb.count} (lost ${cb.lost_count} · open ${cb.open_count} · won ${cb.won_count}) — already in Volume net, not deducted again.`
+        : `Net chargeback cost ${money((cb.pnl_cost ?? (cb.lost_amount || 0) + (cb.open_amount || 0)), currency)} (lost ${cb.lost_count} + open ${cb.open_count}).`
       : null;
 
   return (
@@ -341,11 +342,11 @@ export function ProfitBreakdown({
       <CardHeader>
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
-          P&amp;L is in store currency (CAD). When Stripe is connected, revenue is Stripe
-          settlement only (Shopify orders are not added — same sales settle in Stripe). FX only
-          when settlement currency differs. Meta ad spend, lost/open chargebacks, and dated
-          manual investments are deducted after gross profit. Won chargebacks stay in Stripe
-          revenue and are not deducted. MRR uses spot FX.
+          P&amp;L is in store currency (CAD). Revenue is Stripe Dashboard Volume net
+          (balance transactions: charges − fees − refunds − disputes). Shopify is not a
+          revenue source. Meta ad spend and dated manual investments are deducted after
+          gross profit. Dispute cards are informational when already in Volume net. MRR uses
+          spot FX.
         </CardDescription>
       </CardHeader>
 

@@ -131,9 +131,11 @@ export type AnalyticsDashboard = {
       open_amount: number;
       won_amount: number;
       lost_amount: number;
-      /** Lost + open deducted from net profit; won excluded (recovered). */
+      /** Lost + open historically deducted; when included_in_revenue, already in Volume net. */
       pnl_cost?: number;
       recovered?: number;
+      /** True when disputes are already inside Stripe Volume net revenue. */
+      included_in_revenue?: boolean;
       currency: string;
       native_currency?: string | null;
       rate_pct: number;

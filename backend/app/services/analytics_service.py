@@ -1843,10 +1843,9 @@ class AnalyticsService:
             gross_profit = gross_profit + applied_prior_revenue - applied_prior_costs
 
         display_revenue = base_revenue + applied_prior_revenue
-        # Lost/open chargebacks reduce profit; won disputes are recovered and not deducted.
-        chargeback_cost = (
-            (dispute_lost_amount + dispute_open_amount) if stripe_connected else Decimal("0")
-        )
+        # Disputes are already in Stripe Volume net (adjustment BTs). Keep stats visible
+        # but do not deduct again from profit — that would double-count vs Dashboard.
+        chargeback_cost = Decimal("0")
         chargeback_recovered = dispute_won_amount if stripe_connected else Decimal("0")
         investment_period = self._period_manual_investments(
             db, store_id, since=since, until=until
@@ -1896,7 +1895,9 @@ class AnalyticsService:
         )
         roas = mer
         cpa = _money(ad_spend / _d(order_count)) if order_count > 0 and ad_spend > 0 else 0
-        if order_count == 0 and stripe_charge_count > 0 and ad_spend > 0:
+        if revenue_source == "stripe" and stripe_charge_count > 0 and ad_spend > 0:
+            cpa = _money(ad_spend / _d(stripe_charge_count))
+        elif order_count == 0 and stripe_charge_count > 0 and ad_spend > 0:
             cpa = _money(ad_spend / _d(stripe_charge_count))
         meta_cpa = (
             _money(ad_spend_native / _d(meta_purchases)) if meta_purchases > 0 and ad_spend_native > 0 else 0
@@ -2195,9 +2196,10 @@ class AnalyticsService:
                     "open_amount": _money(dispute_open_amount),
                     "won_amount": _money(dispute_won_amount),
                     "lost_amount": _money(dispute_lost_amount),
-                    # P&L uses lost + open only; won stays in / returns to profit
+                    # Already included in Stripe volume net (revenue); shown for visibility only
                     "pnl_cost": _money(chargeback_cost),
                     "recovered": _money(chargeback_recovered),
+                    "included_in_revenue": True,
                     "currency": pnl_currency,
                     "native_currency": dispute_currency,
                     "rate_pct": dispute_rate_pct,
@@ -2354,11 +2356,11 @@ class AnalyticsService:
                     "level": "info",
                     "title": "Revenue from Stripe processors only",
                     "message": (
-                        f"Period revenue is Stripe net ({money(approx_revenue)}) in {currency} "
-                        f"across connected MID(s). Shopify is storefront/checkout only — "
-                        f"order totals are never used as revenue (payments settle on Stripe)."
+                        f"Period revenue is Stripe Volume net ({money(approx_revenue)}) in {currency} "
+                        f"— same ledger as Dashboard (charges − fees − refunds − disputes). "
+                        f"Shopify is storefront/checkout only and is never used as revenue."
                     ),
-                    "action": "Shopify still feeds orders, COGS, and product stats.",
+                    "action": "Chargeback cards are informational; disputes are already in Volume net.",
                 }
             )
         elif not stripe_connected:

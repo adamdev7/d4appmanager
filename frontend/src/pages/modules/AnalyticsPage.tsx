@@ -429,7 +429,7 @@ export function AnalyticsPage() {
                   value={formatMoney(summary.net_profit, currency)}
                   hint={
                     summary.revenue_source === "stripe" || summary.revenue_source === "stripe_mrr"
-                      ? `Stripe revenue − ads (${currency})`
+                      ? `Stripe Volume net − ads (${currency})`
                       : "Revenue − COGS − fees − shipping − ads"
                   }
                   icon={Wallet}
@@ -442,7 +442,7 @@ export function AnalyticsPage() {
                   value={formatMoney(summary.revenue, currency)}
                   hint={
                     summary.revenue_source === "stripe"
-                      ? `Stripe settlement net (${currency}) · gross ${formatMoney(summary.stripe_revenue_gross || 0, currency)} · ${summary.stripe_charges ?? 0} charges`
+                      ? `Stripe Volume net (${currency}) · gross ${formatMoney(summary.stripe_revenue_gross || 0, currency)} · ${summary.stripe_charges ?? 0} charges`
                       : summary.revenue_source === "none"
                         ? "Connect Stripe MID(s) — Shopify is not used for revenue"
                         : `${summary.orders} orders · AOV ${formatMoney(summary.aov, storeCurrency)}`
@@ -490,8 +490,16 @@ export function AnalyticsPage() {
                 />
                 <MetricCard
                   label="Orders / Charges"
-                  value={String(summary.orders || summary.stripe_charges || 0)}
-                  hint={`AOV ${formatMoney(summary.aov, currency)}`}
+                  value={String(
+                    summary.revenue_source === "stripe"
+                      ? summary.stripe_charges || 0
+                      : summary.orders || summary.stripe_charges || 0,
+                  )}
+                  hint={
+                    summary.revenue_source === "stripe"
+                      ? `Stripe charges · AOV ${formatMoney(summary.aov, currency)} · ${summary.orders || 0} Shopify orders`
+                      : `AOV ${formatMoney(summary.aov, currency)}`
+                  }
                   icon={ShoppingBag}
                 />
                 <MetricCard
@@ -630,7 +638,9 @@ export function AnalyticsPage() {
                       value={formatMoney(summary.chargebacks.amount, currency)}
                       hint={
                         summary.chargebacks.count > 0
-                          ? `${summary.chargebacks.rate_pct}% of Stripe gross · ${summary.chargebacks.count} dispute(s)`
+                          ? summary.chargebacks.included_in_revenue
+                            ? `${summary.chargebacks.rate_pct}% of gross · ${summary.chargebacks.count} dispute(s) · already in Volume net`
+                            : `${summary.chargebacks.rate_pct}% of Stripe gross · ${summary.chargebacks.count} dispute(s)`
                           : "No disputes in this period"
                       }
                       icon={ShieldAlert}

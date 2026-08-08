@@ -488,6 +488,34 @@ class StripeClient:
             "daily_one_time_net": defaultdict(lambda: Decimal("0")),
         }
 
+    # Balance transaction types that make up Stripe Dashboard "Volume net"
+    # (gross − fees − refunds − disputes). Excludes payouts, reserves, top-ups.
+    _VOLUME_NET_TYPES = frozenset(
+        {
+            "charge",
+            "payment",
+            "payment_refund",
+            "payment_failure_refund",
+            "payment_reversal",
+            "refund",
+            "refund_failure",
+            "adjustment",  # disputes, dispute reversals, misc balance adjustments
+            "stripe_fee",
+            "stripe_fx_fee",
+            "tax_fee",
+        }
+    )
+    _GROSS_VOLUME_TYPES = frozenset({"charge", "payment"})
+    _REFUND_VOLUME_TYPES = frozenset(
+        {
+            "refund",
+            "payment_refund",
+            "payment_failure_refund",
+            "payment_reversal",
+            "refund_failure",
+        }
+    )
+
     async def period_charge_totals(
         self,
         *,
@@ -497,23 +525,76 @@ class StripeClient:
         limit_pages: int = 200,
     ) -> dict[str, Any]:
         """
-        Period revenue from Stripe in **settlement currency** (balance_transaction).
+        Period revenue aligned with Stripe Dashboard **Volume net**.
 
-        Charge presentment may be GBP/USD while the account settles to CAD — gross,
-        fees, and net are always taken from the balance transaction so they share one
-        currency. Refunds in the window are applied from their own settlement BTs.
+        Primary totals come from balance_transactions (same ledger as Dashboard):
+        charge/payment gross, fees, refunds, and dispute adjustments.
+        Charge list still supplies charge counts and subscription vs one-time split.
         """
         preferred = _norm_currency(currency)
         buckets: dict[str, dict[str, Any]] = defaultdict(self._empty_money_bucket)
         settlement_counts: dict[str, int] = defaultdict(int)
         presentment_counts: dict[str, int] = defaultdict(int)
-        # charge_id → settlement currency / whether subscription (for refund attribution)
         charge_meta: dict[str, dict[str, Any]] = {}
 
         async with httpx.AsyncClient(timeout=120) as client:
+            # --- 1) Volume net from balance transactions (matches Dashboard) ---
             starting_after: str | None = None
             for _ in range(limit_pages):
                 params: list[tuple[str, str | int]] = [
+                    ("limit", 100),
+                    ("created[gte]", int(since_ts)),
+                    ("created[lte]", int(until_ts)),
+                ]
+                if starting_after:
+                    params.append(("starting_after", starting_after))
+                resp = await client.get(
+                    f"{STRIPE_API_BASE}/balance_transactions",
+                    params=params,
+                    auth=(self.secret_key, ""),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                batch = list(payload.get("data") or [])
+                for bt in batch:
+                    bt_type = (bt.get("type") or "").lower()
+                    if bt_type not in self._VOLUME_NET_TYPES:
+                        continue
+                    settle_cur = _norm_currency(bt.get("currency"))
+                    if not settle_cur:
+                        continue
+                    created = int(bt.get("created") or since_ts)
+                    day_key = datetime.utcfromtimestamp(created).strftime("%Y-%m-%d")
+                    amount = from_stripe_amount(bt.get("amount"), settle_cur)
+                    fee = from_stripe_amount(bt.get("fee"), settle_cur)
+                    net = from_stripe_amount(bt.get("net"), settle_cur)
+
+                    settlement_counts[settle_cur] += 1
+                    b = buckets[settle_cur]
+                    b["net"] += net
+                    b["fees"] += fee
+                    b["daily_net"][day_key] += net
+                    b["daily_fees"][day_key] += fee
+
+                    if bt_type in self._GROSS_VOLUME_TYPES:
+                        b["gross"] += amount
+                        b["daily_gross"][day_key] += amount
+                    elif bt_type in self._REFUND_VOLUME_TYPES:
+                        b["refunds"] += abs(amount)
+                        b["refund_count"] += 1
+                        # Gross volume on Dashboard is usually pre-refund; keep gross as charges only.
+                        # Net already includes the refund BT.
+
+                if not payload.get("has_more") or not batch:
+                    break
+                starting_after = batch[-1].get("id")
+                if not starting_after:
+                    break
+
+            # --- 2) Charges: counts + subscription / one-time attribution ---
+            starting_after = None
+            for _ in range(limit_pages):
+                params = [
                     ("limit", 100),
                     ("created[gte]", int(since_ts)),
                     ("created[lte]", int(until_ts)),
@@ -546,24 +627,20 @@ class StripeClient:
 
                     if isinstance(bt, dict):
                         settle_cur = _norm_currency(bt.get("currency")) or presentment
-                        gross = from_stripe_amount(bt.get("amount"), settle_cur)
-                        fee = from_stripe_amount(bt.get("fee"), settle_cur)
                         net = from_stripe_amount(bt.get("net"), settle_cur)
+                        gross = from_stripe_amount(bt.get("amount"), settle_cur)
                     else:
-                        # No BT yet (rare) — keep presentment amounts consistent
                         settle_cur = presentment
                         if not settle_cur:
                             continue
                         amt = from_stripe_amount(ch.get("amount"), settle_cur)
                         refunded = from_stripe_amount(ch.get("amount_refunded"), settle_cur)
                         gross = amt - refunded
-                        fee = Decimal("0")
                         net = gross
 
                     if not settle_cur:
                         continue
 
-                    settlement_counts[settle_cur] += 1
                     charge_id = str(ch.get("id") or "")
                     if charge_id:
                         charge_meta[charge_id] = {
@@ -572,12 +649,6 @@ class StripeClient:
                         }
 
                     b = buckets[settle_cur]
-                    b["gross"] += gross
-                    b["fees"] += fee
-                    b["net"] += net
-                    b["daily_net"][day_key] += net
-                    b["daily_gross"][day_key] += gross
-                    b["daily_fees"][day_key] += fee
                     if is_subscription:
                         b["subscription_gross"] += gross
                         b["subscription_net"] += net
@@ -600,7 +671,7 @@ class StripeClient:
                 if not starting_after:
                     break
 
-            # Refunds post separate settlement BTs — subtract them so net matches Stripe.
+            # Refund counts already from BT loop; still attribute refunds to sub/one-time when possible
             starting_after = None
             for _ in range(limit_pages):
                 params = [
@@ -643,11 +714,8 @@ class StripeClient:
                         settle_cur = _norm_currency(bt.get("currency")) or meta.get(
                             "settle_cur"
                         )
-                        # Refund BT amount/net are typically negative
                         gross_delta = from_stripe_amount(bt.get("amount"), settle_cur)
-                        fee_delta = from_stripe_amount(bt.get("fee"), settle_cur)
                         net_delta = from_stripe_amount(bt.get("net"), settle_cur)
-                        refund_abs = abs(gross_delta)
                     else:
                         settle_cur = _norm_currency(rf.get("currency")) or meta.get(
                             "settle_cur"
@@ -656,22 +724,14 @@ class StripeClient:
                             continue
                         refund_abs = from_stripe_amount(rf.get("amount"), settle_cur)
                         gross_delta = -refund_abs
-                        fee_delta = Decimal("0")
                         net_delta = -refund_abs
 
                     if not settle_cur:
                         continue
 
-                    settlement_counts[settle_cur] += 1
                     b = buckets[settle_cur]
-                    b["gross"] += gross_delta
-                    b["fees"] += fee_delta
-                    b["net"] += net_delta
-                    b["refunds"] += refund_abs
-                    b["refund_count"] += 1
-                    b["daily_net"][day_key] += net_delta
-                    b["daily_gross"][day_key] += gross_delta
-                    b["daily_fees"][day_key] += fee_delta
+                    # Do not adjust b["net"]/gross/refunds again — already in BT volume pass.
+                    # Only keep subscription vs one-time attribution in sync.
                     if is_subscription:
                         b["subscription_gross"] += gross_delta
                         b["subscription_net"] += net_delta
@@ -693,10 +753,9 @@ class StripeClient:
         cur_key = _norm_currency(chosen)
         b = buckets.get(cur_key) or self._empty_money_bucket()
 
-        # If preferred settlement (e.g. CAD) has volume, use it; otherwise sum all
-        # settlement buckets that match chosen. When multiple settlement currencies
-        # exist, prefer the preferred/store currency bucket only.
-        if preferred and preferred in buckets and buckets[preferred]["charge_count"] > 0:
+        if preferred and preferred in buckets and (
+            buckets[preferred]["charge_count"] > 0 or buckets[preferred]["net"] != 0
+        ):
             cur_key = preferred
             b = buckets[preferred]
             chosen = preferred.upper()
