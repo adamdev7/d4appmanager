@@ -106,3 +106,70 @@ In the app:
 - Set `DEBUG=false`  
 - Serve over HTTPS only  
 - Never commit `.env`
+
+## 6. Production VPS (nginx + systemd)
+
+This VPS hosts **two sites**. Treat them as separate nginx files:
+
+| Domain | nginx file | Touch it? |
+|---|---|---|
+| `d4technology.ca` | whatever is already in `sites-enabled` for that domain | **No — leave it** |
+| `appmanager.store` | `/etc/nginx/sites-available/appmanager.store` | Yes, this one only |
+
+App Manager needs its **own** `server_name appmanager.store` blocks on ports 80 and 443. If the 443 block is missing, browsers get the `d4technology.ca` certificate and HTTPS looks down. That does **not** mean d4technology is broken.
+
+Repo files:
+
+- `deploy/nginx-appmanager.store.conf`
+- `deploy/appmanager.service`
+
+### Do not
+
+- Edit the d4technology.ca site file
+- Add `default_server` to App Manager
+- Run `certbot --nginx` with no `-d` (that can rewrite other sites)
+- Put App Manager `location` / `ssl_certificate` lines inside the d4technology server block
+
+### API process
+
+```bash
+sudo cp /var/www/appmanager/deploy/appmanager.service /etc/systemd/system/appmanager.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now appmanager
+curl -s http://127.0.0.1:8000/health
+# must print: {"status":"ok","app":"App Manager"}
+```
+
+`.env` belongs at `/var/www/appmanager/backend/.env` (not in git).
+
+### nginx — App Manager file only
+
+```bash
+# Confirm d4technology is its own file (do not change these)
+ls -l /etc/nginx/sites-enabled/
+
+sudo cp /var/www/appmanager/deploy/nginx-appmanager.store.conf /etc/nginx/sites-available/appmanager.store
+sudo ln -sf /etc/nginx/sites-available/appmanager.store /etc/nginx/sites-enabled/appmanager.store
+
+# If appmanager lines were pasted into the d4technology file, remove them from THAT file.
+grep -n "appmanager" /etc/nginx/sites-enabled/*
+
+# Cert for this domain only — certonly does not rewrite d4technology.ca
+sudo certbot certonly --nginx -d appmanager.store -d www.appmanager.store
+
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+`proxy_pass` must be `http://127.0.0.1:8000` with **no trailing slash**. A trailing slash strips `/api` and causes Google login JSON errors and `Method Not Allowed` on password login.
+
+### Checks
+
+```bash
+curl -sI https://d4technology.ca/ | head
+curl -s http://127.0.0.1:8000/health
+curl -sI https://appmanager.store/ | head
+curl -s https://appmanager.store/health
+curl -s https://appmanager.store/api/v1/auth/google/authorize
+```
+
+`d4technology.ca` should still be 200. App Manager `/health` and `/api/...` must return JSON, not HTML. The HTTPS cert for `appmanager.store` must be for that hostname, not `d4technology.ca`.
