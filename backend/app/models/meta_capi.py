@@ -49,10 +49,19 @@ class MetaCapiBackfillOrderRequest(BaseModel):
 
 
 class MetaCapiBackfillRecentRequest(BaseModel):
-    """Backfill paid orders from the last N hours that were never sent to Meta."""
+    """Backfill recoverable Shopify events from the last N hours (Purchase + InitiateCheckout)."""
 
     hours: int = Field(default=24, ge=1, le=168)
-    limit: int = Field(default=50, ge=1, le=100)
+    limit: int = Field(
+        default=250,
+        ge=1,
+        le=250,
+        description="Max Shopify records fetched per event type (orders and checkouts)",
+    )
+    include_checkouts: bool = Field(
+        default=True,
+        description="Also backfill InitiateCheckout from abandoned checkouts when enabled in settings",
+    )
 
 
 class MetaCapiBrowserEventRequest(BaseModel):

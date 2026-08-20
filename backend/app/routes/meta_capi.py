@@ -95,7 +95,7 @@ async def backfill_meta_capi_recent(
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
-    """Send paid Shopify orders from the last N hours that were never sent to Meta."""
+    """Recover missed Purchase + InitiateCheckout events from the last N hours."""
     return await _service.backfill_recent(
         db, user, store_id, body.model_dump(exclude_unset=True)
     )

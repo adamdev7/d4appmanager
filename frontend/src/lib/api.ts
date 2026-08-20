@@ -944,7 +944,7 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
-    backfillRecent: (storeId: string, data: { hours?: number; limit?: number } = {}) =>
+    backfillRecent: (storeId: string, data: { hours?: number; limit?: number; include_checkouts?: boolean } = {}) =>
       request<{
         ok: boolean;
         hours: number;
@@ -952,6 +952,16 @@ export const api = {
         sent: number;
         skipped: number;
         failed: number;
+        purchases?: { examined: number; sent: number; skipped: number; failed: number };
+        checkouts?: {
+          examined: number;
+          sent: number;
+          skipped: number;
+          failed: number;
+          enabled?: boolean;
+          error?: string | null;
+        };
+        not_recoverable?: string[];
       }>(`/meta-capi/stores/${storeId}/backfill-recent`, {
         method: "POST",
         body: JSON.stringify(data),

@@ -262,6 +262,191 @@ class ShopifyClient:
                 break
         return all_orders
 
+    @staticmethod
+    def _checkout_token_from_url(url: str | None) -> str | None:
+        if not url:
+            return None
+        match = re.search(r"/checkouts/(?:ac/)?([0-9a-f]{32,64})", str(url), re.I)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _legacy_id_from_gid(gid: str | None) -> str | None:
+        if not gid:
+            return None
+        tail = str(gid).rsplit("/", 1)[-1].strip()
+        return tail or None
+
+    @staticmethod
+    def _gql_checkout_to_rest(node: dict) -> dict:
+        """Map GraphQL AbandonedCheckout node to REST-like dict for CAPI mappers."""
+        money = (node.get("totalPriceSet") or {}).get("shopMoney") or {}
+        subtotal = (node.get("subtotalPriceSet") or {}).get("shopMoney") or {}
+        legacy_id = ShopifyClient._legacy_id_from_gid(node.get("id"))
+        token = ShopifyClient._checkout_token_from_url(node.get("abandonedCheckoutUrl"))
+        if not token and legacy_id:
+            token = legacy_id
+
+        line_items: list[dict] = []
+        for item in ((node.get("lineItems") or {}).get("nodes") or []):
+            if not isinstance(item, dict):
+                continue
+            variant = item.get("variant") or {}
+            product = variant.get("product") or {}
+            unit = ((item.get("originalUnitPriceSet") or {}).get("shopMoney") or {}).get(
+                "amount"
+            )
+            line_items.append(
+                {
+                    "quantity": item.get("quantity") or 0,
+                    "title": item.get("title"),
+                    "sku": variant.get("sku"),
+                    "variant_id": ShopifyClient._legacy_id_from_gid(variant.get("id")),
+                    "product_id": ShopifyClient._legacy_id_from_gid(product.get("id")),
+                    "price": unit,
+                }
+            )
+
+        note_attributes = [
+            {"name": attr.get("key"), "value": attr.get("value")}
+            for attr in (node.get("customAttributes") or [])
+            if isinstance(attr, dict) and attr.get("key")
+        ]
+
+        customer = node.get("customer") or {}
+        billing = node.get("billingAddress") or {}
+        shipping = node.get("shippingAddress") or {}
+
+        def _addr(block: dict) -> dict:
+            return {
+                "first_name": block.get("firstName"),
+                "last_name": block.get("lastName"),
+                "address1": block.get("address1"),
+                "address2": block.get("address2"),
+                "city": block.get("city"),
+                "province": block.get("province"),
+                "zip": block.get("zip"),
+                "country_code": block.get("countryCode"),
+                "phone": block.get("phone"),
+            }
+
+        checkout: dict = {
+            "id": legacy_id,
+            "token": token,
+            "created_at": node.get("createdAt"),
+            "updated_at": node.get("updatedAt"),
+            "completed_at": node.get("completedAt"),
+            "total_price": money.get("amount"),
+            "subtotal_price": subtotal.get("amount") or money.get("amount"),
+            "currency": money.get("currencyCode") or subtotal.get("currencyCode") or "USD",
+            "landing_site": node.get("abandonedCheckoutUrl"),
+            "abandoned_checkout_url": node.get("abandonedCheckoutUrl"),
+            "note_attributes": note_attributes,
+            "line_items": line_items,
+            "email": customer.get("email"),
+            "phone": customer.get("phone") or billing.get("phone") or shipping.get("phone"),
+            "customer": customer,
+            "billing_address": _addr(billing) if billing else None,
+            "shipping_address": _addr(shipping) if shipping else None,
+        }
+        if checkout.get("cart_token") is None and token:
+            checkout["cart_token"] = token
+        return checkout
+
+    async def list_abandoned_checkouts_in_range(
+        self,
+        *,
+        created_at_min: str,
+        max_pages: int = 20,
+        page_size: int = 50,
+    ) -> list[dict]:
+        """Paginate abandoned checkouts created on/after created_at_min (GraphQL)."""
+        if not self.access_token:
+            raise ValueError("No access token")
+
+        query_filter = f"created_at:>='{created_at_min}' recovery_state:not_recovered"
+        gql = """
+        query AbandonedCheckoutsInRange($query: String!, $cursor: String, $first: Int!) {
+          abandonedCheckouts(
+            first: $first
+            after: $cursor
+            query: $query
+            sortKey: CREATED_AT
+            reverse: true
+          ) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              createdAt
+              updatedAt
+              completedAt
+              abandonedCheckoutUrl
+              note
+              customAttributes { key value }
+              subtotalPriceSet { shopMoney { amount currencyCode } }
+              totalPriceSet { shopMoney { amount currencyCode } }
+              billingAddress {
+                firstName lastName address1 address2 city province zip countryCode phone
+              }
+              shippingAddress {
+                firstName lastName address1 address2 city province zip countryCode phone
+              }
+              customer { id email phone firstName lastName }
+              lineItems(first: 50) {
+                nodes {
+                  quantity
+                  title
+                  variant { id sku product { id } }
+                  originalUnitPriceSet { shopMoney { amount } }
+                }
+              }
+            }
+          }
+        }
+        """
+        headers = {
+            "X-Shopify-Access-Token": self.access_token,
+            "Content-Type": "application/json",
+        }
+        all_checkouts: list[dict] = []
+        cursor: str | None = None
+        pages = max(1, min(max_pages, 50))
+        first = max(1, min(page_size, 50))
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            for _ in range(pages):
+                variables: dict[str, str | int | None] = {
+                    "query": query_filter,
+                    "cursor": cursor,
+                    "first": first,
+                }
+                resp = await client.post(
+                    f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
+                    headers=headers,
+                    json={"query": gql, "variables": variables},
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                errors = payload.get("errors") or []
+                if errors:
+                    raise RuntimeError(
+                        "; ".join(str(e.get("message") or e) for e in errors)
+                    )
+                conn = ((payload.get("data") or {}).get("abandonedCheckouts") or {})
+                nodes = conn.get("nodes") or []
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    if node.get("completedAt"):
+                        continue
+                    all_checkouts.append(self._gql_checkout_to_rest(node))
+                page_info = conn.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    break
+                cursor = page_info.get("endCursor")
+                if not cursor:
+                    break
+        return all_checkouts
+
     async def list_products(self, *, limit: int = 250) -> list[dict]:
         """Fetch products with variants from Shopify."""
         if not self.access_token:

@@ -875,6 +875,154 @@ class MetaCapiService:
                 "log_id": log_row.id,
             }
 
+    async def _send_checkout_now(
+        self,
+        db: Session,
+        *,
+        store: Store,
+        settings: StoreMetaCapiSettings,
+        checkout: dict[str, Any],
+        topic: str = "manual/backfill",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Fetch-ready checkout dict → Meta CAPI InitiateCheckout (synchronous)."""
+        if not settings.meta_pixel_id:
+            raise HTTPException(status_code=400, detail="Meta Pixel ID is not configured")
+
+        token = self._resolve_access_token(db, settings)
+        if not token:
+            raise HTTPException(status_code=400, detail="Meta access token is not configured")
+
+        if checkout.get("completed_at"):
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "recovered",
+                "event_name": "InitiateCheckout",
+            }
+
+        entity_id = str(checkout.get("token") or checkout.get("id") or "")
+        if not entity_id:
+            return {
+                "ok": False,
+                "skipped": False,
+                "reason": "missing_entity_id",
+                "event_name": "InitiateCheckout",
+            }
+
+        payload = dict(checkout)
+        if payload.get("token") and not payload.get("cart_token"):
+            payload["cart_token"] = payload["token"]
+        payload = self.enrich_order_payload(db, store_id=store.id, order=payload)
+
+        event = build_initiate_checkout_event(
+            payload, shop_domain=store.shop_domain or ""
+        )
+        age_sec = int(datetime.now(UTC).timestamp()) - int(event.get("event_time") or 0)
+        if age_sec > 7 * 24 * 3600:
+            return {
+                "ok": False,
+                "skipped": False,
+                "reason": "stale_event",
+                "event_name": "InitiateCheckout",
+                "shopify_order_id": entity_id,
+            }
+
+        existing = db.scalar(
+            select(MetaCapiEventLog).where(
+                MetaCapiEventLog.store_id == store.id,
+                MetaCapiEventLog.shopify_order_id == entity_id,
+                MetaCapiEventLog.event_name == "InitiateCheckout",
+                MetaCapiEventLog.status == MetaCapiEventStatus.SENT.value,
+            )
+        )
+        if existing and not force:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "already_sent",
+                "event_name": "InitiateCheckout",
+                "shopify_order_id": entity_id,
+                "event_id": existing.event_id,
+                "log_id": existing.id,
+            }
+
+        custom = event.get("custom_data") or {}
+        webhook_id = f"backfill:checkout:{entity_id}:{int(datetime.now(UTC).timestamp())}"
+        log_row = MetaCapiEventLog(
+            store_id=store.id,
+            webhook_id=webhook_id,
+            shopify_order_id=entity_id,
+            topic=topic,
+            event_name="InitiateCheckout",
+            event_id=str(event.get("event_id") or entity_id),
+            status=MetaCapiEventStatus.PENDING.value,
+            order_value=str(custom.get("value") if custom.get("value") is not None else ""),
+            currency=str(custom.get("currency") or "") or None,
+        )
+        db.add(log_row)
+        db.commit()
+        db.refresh(log_row)
+
+        client = MetaCapiClient(
+            pixel_id=settings.meta_pixel_id,
+            access_token=token,
+            api_version=settings.api_version or DEFAULT_API_VERSION,
+            test_event_code=settings.test_event_code,
+        )
+        log_row.attempts = (log_row.attempts or 0) + 1
+        db.commit()
+
+        try:
+            result = await client.send_events([event])
+            log_row.status = MetaCapiEventStatus.SENT.value
+            log_row.sent_at = datetime.now(UTC)
+            log_row.meta_events_received = int(result.get("events_received") or 0)
+            log_row.meta_fbtrace_id = str(result.get("fbtrace_id") or "") or None
+            log_row.error_message = None
+            log_row.event_id = str(event.get("event_id") or log_row.event_id)
+            db.commit()
+            return {
+                "ok": True,
+                "skipped": False,
+                "event_name": "InitiateCheckout",
+                "shopify_order_id": entity_id,
+                "event_id": log_row.event_id,
+                "events_received": log_row.meta_events_received,
+                "fbtrace_id": log_row.meta_fbtrace_id,
+                "log_id": log_row.id,
+                "value": custom.get("value"),
+                "currency": custom.get("currency"),
+            }
+        except Exception as exc:
+            msg = str(exc)
+            if token in msg:
+                msg = msg.replace(token, "[redacted]")
+            log_row.status = MetaCapiEventStatus.FAILED.value
+            log_row.error_message = msg[:2000]
+            db.commit()
+            return {
+                "ok": False,
+                "skipped": False,
+                "event_name": "InitiateCheckout",
+                "shopify_order_id": entity_id,
+                "event_id": log_row.event_id,
+                "error": msg[:500],
+                "log_id": log_row.id,
+            }
+
+    @staticmethod
+    def _summarize_backfill_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
+        sent = skipped = failed = 0
+        for row in rows:
+            if row.get("skipped"):
+                skipped += 1
+            elif row.get("ok"):
+                sent += 1
+            else:
+                failed += 1
+        return {"sent": sent, "skipped": skipped, "failed": failed}
+
     async def backfill_order(
         self, db: Session, user: User, store_id: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -906,53 +1054,104 @@ class MetaCapiService:
             )
 
         hours = int(body.get("hours") or 24)
-        limit = int(body.get("limit") or 50)
+        limit = int(body.get("limit") or 250)
+        include_checkouts = bool(body.get("include_checkouts", True))
         hours = max(1, min(hours, 168))
-        limit = max(1, min(limit, 100))
+        limit = max(1, min(limit, 250))
+        max_pages = max(1, min(20, (limit + 49) // 50))
 
         since = datetime.now(UTC) - timedelta(hours=hours)
+        since_iso = since.isoformat()
         client = self._shopify_client(store)
+
         try:
-            orders = await client.list_orders(
-                limit=limit,
-                status="any",
+            orders = await client.list_all_orders_in_range(
+                created_at_min=since_iso,
                 financial_status="paid",
-                created_at_min=since.isoformat(),
+                max_pages=max_pages,
             )
         except Exception as exc:
             raise HTTPException(
                 status_code=502, detail=f"Shopify list orders failed: {exc}"
             ) from exc
+        orders = orders[:limit]
 
-        results: list[dict[str, Any]] = []
-        sent = 0
-        skipped = 0
-        failed = 0
+        purchase_results: list[dict[str, Any]] = []
         for order in orders:
-            row = await self._send_order_now(
-                db,
-                store=store,
-                settings=settings,
-                order=order,
-                topic="manual/backfill_recent",
-                force=False,
+            purchase_results.append(
+                await self._send_order_now(
+                    db,
+                    store=store,
+                    settings=settings,
+                    order=order,
+                    topic="manual/backfill_recent",
+                    force=False,
+                )
             )
-            results.append(row)
-            if row.get("skipped"):
-                skipped += 1
-            elif row.get("ok"):
-                sent += 1
-            else:
-                failed += 1
+        purchase_stats = self._summarize_backfill_rows(purchase_results)
+
+        checkout_results: list[dict[str, Any]] = []
+        checkout_stats = {"examined": 0, "sent": 0, "skipped": 0, "failed": 0}
+        checkout_error: str | None = None
+        should_backfill_checkouts = include_checkouts and bool(
+            getattr(settings, "send_initiate_checkout", True)
+        )
+        if should_backfill_checkouts:
+            try:
+                checkouts = await client.list_abandoned_checkouts_in_range(
+                    created_at_min=since_iso,
+                    max_pages=max_pages,
+                )
+                checkouts = checkouts[:limit]
+                checkout_stats["examined"] = len(checkouts)
+                for checkout in checkouts:
+                    checkout_results.append(
+                        await self._send_checkout_now(
+                            db,
+                            store=store,
+                            settings=settings,
+                            checkout=checkout,
+                            topic="manual/backfill_recent",
+                            force=False,
+                        )
+                    )
+                checkout_stats.update(self._summarize_backfill_rows(checkout_results))
+            except Exception as exc:
+                checkout_error = str(exc)[:500]
+                logger.warning(
+                    "meta_capi backfill checkouts failed store=%s: %s",
+                    store_id,
+                    checkout_error,
+                )
+
+        total_sent = purchase_stats["sent"] + checkout_stats["sent"]
+        total_skipped = purchase_stats["skipped"] + checkout_stats["skipped"]
+        total_failed = purchase_stats["failed"] + checkout_stats["failed"]
+        total_examined = len(orders) + checkout_stats["examined"]
 
         return {
-            "ok": failed == 0,
+            "ok": total_failed == 0 and checkout_error is None,
             "hours": hours,
-            "examined": len(orders),
-            "sent": sent,
-            "skipped": skipped,
-            "failed": failed,
-            "results": results,
+            "examined": total_examined,
+            "sent": total_sent,
+            "skipped": total_skipped,
+            "failed": total_failed,
+            "purchases": {
+                "examined": len(orders),
+                **purchase_stats,
+            },
+            "checkouts": {
+                **checkout_stats,
+                "enabled": should_backfill_checkouts,
+                "error": checkout_error,
+            },
+            "not_recoverable": [
+                "PageView",
+                "ViewContent",
+                "Search",
+                "AddToCart",
+            ],
+            "results": purchase_results + checkout_results,
         }
 
     def _upsert_attribution(

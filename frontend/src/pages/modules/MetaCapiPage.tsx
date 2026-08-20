@@ -270,11 +270,26 @@ export function MetaCapiPage() {
     setBackfillErr("");
     setBackfillMsg("");
     try {
-      const res = await api.metaCapi.backfillRecent(storeId, { hours: 24, limit: 50 });
-      setBackfillMsg(
-        `Last 24h: examined ${res.examined}, sent ${res.sent}, already sent ${res.skipped}, failed ${res.failed}.`
-      );
-      if (res.failed > 0) setBackfillErr(`${res.failed} order(s) failed — see event log.`);
+      const res = await api.metaCapi.backfillRecent(storeId, {
+        hours: 24,
+        limit: 250,
+        include_checkouts: true,
+      });
+      const purchaseLine = res.purchases
+        ? `Purchases: ${res.purchases.sent} sent, ${res.purchases.skipped} already sent, ${res.purchases.failed} failed (${res.purchases.examined} orders).`
+        : "";
+      const checkoutLine =
+        res.checkouts?.enabled === false
+          ? "InitiateCheckout backfill skipped (disabled in settings)."
+          : res.checkouts
+            ? `InitiateCheckout: ${res.checkouts.sent} sent, ${res.checkouts.skipped} already sent, ${res.checkouts.failed} failed (${res.checkouts.examined} abandoned checkouts).`
+            : "";
+      let msg = [purchaseLine, checkoutLine].filter(Boolean).join(" ");
+      if (res.checkouts?.error) {
+        msg += ` Warning: abandoned checkout scan failed (${res.checkouts.error}). Purchases may still have been sent.`;
+      }
+      setBackfillMsg(msg);
+      if (res.failed > 0) setBackfillErr(`${res.failed} event(s) failed — see event log.`);
       await load();
     } catch (err) {
       setBackfillErr(err instanceof Error ? err.message : "Backfill failed");
@@ -394,11 +409,13 @@ export function MetaCapiPage() {
             <CardHeader>
               <div className="flex items-center gap-2">
                 <Upload className="h-4 w-4 text-brand-600" />
-                <CardTitle>Backfill missed sales</CardTitle>
+                <CardTitle>Backfill missed events</CardTitle>
               </div>
               <CardDescription>
-                Orders that paid before server-side tracking was enabled were not sent to Meta.
-                Push them now (Meta accepts events up to 7 days old).
+                Recover what Shopify still has after downtime: Purchase (paid orders) and
+                InitiateCheckout (abandoned checkouts). PageView, ViewContent, Search, and
+                AddToCart cannot be reconstructed — they only exist from live browser beacons.
+                Meta accepts events up to 7 days old.
               </CardDescription>
             </CardHeader>
             <div className="space-y-4">
@@ -424,7 +441,7 @@ export function MetaCapiPage() {
                   onClick={() => void backfillToday()}
                   disabled={backfillRecentBusy}
                 >
-                  {backfillRecentBusy ? "Scanning…" : "Backfill last 24 hours"}
+                  {backfillRecentBusy ? "Scanning…" : "Backfill last 24 hours (all recoverable)"}
                 </Button>
               </div>
               {(backfillMsg || backfillErr) && (
