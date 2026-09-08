@@ -12,6 +12,7 @@ backend/data/
 node_modules/
 dist/
 *.local
+*.tsbuildinfo
 
 # IDE
 .idea/
