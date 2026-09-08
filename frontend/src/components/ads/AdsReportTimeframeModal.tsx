@@ -8,8 +8,8 @@ import type { AdsPeriod } from "@/lib/adsTypes";
 export type ReportTimeframe = AdsPeriod;
 
 const OPTIONS: Array<{ id: ReportTimeframe; label: string; hint: string }> = [
-  { id: "1d", label: "Daily", hint: "Today only" },
-  { id: "7d", label: "7 days", hint: "Last week" },
+  { id: "1d", label: "Yesterday", hint: "Last complete day" },
+  { id: "7d", label: "7 days", hint: "Matches Ads Manager" },
   { id: "14d", label: "14 days", hint: "Last 2 weeks" },
   { id: "30d", label: "30 days", hint: "Last month" },
   { id: "90d", label: "90 days", hint: "Last quarter" },

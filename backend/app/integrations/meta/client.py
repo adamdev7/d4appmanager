@@ -79,18 +79,75 @@ class MetaAdsClient:
 
     async def get_account_currency(self) -> str | None:
         """Return the Meta ad account billing currency (e.g. CAD). Never assume store currency."""
+        info = await self.get_account_info()
+        return info.get("currency")
+
+    async def get_account_info(self) -> dict:
+        """Ad account billing currency + timezone (Ads Manager dates use this TZ)."""
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
                 f"{META_GRAPH_BASE}/{self.ad_account_id}",
                 params={
                     "access_token": self.access_token,
-                    "fields": "currency",
+                    "fields": "name,currency,timezone_name,account_status",
                 },
             )
             if resp.status_code != 200:
-                return None
-            raw = (resp.json().get("currency") or "").strip().upper()
-            return raw or None
+                return {}
+            data = resp.json()
+            currency = (data.get("currency") or "").strip().upper()
+            return {
+                "name": data.get("name") or self.ad_account_id,
+                "currency": currency or None,
+                "timezone_name": (data.get("timezone_name") or "").strip() or None,
+                "account_status": data.get("account_status"),
+            }
+
+    async def list_campaigns(self) -> list[dict]:
+        return await self._paginate_edge(
+            "campaigns",
+            "id,name,effective_status,status,objective",
+        )
+
+    async def list_adsets(self) -> list[dict]:
+        return await self._paginate_edge(
+            "adsets",
+            "id,name,campaign_id,effective_status,status",
+        )
+
+    async def list_ads(self) -> list[dict]:
+        return await self._paginate_edge(
+            "ads",
+            "id,name,adset_id,campaign_id,effective_status,status",
+        )
+
+    async def _paginate_edge(self, edge: str, fields: str, max_pages: int = 8) -> list[dict]:
+        params: dict[str, str | int] = {
+            "access_token": self.access_token,
+            "fields": fields,
+            "limit": 200,
+        }
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(
+                f"{META_GRAPH_BASE}/{self.ad_account_id}/{edge}",
+                params=params,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            rows = list(payload.get("data") or [])
+            next_url = (payload.get("paging") or {}).get("next")
+            pages = 1
+            while next_url and pages < max_pages:
+                resp = await client.get(next_url)
+                resp.raise_for_status()
+                payload = resp.json()
+                batch = list(payload.get("data") or [])
+                rows.extend(batch)
+                next_url = (payload.get("paging") or {}).get("next")
+                pages += 1
+                if not batch:
+                    break
+            return rows
 
     async def get_account_insights(
         self,

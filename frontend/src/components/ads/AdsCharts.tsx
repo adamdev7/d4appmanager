@@ -53,10 +53,14 @@ export function AdsSpendCpmChart({
             <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} width={40} />
             <Tooltip
               labelFormatter={(l) => formatChartDate(String(l))}
-              formatter={(value, name) => [
-                formatMoney(Number(value ?? 0), currency),
-                String(name),
-              ]}
+              formatter={(value, name) => {
+                const n = String(name);
+                const amount = Number(value ?? 0);
+                if (n === "CPM" || n === "Spend") {
+                  return [formatMoney(amount, currency), n];
+                }
+                return [amount, n];
+              }}
             />
             <Legend />
             <Area

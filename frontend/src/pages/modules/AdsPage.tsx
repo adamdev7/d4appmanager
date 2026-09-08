@@ -26,8 +26,8 @@ import { MetricCard } from "@/components/analytics/MetricCard";
 import { AdsCreativeHealthChart, AdsSpendCpmChart } from "@/components/ads/AdsCharts";
 import {
   AdsAlertsPanel,
-  AdsCampaignTable,
-  AdsCreativesTable,
+  AdsPerformanceTable,
+  AdsSpotlightRow,
   AttributionPanel,
   FunnelPanel,
   MissedAnglesGrid,
@@ -74,16 +74,32 @@ function formatRangeLabel(since: string, until: string) {
   }
 }
 
+function periodDelta(
+  current: number | null | undefined,
+  previous: number | null | undefined,
+  invert = false
+) {
+  if (current == null || previous == null || previous === 0) return null;
+  const pct = ((current - previous) / Math.abs(previous)) * 100;
+  const better = invert ? pct < 0 : pct > 0;
+  const trend: "up" | "down" | "neutral" = Math.abs(pct) < 0.5 ? "neutral" : better ? "up" : "down";
+  const sign = pct > 0 ? "+" : "";
+  return {
+    trend,
+    label: `${sign}${pct.toFixed(0)}% vs prior period`,
+  };
+}
+
 export function AdsPage() {
   const { activeStore, stores } = useStore();
   const storeId = activeStore?.id ?? stores[0]?.id ?? null;
 
   const [tab, setTab] = useState<Tab>("dashboard");
-  const [period, setPeriod] = useState<AdsPeriod>("30d");
-  const [customSince, setCustomSince] = useState(daysAgoISO(29));
-  const [customUntil, setCustomUntil] = useState(todayISO());
-  const [appliedSince, setAppliedSince] = useState(daysAgoISO(29));
-  const [appliedUntil, setAppliedUntil] = useState(todayISO());
+  const [period, setPeriod] = useState<AdsPeriod>("7d");
+  const [customSince, setCustomSince] = useState(daysAgoISO(7));
+  const [customUntil, setCustomUntil] = useState(daysAgoISO(1));
+  const [appliedSince, setAppliedSince] = useState(daysAgoISO(7));
+  const [appliedUntil, setAppliedUntil] = useState(daysAgoISO(1));
   const [calendarOpen, setCalendarOpen] = useState(false);
   const calendarRef = useRef<HTMLDivElement>(null);
   const [dashboard, setDashboard] = useState<AdsDashboard | null>(null);
@@ -240,14 +256,21 @@ export function AdsPage() {
     );
   }
 
-  const currency = dashboard?.currency ?? "USD";
+  const currency = dashboard?.currency ?? "CAD";
   const summary = dashboard?.summary;
+  const previous = dashboard?.previous;
   const rangeHint =
     period === "custom"
       ? formatRangeLabel(appliedSince, appliedUntil)
       : dashboard?.since && dashboard?.until
         ? formatRangeLabel(dashboard.since, dashboard.until)
         : null;
+  const spendDelta = periodDelta(summary?.spend, previous?.spend, true);
+  const merDelta = periodDelta(summary?.mer, previous?.mer);
+  const roasDelta = periodDelta(summary?.platform_roas, previous?.platform_roas);
+  const cpaDelta = periodDelta(summary?.cpa, previous?.cpa, true);
+  const hookDelta = periodDelta(summary?.hook_rate, previous?.hook_rate);
+  const ctrDelta = periodDelta(summary?.outbound_ctr, previous?.outbound_ctr);
 
   return (
     <div className="space-y-6 pb-10 w-full min-w-0 max-w-none">
@@ -261,12 +284,24 @@ export function AdsPage() {
             ) : (
               <Badge variant="warning">Setup required</Badge>
             )}
+            <Badge variant="muted">{currency}</Badge>
+            {dashboard?.account_name && (
+              <Badge variant="muted" className="hidden sm:inline-flex max-w-[180px] truncate">
+                {dashboard.account_name}
+              </Badge>
+            )}
           </div>
           <p className="text-sm xl:text-base text-content-muted max-w-2xl">
             E-commerce Meta dashboard focused on what shops usually miss: MER, hook rate, fatigue,
             outbound CTR, funnel leaks, and attribution gaps — not just ROAS.
           </p>
-          {rangeHint && <p className="mt-1 text-xs text-content-subtle">{rangeHint}</p>}
+          {rangeHint && (
+            <p className="mt-1 text-xs text-content-subtle">
+              {rangeHint}
+              {period !== "custom" && period !== "all" && " · complete days, matching Ads Manager"}
+              {dashboard?.account_timezone ? ` · ${dashboard.account_timezone}` : ""}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {PERIODS.map((p) => (
@@ -288,8 +323,8 @@ export function AdsPage() {
             <button
               type="button"
               onClick={() => {
-                setCustomSince(period === "custom" ? appliedSince : daysAgoISO(29));
-                setCustomUntil(period === "custom" ? appliedUntil : todayISO());
+                setCustomSince(period === "custom" ? appliedSince : daysAgoISO(7));
+                setCustomUntil(period === "custom" ? appliedUntil : daysAgoISO(1));
                 setCalendarOpen((o) => !o);
               }}
               title="Custom date range"
@@ -486,26 +521,41 @@ export function AdsPage() {
               Meta API: {dashboard.meta_error}
             </div>
           )}
+          {dashboard.shopify_error && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+              Store revenue: {dashboard.shopify_error}
+            </div>
+          )}
 
           <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
             <MetricCard
               label="Ad spend"
               value={formatMoney(summary?.spend ?? 0, currency)}
               icon={Wallet}
-              hint={`${summary?.impressions?.toLocaleString() ?? 0} impressions`}
+              hint={`${summary?.impressions?.toLocaleString() ?? 0} impressions · billed in ${currency}`}
+              trend={spendDelta?.trend}
+              trendLabel={spendDelta?.label}
             />
             <MetricCard
               label="MER (store ÷ spend)"
               value={summary?.mer != null ? `${summary.mer.toFixed(2)}x` : "—"}
               icon={TrendingUp}
               accent="brand"
-              hint={`Store revenue ${formatMoney(summary?.store_revenue ?? 0, currency)}`}
+              hint={
+                dashboard.fx_note
+                  ? `${dashboard.fx_note} · ${formatMoney(summary?.store_revenue ?? 0, currency)}`
+                  : `Store revenue ${formatMoney(summary?.store_revenue ?? 0, currency)}`
+              }
+              trend={merDelta?.trend}
+              trendLabel={merDelta?.label}
             />
             <MetricCard
               label="Platform ROAS"
               value={`${(summary?.platform_roas ?? 0).toFixed(2)}x`}
               icon={Target}
-              hint="Directional only — compare to MER"
+              hint={`Result value ${formatMoney(summary?.purchase_value ?? 0, currency)} · directional only`}
+              trend={roasDelta?.trend}
+              trendLabel={roasDelta?.label}
             />
             <MetricCard
               label="New customer CAC"
@@ -526,6 +576,8 @@ export function AdsPage() {
               icon={Eye}
               accent={(summary?.hook_rate ?? 0) < 15 && (summary?.impressions ?? 0) > 5000 ? "warning" : "success"}
               hint="3s video plays ÷ impressions"
+              trend={hookDelta?.trend}
+              trendLabel={hookDelta?.label}
             />
             <MetricCard
               label="Frequency"
@@ -537,16 +589,44 @@ export function AdsPage() {
               label="Outbound CTR"
               value={`${(summary?.outbound_ctr ?? 0).toFixed(2)}%`}
               hint="Real site interest (not all-clicks)"
+              trend={ctrDelta?.trend}
+              trendLabel={ctrDelta?.label}
             />
             <MetricCard
               label="CPA"
-              value={
-                summary?.cpa
-                  ? formatMoney(summary.cpa, currency)
-                  : "—"
-              }
+              value={summary?.cpa ? formatMoney(summary.cpa, currency) : "—"}
               hint={`${summary?.purchases ?? 0} Meta purchases`}
+              trend={cpaDelta?.trend}
+              trendLabel={cpaDelta?.label}
+              accent={
+                summary?.cpa && summary.cpa > 0 && (summary.platform_roas ?? 0) < 1
+                  ? "warning"
+                  : "default"
+              }
             />
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 rounded-xl border border-border bg-surface-muted/30 px-4 py-3 text-sm">
+            <div>
+              <p className="text-xs text-content-subtle">Reach</p>
+              <p className="font-semibold tabular-nums">{(summary?.reach ?? 0).toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-xs text-content-subtle">CPM</p>
+              <p className="font-semibold tabular-nums">{formatMoney(summary?.cpm ?? 0, currency)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-content-subtle">Link clicks</p>
+              <p className="font-semibold tabular-nums">
+                {(summary?.outbound_clicks || summary?.clicks || 0).toLocaleString()}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-content-subtle">Result value</p>
+              <p className="font-semibold tabular-nums">
+                {formatMoney(summary?.purchase_value ?? 0, currency)}
+              </p>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -569,6 +649,19 @@ export function AdsPage() {
             )}
           </div>
 
+          <AdsPerformanceTable
+            campaigns={dashboard.campaigns}
+            adsets={dashboard.adsets}
+            ads={dashboard.ads}
+            currency={currency}
+          />
+
+          <AdsSpotlightRow
+            winners={dashboard.winners}
+            needsCheck={dashboard.needs_check}
+            currency={currency}
+          />
+
           {dashboard.missed_angles && <MissedAnglesGrid angles={dashboard.missed_angles} />}
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -582,9 +675,6 @@ export function AdsPage() {
           </div>
 
           <AttributionPanel attribution={dashboard.attribution} />
-
-          <AdsCampaignTable rows={dashboard.campaigns} currency={currency} />
-          <AdsCreativesTable rows={dashboard.ads.slice(0, 40)} currency={currency} />
         </div>
       )}
 

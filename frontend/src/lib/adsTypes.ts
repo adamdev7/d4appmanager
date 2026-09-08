@@ -30,6 +30,8 @@ export type AdsEntityRow = {
   quality_ranking?: string | null;
   engagement_rate_ranking?: string | null;
   conversion_rate_ranking?: string | null;
+  status?: string;
+  status_raw?: string;
 };
 
 export type AdsAlert = {
@@ -76,12 +78,32 @@ export type AdsSettings = {
   openai_uses_server_fallback: boolean;
 };
 
+export type AdsPreviousPeriod = {
+  spend: number;
+  impressions: number;
+  purchases: number;
+  purchase_value: number;
+  hook_rate: number;
+  outbound_ctr: number;
+  frequency: number;
+  mer: number | null;
+  cpa: number;
+  platform_roas: number;
+  since?: string;
+  until?: string;
+};
+
 export type AdsDashboard = {
   store_id: string;
   period: AdsPeriod;
   since: string;
   until: string;
   currency: string;
+  store_currency?: string;
+  account_name?: string | null;
+  account_timezone?: string | null;
+  fx_note?: string | null;
+  range_mode?: string;
   meta_configured: boolean;
   meta_error: string | null;
   shopify_error: string | null;
@@ -102,6 +124,8 @@ export type AdsDashboard = {
     platform_roas: number;
     cpa: number;
     store_revenue: number;
+    store_revenue_native?: number;
+    store_currency?: string;
     store_orders: number;
     mer: number | null;
     new_customers: number;
@@ -119,6 +143,7 @@ export type AdsDashboard = {
       checkout_to_purchase_pct: number;
     };
   };
+  previous?: AdsPreviousPeriod | null;
   attribution: {
     purchases_1d_click: number;
     purchases_7d_click: number;

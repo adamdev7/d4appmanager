@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import HTTPException
@@ -22,6 +24,7 @@ from app.core.openai_credentials import (
     resolve_openai_api_key,
 )
 from app.db.models import AdsAiReport, Store, StoreAdsSettings, StoreAnalyticsSettings, User
+from app.integrations.fx import FxError, convert_amount_with_rate
 from app.integrations.meta.client import (
     MetaAdsClient,
     hook_rate,
@@ -41,16 +44,18 @@ from app.tracking.credentials import mask_api_key_hint
 
 logger = logging.getLogger(__name__)
 
+# This business bills Meta in CAD. Do not label spend with Shopify/Stripe currency (often GBP).
+_META_BILLING_CURRENCY = "CAD"
+_DEFAULT_ADS_TZ = "America/Toronto"
+_HIDDEN_STATUSES = frozenset({"DELETED", "ARCHIVED"})
+_PERIOD_COMPLETE_DAYS = {"1d": 1, "7d": 7, "14d": 14, "30d": 30, "90d": 90}
+
 
 def _d(value: object) -> Decimal:
     try:
         return Decimal(str(value or 0))
     except (InvalidOperation, TypeError, ValueError):
         return Decimal("0")
-
-
-def _iso_date(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d")
 
 
 def _safe_div(num: float, den: float) -> float:
@@ -63,6 +68,41 @@ def _pct(part: float, whole: float) -> float:
     if whole <= 0:
         return 0.0
     return (part / whole) * 100
+
+
+def _zone(name: str | None) -> ZoneInfo:
+    for candidate in (name, _DEFAULT_ADS_TZ, "UTC"):
+        if not candidate:
+            continue
+        try:
+            return ZoneInfo(candidate)
+        except Exception:
+            continue
+    return ZoneInfo("UTC")
+
+
+def _complete_days_window(today: date, days: int) -> tuple[date, date]:
+    """Last `days` complete days ending yesterday — Meta Ads Manager preset behaviour."""
+    end_d = today - timedelta(days=1)
+    start_d = end_d - timedelta(days=max(days, 1) - 1)
+    return start_d, end_d
+
+
+def _status_label(raw: str | None) -> str:
+    value = (raw or "").upper()
+    if value in ("ACTIVE", "CAMPAIGN_ACTIVE"):
+        return "Active"
+    if value in ("PAUSED", "CAMPAIGN_PAUSED", "ADSET_PAUSED"):
+        return "Paused"
+    if value == "WITH_ISSUES":
+        return "Issues"
+    if value in ("PENDING_REVIEW", "IN_PROCESS"):
+        return "In review"
+    if value == "DISAPPROVED":
+        return "Disapproved"
+    if value == "ARCHIVED":
+        return "Archived"
+    return (raw or "Unknown").replace("_", " ").title()
 
 
 class AdsService:
@@ -216,9 +256,12 @@ class AdsService:
         store: Store | None = None,
         custom_since: str | None = None,
         custom_until: str | None = None,
+        timezone_name: str | None = None,
     ) -> tuple[datetime, datetime, str, str]:
-        now = datetime.now(UTC)
-        end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        """Preset windows match Meta Ads Manager: last N complete days, excluding today."""
+        tz = _zone(timezone_name)
+        now = datetime.now(tz)
+        today = now.date()
 
         if period == "custom":
             if not custom_since or not custom_until:
@@ -226,42 +269,37 @@ class AdsService:
                     status_code=400, detail="Custom range requires since and until dates"
                 )
             try:
-                start = datetime.strptime(custom_since[:10], "%Y-%m-%d").replace(tzinfo=UTC)
-                end = datetime.strptime(custom_until[:10], "%Y-%m-%d").replace(
-                    hour=23, minute=59, second=59, microsecond=0, tzinfo=UTC
-                )
+                start_d = datetime.strptime(custom_since[:10], "%Y-%m-%d").date()
+                end_d = datetime.strptime(custom_until[:10], "%Y-%m-%d").date()
             except ValueError as e:
                 raise HTTPException(status_code=400, detail="Invalid date format (use YYYY-MM-DD)") from e
-            if start > end:
+            if start_d > end_d:
                 raise HTTPException(status_code=400, detail="Start date must be on or before end date")
         elif period == "all":
             if store and store.created_at:
-                start = store.created_at
-                if start.tzinfo is None:
-                    start = start.replace(tzinfo=UTC)
+                created = store.created_at
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=UTC)
+                start_d = created.astimezone(tz).date()
             else:
-                start = datetime(2010, 1, 1, tzinfo=UTC)
-        elif period == "1d":
-            start = end
-        elif period == "7d":
-            start = end - timedelta(days=6)
-        elif period == "14d":
-            start = end - timedelta(days=13)
-        elif period == "90d":
-            start = end - timedelta(days=89)
+                start_d = date(2010, 1, 1)
+            end_d = today
         else:
-            # 30d default
-            start = end - timedelta(days=29)
+            days = _PERIOD_COMPLETE_DAYS.get(period, 30)
+            start_d, end_d = _complete_days_window(today, days)
 
-        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
-        if analytics_start and period != "custom":
+        start = datetime(start_d.year, start_d.month, start_d.day, tzinfo=tz)
+        end = datetime(end_d.year, end_d.month, end_d.day, 23, 59, 59, tzinfo=tz)
+
+        if analytics_start and period not in ("custom",):
             try:
-                clip = datetime.strptime(analytics_start[:10], "%Y-%m-%d").replace(tzinfo=UTC)
-                if clip > start:
-                    start = clip
+                clip = datetime.strptime(analytics_start[:10], "%Y-%m-%d").date()
+                if clip > start_d:
+                    start_d = clip
+                    start = datetime(start_d.year, start_d.month, start_d.day, tzinfo=tz)
             except ValueError:
                 pass
-        return start, end, _iso_date(start), _iso_date(end)
+        return start, end, start_d.isoformat(), end_d.isoformat()
 
     def _summarize_insight_row(self, row: dict, *, name_keys: tuple[str, ...]) -> dict:
         spend = parse_meta_float(row, "spend")
@@ -313,6 +351,114 @@ class AdsService:
             "quality_ranking": row.get("quality_ranking"),
             "engagement_rate_ranking": row.get("engagement_rate_ranking"),
             "conversion_rate_ranking": row.get("conversion_rate_ranking"),
+            "status": "Unknown",
+            "status_raw": "",
+        }
+
+    def _empty_entity(self, *, entity_id: str, name: str, extra: dict | None = None) -> dict:
+        row = {
+            "id": entity_id,
+            "name": name,
+            "campaign_id": "",
+            "campaign_name": "",
+            "adset_id": "",
+            "adset_name": "",
+            "spend": 0.0,
+            "impressions": 0,
+            "reach": 0,
+            "frequency": 0.0,
+            "clicks": 0,
+            "ctr": 0.0,
+            "cpm": 0.0,
+            "cpc": 0.0,
+            "outbound_clicks": 0,
+            "outbound_ctr": 0.0,
+            "hook_rate": 0.0,
+            "video_3s_plays": 0,
+            "purchases": 0,
+            "purchase_value": 0.0,
+            "platform_roas": 0.0,
+            "cpa": 0.0,
+            "add_to_cart": 0,
+            "initiate_checkout": 0,
+            "view_content": 0,
+            "landing_page_views": 0,
+            "quality_ranking": None,
+            "engagement_rate_ranking": None,
+            "conversion_rate_ranking": None,
+            "status": "Unknown",
+            "status_raw": "",
+        }
+        if extra:
+            row.update(extra)
+        return row
+
+    def _merge_entities(
+        self,
+        insight_rows: list[dict],
+        catalog: list[dict],
+        *,
+        name_keys: tuple[str, ...],
+        _id_key: str,
+        name_field: str,
+        extra_from_catalog=None,
+    ) -> list[dict]:
+        summarized = [self._summarize_insight_row(r, name_keys=name_keys) for r in insight_rows]
+        by_id = {row["id"]: row for row in summarized if row["id"]}
+        for item in catalog:
+            eid = str(item.get("id") or "")
+            if not eid:
+                continue
+            status_raw = str(item.get("effective_status") or item.get("status") or "")
+            extra = extra_from_catalog(item) if extra_from_catalog else {}
+            if eid in by_id:
+                by_id[eid]["status"] = _status_label(status_raw)
+                by_id[eid]["status_raw"] = status_raw
+                for key, value in extra.items():
+                    if value and not by_id[eid].get(key):
+                        by_id[eid][key] = value
+                continue
+            if status_raw.upper() in _HIDDEN_STATUSES:
+                continue
+            row = self._empty_entity(
+                entity_id=eid,
+                name=str(item.get("name") or extra.get(name_field) or "Untitled"),
+                extra={
+                    "status": _status_label(status_raw),
+                    "status_raw": status_raw,
+                    **extra,
+                },
+            )
+            by_id[eid] = row
+        rows = list(by_id.values())
+        rows.sort(key=lambda r: (r["spend"], r["impressions"]), reverse=True)
+        return rows
+
+    def _kpi_snapshot(
+        self,
+        *,
+        spend: float,
+        impressions: float,
+        purchases: float,
+        purchase_value: float,
+        hook: float,
+        outbound_ctr: float,
+        frequency: float,
+        mer: float | None,
+        cpa: float,
+        platform_roas: float,
+    ) -> dict:
+        return {
+            "spend": round(spend, 2),
+            "impressions": int(impressions),
+            "purchases": int(purchases),
+            "purchase_value": round(purchase_value, 2),
+            "hook_rate": round(hook, 2),
+            "outbound_ctr": round(outbound_ctr, 3),
+            "frequency": round(frequency, 2),
+            "mer": round(mer, 2) if mer is not None else None,
+            "cpa": round(cpa, 2),
+            "platform_roas": round(platform_roas, 2),
         }
 
     def _build_alerts(self, summary: dict, ads: list[dict], campaigns: list[dict]) -> list[dict]:
@@ -477,24 +623,41 @@ class AdsService:
         store = self._ensure_store(db, user, store_id)
         analytics = self.get_or_create_analytics_settings(db, store_id)
         ads_settings = self.get_or_create_ads_settings(db, store_id)
+        meta_configured = bool(
+            analytics.meta_access_token_encrypted and analytics.meta_ad_account_id
+        )
+        store_currency = (store.currency or "USD").upper()
+        # Ads money is billed in CAD — never label Meta spend with Shopify GBP/USD.
+        currency = _META_BILLING_CURRENCY
+        account_name: str | None = None
+        account_timezone = _DEFAULT_ADS_TZ
+        client = self._meta_client(analytics)
+        if client:
+            try:
+                info = await client.get_account_info()
+                account_name = info.get("name")
+                if info.get("timezone_name"):
+                    account_timezone = str(info["timezone_name"])
+            except Exception as e:
+                logger.info("Meta account info skipped: %s", e)
+
         start_dt, end_dt, since, until = self._parse_range(
             period,
             analytics.analytics_start_date,
             store=store,
             custom_since=custom_since,
             custom_until=custom_until,
-        )
-        currency = (store.currency or "USD").upper()
-        meta_configured = bool(
-            analytics.meta_access_token_encrypted and analytics.meta_ad_account_id
+            timezone_name=account_timezone,
         )
 
-        # --- Shopify revenue (for MER / blended truth) ---
+        # --- Shopify revenue (for MER / blended truth), converted into CAD ---
+        store_revenue_native = 0.0
         store_revenue = 0.0
         store_orders = 0
         new_customers = 0
         returning_customers = 0
         shopify_error: str | None = None
+        fx_note: str | None = None
         shopify = self._shopify_client(store)
         if shopify:
             try:
@@ -510,7 +673,7 @@ class AdsService:
                     if financial in ("voided", "refunded"):
                         continue
                     total = float(_d(order.get("total_price")))
-                    store_revenue += total
+                    store_revenue_native += total
                     store_orders += 1
                     customer = order.get("customer") or {}
                     orders_count = customer.get("orders_count")
@@ -525,6 +688,27 @@ class AdsService:
             except Exception as e:
                 shopify_error = str(e)
                 logger.warning("Ads Shopify fetch failed for %s: %s", store_id, e)
+
+        store_revenue = store_revenue_native
+        if store_revenue_native and store_currency != currency:
+            try:
+                converted, rate = await convert_amount_with_rate(
+                    Decimal(str(store_revenue_native)),
+                    from_currency=store_currency,
+                    to_currency=currency,
+                    on_date=until,
+                )
+                store_revenue = float(converted)
+                fx_note = (
+                    f"Store revenue {store_currency} → {currency} @ {float(rate):.4f}"
+                )
+            except FxError as e:
+                store_revenue = 0.0
+                shopify_error = (
+                    f"{shopify_error + '; ' if shopify_error else ''}"
+                    f"Could not convert store revenue {store_currency}→{currency} for MER "
+                    f"(native {store_revenue_native:.2f} {store_currency}). {e}"
+                )
 
         # --- Meta insights ---
         meta_error: str | None = None
@@ -559,34 +743,81 @@ class AdsService:
         }
 
         use_meta_maximum = period == "all" and not analytics.analytics_start_date
+        previous: dict | None = None
+        previous_since: str | None = None
+        previous_until: str | None = None
 
-        client = self._meta_client(analytics)
         if client:
             try:
-                if use_meta_maximum:
-                    total_rows = await client.get_account_insights_all(
-                        date_preset="maximum", time_increment="all_days", rich=True
+                range_kwargs: dict = (
+                    {"date_preset": "maximum"}
+                    if use_meta_maximum
+                    else {"since": since, "until": until}
+                )
+
+                async def _safe_catalog(coro, label: str) -> list[dict]:
+                    try:
+                        return await coro
+                    except Exception as e:
+                        logger.info("Meta %s list skipped: %s", label, e)
+                        return []
+
+                async def _empty_list() -> list:
+                    return []
+
+                prev_coro = None
+                if period != "all":
+                    start_d = datetime.strptime(since, "%Y-%m-%d").date()
+                    end_d = datetime.strptime(until, "%Y-%m-%d").date()
+                    span = (end_d - start_d).days + 1
+                    prev_end = start_d - timedelta(days=1)
+                    prev_start = prev_end - timedelta(days=span - 1)
+                    previous_since = prev_start.isoformat()
+                    previous_until = prev_end.isoformat()
+                    prev_coro = client.get_account_insights_all(
+                        since=previous_since,
+                        until=previous_until,
+                        time_increment="all_days",
+                        rich=True,
                     )
-                    daily_rows = await client.get_account_insights_all(
-                        date_preset="maximum", time_increment=1, rich=True
-                    )
-                    campaign_rows = await client.get_campaign_insights(
-                        date_preset="maximum", rich=True
-                    )
-                    adset_rows = await client.get_adset_insights(date_preset="maximum")
-                    ad_rows = await client.get_ad_insights(date_preset="maximum")
-                else:
-                    total_rows = await client.get_account_insights_all(
-                        since=since, until=until, time_increment="all_days", rich=True
-                    )
-                    daily_rows = await client.get_account_insights_all(
-                        since=since, until=until, time_increment=1, rich=True
-                    )
-                    campaign_rows = await client.get_campaign_insights(
-                        since=since, until=until, rich=True
-                    )
-                    adset_rows = await client.get_adset_insights(since=since, until=until)
-                    ad_rows = await client.get_ad_insights(since=since, until=until)
+
+                gathered = await asyncio.gather(
+                    client.get_account_insights_all(
+                        time_increment="all_days", rich=True, **range_kwargs
+                    ),
+                    client.get_account_insights_all(
+                        time_increment=1, rich=True, **range_kwargs
+                    ),
+                    client.get_campaign_insights(rich=True, **range_kwargs),
+                    client.get_adset_insights(**range_kwargs),
+                    client.get_ad_insights(**range_kwargs),
+                    _safe_catalog(client.list_campaigns(), "campaigns"),
+                    _safe_catalog(client.list_adsets(), "adsets"),
+                    _safe_catalog(client.list_ads(), "ads"),
+                    client.get_account_insights_attribution(**range_kwargs),
+                    prev_coro or _empty_list(),
+                    return_exceptions=True,
+                )
+
+                def _rows(value, fallback: list | None = None) -> list:
+                    if isinstance(value, Exception):
+                        logger.info("Meta batch item failed: %s", value)
+                        return fallback if fallback is not None else []
+                    return list(value or [])
+
+                total_rows = _rows(gathered[0])
+                daily_rows = _rows(gathered[1])
+                campaign_rows = _rows(gathered[2])
+                adset_rows = _rows(gathered[3])
+                ad_rows = _rows(gathered[4])
+                campaign_catalog = _rows(gathered[5])
+                adset_catalog = _rows(gathered[6])
+                ads_catalog = _rows(gathered[7])
+                attr_rows = _rows(gathered[8])
+                prev_rows = _rows(gathered[9]) if prev_coro is not None else []
+
+                if isinstance(gathered[0], Exception) and not total_rows:
+                    raise gathered[0]
 
                 for row in total_rows:
                     totals["spend"] += parse_meta_float(row, "spend")
@@ -603,7 +834,6 @@ class AdsService:
                     totals["view_content"] += funnel["view_content"]
                     totals["landing_page_views"] += funnel["landing_page_view"]
                     totals["link_clicks"] += funnel["link_click"]
-                    # Weighted frequency from account row when present
                     freq = parse_meta_float(row, "frequency")
                     if freq > 0:
                         totals["frequency"] = freq
@@ -642,76 +872,102 @@ class AdsService:
                 if period == "all" and daily and not analytics.analytics_start_date:
                     since = daily[0]["date"]
 
-                campaigns = [
-                    self._summarize_insight_row(r, name_keys=("campaign_name",))
-                    for r in campaign_rows
-                ]
-                campaigns.sort(key=lambda c: c["spend"], reverse=True)
+                campaigns = self._merge_entities(
+                    campaign_rows,
+                    campaign_catalog,
+                    name_keys=("campaign_name",),
+                    _id_key="campaign_id",
+                    name_field="name",
+                )
+                adsets = self._merge_entities(
+                    adset_rows,
+                    adset_catalog,
+                    name_keys=("adset_name", "campaign_name"),
+                    _id_key="adset_id",
+                    name_field="name",
+                    extra_from_catalog=lambda item: {
+                        "campaign_id": str(item.get("campaign_id") or "")
+                    },
+                )
+                ads = self._merge_entities(
+                    ad_rows,
+                    ads_catalog,
+                    name_keys=("ad_name", "adset_name"),
+                    _id_key="ad_id",
+                    name_field="name",
+                    extra_from_catalog=lambda item: {
+                        "adset_id": str(item.get("adset_id") or ""),
+                        "campaign_id": str(item.get("campaign_id") or ""),
+                    },
+                )
 
-                adsets = [
-                    self._summarize_insight_row(r, name_keys=("adset_name", "campaign_name"))
-                    for r in adset_rows
-                ]
-                adsets.sort(key=lambda a: a["spend"], reverse=True)
-
-                ads = [
-                    self._summarize_insight_row(r, name_keys=("ad_name", "adset_name"))
-                    for r in ad_rows
-                ]
-                ads.sort(key=lambda a: a["spend"], reverse=True)
-
-                try:
-                    if use_meta_maximum:
-                        attr_rows = await client.get_account_insights_attribution(
-                            date_preset="maximum"
+                if attr_rows:
+                    row = attr_rows[0]
+                    for action in row.get("actions") or []:
+                        atype = action.get("action_type") or ""
+                        if atype not in (
+                            "omni_purchase",
+                            "purchase",
+                            "offsite_conversion.fb_pixel_purchase",
+                        ):
+                            continue
+                        attribution["purchases_1d_click"] = int(
+                            float(action.get("1d_click") or action.get("value") or 0)
                         )
-                    else:
-                        attr_rows = await client.get_account_insights_attribution(
-                            since=since, until=until
+                        attribution["purchases_7d_click"] = int(
+                            float(action.get("7d_click") or 0)
                         )
-                    if attr_rows:
-                        # When attribution windows are requested, Meta returns action values
-                        # with per-window breakdowns inside each action entry.
-                        row = attr_rows[0]
-                        for action in row.get("actions") or []:
-                            atype = action.get("action_type") or ""
-                            if atype not in (
-                                "omni_purchase",
-                                "purchase",
-                                "offsite_conversion.fb_pixel_purchase",
-                            ):
-                                continue
-                            attribution["purchases_1d_click"] = int(
-                                float(action.get("1d_click") or action.get("value") or 0)
-                            )
-                            attribution["purchases_7d_click"] = int(
-                                float(action.get("7d_click") or 0)
-                            )
-                            attribution["purchases_1d_view"] = int(
-                                float(action.get("1d_view") or 0)
-                            )
-                            break
-                        for action in row.get("action_values") or []:
-                            atype = action.get("action_type") or ""
-                            if atype not in (
-                                "omni_purchase",
-                                "purchase",
-                                "offsite_conversion.fb_pixel_purchase",
-                            ):
-                                continue
-                            attribution["purchase_value_1d_click"] = round(
-                                float(action.get("1d_click") or action.get("value") or 0), 2
-                            )
-                            attribution["purchase_value_7d_click"] = round(
-                                float(action.get("7d_click") or 0), 2
-                            )
-                            break
-                        p1 = attribution["purchases_1d_click"]
-                        p7 = attribution["purchases_7d_click"]
-                        if p1 > 0:
-                            attribution["gap_7d_vs_1d_pct"] = round(((p7 - p1) / p1) * 100, 1)
-                except Exception as attr_err:
-                    logger.info("Attribution window fetch skipped: %s", attr_err)
+                        attribution["purchases_1d_view"] = int(
+                            float(action.get("1d_view") or 0)
+                        )
+                        break
+                    for action in row.get("action_values") or []:
+                        atype = action.get("action_type") or ""
+                        if atype not in (
+                            "omni_purchase",
+                            "purchase",
+                            "offsite_conversion.fb_pixel_purchase",
+                        ):
+                            continue
+                        attribution["purchase_value_1d_click"] = round(
+                            float(action.get("1d_click") or action.get("value") or 0), 2
+                        )
+                        attribution["purchase_value_7d_click"] = round(
+                            float(action.get("7d_click") or 0), 2
+                        )
+                        break
+                    p1 = attribution["purchases_1d_click"]
+                    p7 = attribution["purchases_7d_click"]
+                    if p1 > 0:
+                        attribution["gap_7d_vs_1d_pct"] = round(((p7 - p1) / p1) * 100, 1)
+
+                if prev_rows:
+                    p_spend = sum(parse_meta_float(r, "spend") for r in prev_rows)
+                    p_impr = sum(parse_meta_float(r, "impressions") for r in prev_rows)
+                    p_purch = sum(parse_meta_purchases(r.get("actions")) for r in prev_rows)
+                    p_value = sum(
+                        parse_meta_purchase_value(r.get("action_values")) for r in prev_rows
+                    )
+                    p_video = sum(parse_meta_video_3s_plays(r) for r in prev_rows)
+                    p_out = sum(parse_meta_outbound_clicks(r) for r in prev_rows)
+                    p_reach = sum(parse_meta_float(r, "reach") for r in prev_rows)
+                    p_freq = parse_meta_float(prev_rows[0], "frequency") if prev_rows else 0.0
+                    if p_freq <= 0 and p_reach > 0:
+                        p_freq = p_impr / p_reach
+                    previous = self._kpi_snapshot(
+                        spend=p_spend,
+                        impressions=p_impr,
+                        purchases=p_purch,
+                        purchase_value=p_value,
+                        hook=hook_rate(p_video, p_impr),
+                        outbound_ctr=(p_out / p_impr) * 100 if p_impr else 0.0,
+                        frequency=p_freq,
+                        mer=None,
+                        cpa=_safe_div(p_spend, p_purch) if p_purch else 0.0,
+                        platform_roas=_safe_div(p_value, p_spend) if p_spend else 0.0,
+                    )
+                    previous["since"] = previous_since
+                    previous["until"] = previous_until
 
             except httpx.HTTPStatusError as e:
                 err = {}
@@ -731,7 +987,11 @@ class AdsService:
         platform_roas = _safe_div(purchase_value, spend) if spend else 0.0
         # Prefer Meta-reported ROAS from first total row when available — already folded above
         cpa = _safe_div(spend, purchases) if purchases else 0.0
-        mer = _safe_div(store_revenue, spend) if spend else None
+        mer = _safe_div(store_revenue, spend) if spend and store_revenue else (
+            None if not spend else 0.0
+        )
+        if spend and store_revenue_native and store_revenue == 0 and store_currency != currency:
+            mer = None
         blended_cac = _safe_div(spend, new_customers) if new_customers else None
         hook = hook_rate(totals["video_3s"], impressions)
         outbound_ctr = (
@@ -772,6 +1032,8 @@ class AdsService:
             "platform_roas": round(platform_roas, 2),
             "cpa": round(cpa, 2),
             "store_revenue": round(store_revenue, 2),
+            "store_revenue_native": round(store_revenue_native, 2),
+            "store_currency": store_currency,
             "store_orders": store_orders,
             "mer": round(mer, 2) if mer is not None else None,
             "new_customers": new_customers,
@@ -842,7 +1104,7 @@ class AdsService:
                 "title": "New customer CAC",
                 "why": "ROAS hides whether spend buys new customers or just retargets buyers.",
                 "value": (
-                    f"{currency} {summary['blended_ncac']:.2f}"
+                    f"${summary['blended_ncac']:.2f} CAD"
                     if summary["blended_ncac"] is not None
                     else "Need new-customer orders"
                 ),
@@ -863,10 +1125,20 @@ class AdsService:
             "since": since,
             "until": until,
             "currency": currency,
+            "store_currency": store_currency,
+            "account_name": account_name,
+            "account_timezone": account_timezone,
+            "fx_note": fx_note,
+            "range_mode": (
+                "ads_manager"
+                if period not in ("custom", "all")
+                else period
+            ),
             "meta_configured": meta_configured,
             "meta_error": meta_error,
             "shopify_error": shopify_error,
             "summary": summary,
+            "previous": previous,
             "attribution": attribution,
             "daily": daily,
             "campaigns": campaigns[:50],
