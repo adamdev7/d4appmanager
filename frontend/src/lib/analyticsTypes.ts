@@ -34,6 +34,28 @@ export type AnalyticsStripeAccount = {
   last_synced_at: string | null;
 };
 
+/** Balance and period volume for a single payment processor account (MID). */
+export type AnalyticsProcessorAccount = {
+  id: string | null;
+  label: string;
+  hint?: string | null;
+  currency: string;
+  native_currency?: string | null;
+  available: number;
+  pending: number;
+  reserve_total: number;
+  revenue_net: number;
+  revenue_gross: number;
+  fees: number;
+  chargeback_cost: number;
+  charge_count: number;
+  dispute_count: number;
+  delay_days?: number | null;
+  /** False when this account's volume is left out of the period totals. */
+  counted: boolean;
+  error?: string | null;
+};
+
 export type AnalyticsSettings = {
   store_id: string;
   store_name: string;
@@ -135,6 +157,8 @@ export type AnalyticsDashboard = {
     stripe_one_time_net?: number;
     stripe_fees?: number;
     stripe_refunds?: number;
+    /** Stripe Billing / Radar / FX fees charged to the account, not to a sale. */
+    stripe_platform_fees?: number;
     stripe_charges?: number;
     stripe_subscription_charges?: number;
     stripe_one_time_charges?: number;
@@ -151,10 +175,12 @@ export type AnalyticsDashboard = {
       open_amount: number;
       won_amount: number;
       lost_amount: number;
-      /** Lost + open historically deducted; when included_in_revenue, already in Volume net. */
+      /** What actually left the Stripe balance this period, including dispute fees. */
       pnl_cost?: number;
+      ledger_amount?: number;
+      ledger_count?: number;
       recovered?: number;
-      /** True when disputes are already inside Stripe Volume net revenue. */
+      /** False since revenue matches Stripe Volume net, which excludes disputes. */
       included_in_revenue?: boolean;
       currency: string;
       native_currency?: string | null;
@@ -172,6 +198,8 @@ export type AnalyticsDashboard = {
       /** Official Stripe risk reserve total (matches Dashboard). */
       reserve_total?: number;
       holds?: Array<{ days: number; amount: number }>;
+      /** One row per connected processor, for combined vs individual views. */
+      accounts?: AnalyticsProcessorAccount[];
     };
     manual_investments?: {
       total: number;

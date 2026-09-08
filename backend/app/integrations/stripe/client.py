@@ -68,12 +68,17 @@ def _interval_to_monthly_factor(amount: Decimal, interval: str, interval_count: 
 
 
 def _pick_majority_currency(counts: dict[str, int], preferred: str | None = None) -> str | None:
-    """Pick the currency with the most volume; prefer `preferred` only if it has data."""
+    """Pick the currency with the most volume; prefer `preferred` only if it has data.
+
+    Returns None when there is no activity — an idle account must never be
+    labeled with a requested currency it does not actually settle in, or real
+    amounts get converted as if they were that currency.
+    """
     pref = _norm_currency(preferred)
     if pref and counts.get(pref, 0) > 0:
         return pref.upper()
     if not counts:
-        return pref.upper() if pref else None
+        return None
     best = max(counts.items(), key=lambda kv: kv[1])[0]
     return best.upper()
 
@@ -476,6 +481,10 @@ class StripeClient:
             "one_time_gross": Decimal("0"),
             "subscription_net": Decimal("0"),
             "one_time_net": Decimal("0"),
+            "dispute_net": Decimal("0"),
+            "dispute_fees": Decimal("0"),
+            "dispute_count": 0,
+            "platform_fee_net": Decimal("0"),
             "charge_count": 0,
             "subscription_count": 0,
             "one_time_count": 0,
@@ -486,10 +495,14 @@ class StripeClient:
             "daily_fees": defaultdict(lambda: Decimal("0")),
             "daily_subscription_net": defaultdict(lambda: Decimal("0")),
             "daily_one_time_net": defaultdict(lambda: Decimal("0")),
+            "daily_dispute_net": defaultdict(lambda: Decimal("0")),
+            "daily_platform_fee_net": defaultdict(lambda: Decimal("0")),
         }
 
-    # Balance transaction types that make up Stripe Dashboard "Volume net"
-    # (gross − fees − refunds − disputes). Excludes payouts, reserves, top-ups.
+    # Sales ledger — exactly what Stripe Dashboard reports as "Volume net"
+    # (charge gross − refunds − processing fees). Disputes and account-level
+    # Stripe fees are tracked separately so period revenue stays comparable to
+    # the Dashboard; they are still charged to profit as their own cost lines.
     _VOLUME_NET_TYPES = frozenset(
         {
             "charge",
@@ -499,12 +512,18 @@ class StripeClient:
             "payment_reversal",
             "refund",
             "refund_failure",
-            "adjustment",  # disputes, dispute reversals, misc balance adjustments
-            "stripe_fee",
-            "stripe_fx_fee",
-            "tax_fee",
         }
     )
+    # Chargeback withdrawals and their reversals when a dispute is won
+    _DISPUTE_TYPES = frozenset(
+        {
+            "adjustment",
+            "dispute",
+            "dispute_reversal",
+        }
+    )
+    # Billing / Radar / FX fees charged to the account rather than to a sale
+    _PLATFORM_FEE_TYPES = frozenset({"stripe_fee", "stripe_fx_fee", "tax_fee"})
     _GROSS_VOLUME_TYPES = frozenset({"charge", "payment"})
     _REFUND_VOLUME_TYPES = frozenset(
         {
@@ -558,7 +577,10 @@ class StripeClient:
                 batch = list(payload.get("data") or [])
                 for bt in batch:
                     bt_type = (bt.get("type") or "").lower()
-                    if bt_type not in self._VOLUME_NET_TYPES:
+                    is_sale = bt_type in self._VOLUME_NET_TYPES
+                    is_dispute = bt_type in self._DISPUTE_TYPES
+                    is_platform_fee = bt_type in self._PLATFORM_FEE_TYPES
+                    if not (is_sale or is_dispute or is_platform_fee):
                         continue
                     settle_cur = _norm_currency(bt.get("currency"))
                     if not settle_cur:
@@ -571,6 +593,21 @@ class StripeClient:
 
                     settlement_counts[settle_cur] += 1
                     b = buckets[settle_cur]
+
+                    if is_dispute:
+                        # Signed, so a won dispute reversal cancels the withdrawal
+                        b["dispute_net"] += net
+                        b["dispute_fees"] += fee
+                        b["daily_dispute_net"][day_key] += net
+                        if net < 0:
+                            b["dispute_count"] += 1
+                        continue
+
+                    if is_platform_fee:
+                        b["platform_fee_net"] += net
+                        b["daily_platform_fee_net"][day_key] += net
+                        continue
+
                     b["net"] += net
                     b["fees"] += fee
                     b["daily_net"][day_key] += net
@@ -748,6 +785,7 @@ class StripeClient:
                     break
 
         chosen = _pick_majority_currency(dict(settlement_counts), preferred)
+        has_activity = bool(chosen)
         if not chosen:
             chosen = await self.account_default_currency()
         cur_key = _norm_currency(chosen)
@@ -774,11 +812,17 @@ class StripeClient:
             "one_time_gross": b["one_time_gross"],
             "subscription_net": b["subscription_net"],
             "one_time_net": b["one_time_net"],
+            # Negative when chargebacks took money out of the balance
+            "dispute_net": b["dispute_net"],
+            "dispute_fees": b["dispute_fees"],
+            "dispute_count": int(b["dispute_count"]),
+            "platform_fee_net": b["platform_fee_net"],
             "charge_count": int(b["charge_count"]),
             "subscription_count": int(b["subscription_count"]),
             "one_time_count": int(b["one_time_count"]),
             "refund_count": int(b["refund_count"]),
             "unique_sources": len(b["customers"]),
+            "has_activity": has_activity,
             "currency": (chosen.upper() if chosen else None),
             "settlement_currency": (chosen.upper() if chosen else None),
             "currencies_seen": ",".join(sorted(c.upper() for c in presentment_counts)),
@@ -790,6 +834,8 @@ class StripeClient:
             "daily_fees": _plain(b.get("daily_fees")),
             "daily_subscription_net": _plain(b.get("daily_subscription_net")),
             "daily_one_time_net": _plain(b.get("daily_one_time_net")),
+            "daily_dispute_net": _plain(b.get("daily_dispute_net")),
+            "daily_platform_fee_net": _plain(b.get("daily_platform_fee_net")),
         }
 
     async def period_dispute_stats(

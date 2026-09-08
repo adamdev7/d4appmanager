@@ -269,23 +269,23 @@ export function ProfitBreakdown({
       value: -summary.ad_spend,
       type: "negative" as const,
     },
-    // Chargebacks already in Stripe Volume net — only show as P&L lines if not included
-    ...(!summary.chargebacks?.included_in_revenue &&
-    (summary.chargebacks?.lost_amount ?? 0) > 0
+    // One line for what chargebacks actually took out of the balance, fees included
+    ...((summary.chargebacks?.pnl_cost ?? 0) > 0
       ? [
           {
-            label: `Chargebacks lost (${summary.chargebacks!.lost_count})`,
-            value: -summary.chargebacks!.lost_amount,
+            label: `Chargebacks & dispute fees (${
+              summary.chargebacks!.ledger_count ?? summary.chargebacks!.count
+            })`,
+            value: -summary.chargebacks!.pnl_cost!,
             type: "negative" as const,
           },
         ]
       : []),
-    ...(!summary.chargebacks?.included_in_revenue &&
-    (summary.chargebacks?.open_amount ?? 0) > 0
+    ...((summary.stripe_platform_fees ?? 0) > 0
       ? [
           {
-            label: `Chargebacks open (${summary.chargebacks!.open_count})`,
-            value: -summary.chargebacks!.open_amount,
+            label: "Stripe account fees",
+            value: -summary.stripe_platform_fees!,
             type: "negative" as const,
           },
         ]
@@ -331,10 +331,8 @@ export function ProfitBreakdown({
       : null;
   const cb = summary.chargebacks;
   const chargebackNote =
-    cb && cb.count > 0
-      ? cb.included_in_revenue
-        ? `Disputes ${cb.count} (lost ${cb.lost_count} · open ${cb.open_count} · won ${cb.won_count}) — already in Volume net, not deducted again.`
-        : `Net chargeback cost ${money((cb.pnl_cost ?? (cb.lost_amount || 0) + (cb.open_amount || 0)), currency)} (lost ${cb.lost_count} + open ${cb.open_count}).`
+    cb && (cb.count > 0 || (cb.pnl_cost ?? 0) > 0)
+      ? `Chargebacks withdrew ${money(cb.pnl_cost ?? 0, currency)} from the Stripe balance in this window (disputes ${cb.count}: lost ${cb.lost_count} · open ${cb.open_count} · won ${cb.won_count}). Withdrawals can relate to charges from earlier periods.`
       : null;
 
   return (

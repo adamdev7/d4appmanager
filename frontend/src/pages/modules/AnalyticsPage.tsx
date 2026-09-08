@@ -127,6 +127,8 @@ export function AnalyticsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [holdBreakdownOpen, setHoldBreakdownOpen] = useState(false);
+  // "all" = every connected processor combined, otherwise a single account id
+  const [balanceScope, setBalanceScope] = useState("all");
   const [savingCurrency, setSavingCurrency] = useState(false);
   const [settingsVersion, setSettingsVersion] = useState(0);
 
@@ -214,6 +216,16 @@ export function AnalyticsPage() {
       cancelled = true;
     };
   }, [storeId, settingsVersion]);
+
+  // Drop a processor selection that no longer exists, e.g. after switching stores
+  useEffect(() => {
+    const ids = (dashboard?.summary?.stripe_balance?.accounts ?? []).map(
+      (p) => p.id ?? p.label,
+    );
+    setBalanceScope((scope) =>
+      scope === "all" || ids.includes(scope) ? scope : "all",
+    );
+  }, [dashboard]);
 
   const reloadAfterChange = useCallback(() => {
     setSettingsVersion((v) => v + 1);
@@ -305,13 +317,31 @@ export function AnalyticsPage() {
 
   const summary = dashboard?.summary;
   const stripeBalance = summary?.stripe_balance;
-  const balanceHolds = stripeBalance?.holds ?? [];
+  const processors = stripeBalance?.accounts ?? [];
+  const multiProcessor = processors.length > 1;
+  const selectedProcessor =
+    balanceScope === "all"
+      ? null
+      : (processors.find((p) => (p.id ?? p.label) === balanceScope) ?? null);
+  // Scoped view: one processor's own figures, or every processor combined
+  const scopedBalance = selectedProcessor
+    ? {
+        available: selectedProcessor.available,
+        pending: selectedProcessor.pending,
+        delay_days: selectedProcessor.delay_days,
+        native_currency: selectedProcessor.native_currency,
+      }
+    : stripeBalance;
+  const balanceHolds = selectedProcessor ? [] : (stripeBalance?.holds ?? []);
   const holdsSum =
     balanceHolds.length > 0 ? balanceHolds.reduce((sum, h) => sum + h.amount, 0) : 0;
-  const balanceHoldTotal =
+  const combinedReserve =
     stripeBalance?.reserve_total != null && stripeBalance.reserve_total > 0
       ? stripeBalance.reserve_total
       : holdsSum;
+  const balanceHoldTotal = selectedProcessor
+    ? selectedProcessor.reserve_total
+    : combinedReserve;
   const balanceHoldDays = balanceHolds.length === 1 ? balanceHolds[0].days : null;
   // Only show when Stripe risk reserve exists — never use pending settlement as "on hold"
   const showBalanceHold = !!stripeBalance && balanceHoldTotal > 0;
@@ -556,7 +586,7 @@ export function AnalyticsPage() {
                   value={formatMoney(summary.revenue, currency)}
                   hint={
                     summary.revenue_source === "stripe"
-                      ? `Stripe Volume net (${currency}) · gross ${formatMoney(summary.stripe_revenue_gross || 0, currency)} · ${summary.stripe_charges ?? 0} charges`
+                      ? `Stripe Volume net · gross ${formatMoney(summary.stripe_revenue_gross || 0, currency)} · ${summary.stripe_charges ?? 0} charges · matches Stripe Dashboard`
                       : summary.revenue_source === "none"
                         ? "Connect Stripe MID(s) — Shopify is not used for revenue"
                         : `${summary.orders} orders · AOV ${formatMoney(summary.aov, storeCurrency)}`
@@ -646,12 +676,57 @@ export function AnalyticsPage() {
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <Wallet className="h-4 w-4 text-brand-600" />
-                    <h2 className="text-sm font-semibold text-content">Stripe Balance</h2>
+                    <h2 className="text-sm font-semibold text-content">
+                      {multiProcessor ? "Processor Balances" : "Stripe Balance"}
+                    </h2>
                     <Badge variant="muted">{currency}</Badge>
-                    {stripeBalance.delay_days != null && (
-                      <Badge variant="muted">{stripeBalance.delay_days}-day settlement</Badge>
+                    {multiProcessor && (
+                      <Badge variant="muted">{processors.length} accounts</Badge>
+                    )}
+                    {scopedBalance?.delay_days != null && (
+                      <Badge variant="muted">
+                        {scopedBalance.delay_days}-day settlement
+                      </Badge>
                     )}
                   </div>
+
+                  {multiProcessor && (
+                    <div
+                      role="tablist"
+                      aria-label="Payment processor"
+                      className="flex flex-wrap gap-1.5"
+                    >
+                      {[
+                        { id: "all", label: "All accounts" },
+                        ...processors.map((p) => ({
+                          id: p.id ?? p.label,
+                          label: p.label,
+                        })),
+                      ].map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={balanceScope === opt.id}
+                          onClick={() => setBalanceScope(opt.id)}
+                          className={cn(
+                            "h-8 rounded-lg border px-3 text-xs font-medium transition-colors",
+                            balanceScope === opt.id
+                              ? "border-brand-600 bg-brand-600 text-white"
+                              : "border-border bg-surface text-content-muted hover:text-content hover:border-brand-600/40",
+                          )}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {selectedProcessor?.error && (
+                    <p className="text-xs text-amber-600 break-words">
+                      {selectedProcessor.label}: {selectedProcessor.error}
+                    </p>
+                  )}
                   <div
                     className={cn(
                       "grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 [&>*]:min-w-0",
@@ -660,31 +735,37 @@ export function AnalyticsPage() {
                   >
                     <MetricCard
                       label="Available to withdraw"
-                      value={formatMoney(stripeBalance.available, currency)}
+                      value={formatMoney(scopedBalance?.available ?? 0, currency)}
                       hint={
-                        stripeBalance.native_currency &&
-                        stripeBalance.native_currency !== currency &&
-                        stripeBalance.native_available != null
-                          ? `Native ${formatMoney(stripeBalance.native_available, stripeBalance.native_currency)}`
-                          : "Ready for payout to your bank"
+                        selectedProcessor
+                          ? `${selectedProcessor.label} only · ${selectedProcessor.charge_count} charge(s) this period`
+                          : stripeBalance.native_currency &&
+                              stripeBalance.native_currency !== currency &&
+                              stripeBalance.native_available != null
+                            ? `Native ${formatMoney(stripeBalance.native_available, stripeBalance.native_currency)}`
+                            : multiProcessor
+                              ? `All ${processors.length} processors combined`
+                              : "Ready for payout to your bank"
                       }
                       icon={Wallet}
-                      accent={stripeBalance.available > 0 ? "success" : "default"}
+                      accent={(scopedBalance?.available ?? 0) > 0 ? "success" : "default"}
                     />
                     <MetricCard
                       label="Pending balance"
-                      value={formatMoney(stripeBalance.pending, currency)}
+                      value={formatMoney(scopedBalance?.pending ?? 0, currency)}
                       hint={
-                        stripeBalance.delay_days != null && stripeBalance.pending > 0
-                          ? `Settles on a ~${stripeBalance.delay_days}-day rolling basis`
-                          : stripeBalance.native_currency &&
+                        scopedBalance?.delay_days != null &&
+                        (scopedBalance?.pending ?? 0) > 0
+                          ? `Settles on a ~${scopedBalance.delay_days}-day rolling basis`
+                          : !selectedProcessor &&
+                              stripeBalance.native_currency &&
                               stripeBalance.native_currency !== currency &&
                               stripeBalance.native_pending != null
                             ? `Native ${formatMoney(stripeBalance.native_pending, stripeBalance.native_currency)}`
                             : "Not yet available to withdraw"
                       }
                       icon={Calendar}
-                      accent={stripeBalance.pending > 0 ? "warning" : "default"}
+                      accent={(scopedBalance?.pending ?? 0) > 0 ? "warning" : "default"}
                     />
                     {showBalanceHold && (
                       <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 sm:p-5 shadow-card min-w-0 overflow-hidden">
@@ -747,6 +828,91 @@ export function AnalyticsPage() {
                       </div>
                     )}
                   </div>
+
+                  {multiProcessor && !selectedProcessor && (
+                    <div className="rounded-xl border border-border bg-surface shadow-card overflow-x-auto">
+                      <table className="w-full min-w-[560px] text-sm">
+                        <thead>
+                          <tr className="border-b border-border/60 text-xs text-content-subtle">
+                            <th className="px-4 py-2.5 text-left font-medium">Account</th>
+                            <th className="px-4 py-2.5 text-right font-medium">Available</th>
+                            <th className="px-4 py-2.5 text-right font-medium">Pending</th>
+                            <th className="px-4 py-2.5 text-right font-medium">
+                              Revenue this period
+                            </th>
+                            <th className="px-4 py-2.5 text-right font-medium">Charges</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {processors.map((p) => (
+                            <tr
+                              key={p.id ?? p.label}
+                              onClick={() => setBalanceScope(p.id ?? p.label)}
+                              className="border-b border-border/40 last:border-0 cursor-pointer hover:bg-surface-muted/60"
+                            >
+                              <td className="px-4 py-2.5 min-w-0">
+                                <span className="font-medium text-content break-words">
+                                  {p.label}
+                                </span>
+                                {p.charge_count === 0 && !p.error && (
+                                  <span className="ml-2 text-xs text-content-subtle">
+                                    idle
+                                  </span>
+                                )}
+                                {p.error && (
+                                  <span className="ml-2 text-xs text-amber-600">
+                                    not counted
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-2.5 text-right tabular-nums text-content">
+                                {formatMoney(p.available, currency)}
+                              </td>
+                              <td className="px-4 py-2.5 text-right tabular-nums text-content-muted">
+                                {formatMoney(p.pending, currency)}
+                              </td>
+                              <td className="px-4 py-2.5 text-right tabular-nums text-content">
+                                {formatMoney(p.revenue_net, currency)}
+                              </td>
+                              <td className="px-4 py-2.5 text-right tabular-nums text-content-muted">
+                                {p.charge_count}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {selectedProcessor && (
+                    <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-3 [&>*]:min-w-0">
+                      <MetricCard
+                        label="Revenue this period"
+                        value={formatMoney(selectedProcessor.revenue_net, currency)}
+                        hint={`Volume net · gross ${formatMoney(selectedProcessor.revenue_gross, currency)}`}
+                        icon={Wallet}
+                      />
+                      <MetricCard
+                        label="Processing fees"
+                        value={formatMoney(selectedProcessor.fees, currency)}
+                        hint={`${selectedProcessor.charge_count} charge(s) settled`}
+                        icon={Calendar}
+                      />
+                      <MetricCard
+                        label="Chargebacks"
+                        value={formatMoney(selectedProcessor.chargeback_cost, currency)}
+                        hint={
+                          selectedProcessor.dispute_count > 0
+                            ? `${selectedProcessor.dispute_count} withdrawal(s) from this balance`
+                            : "No chargeback withdrawals"
+                        }
+                        icon={ShieldAlert}
+                        accent={
+                          selectedProcessor.chargeback_cost > 0 ? "warning" : "default"
+                        }
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -763,11 +929,11 @@ export function AnalyticsPage() {
                       label="Disputed amount"
                       value={formatMoney(summary.chargebacks.amount, currency)}
                       hint={
-                        summary.chargebacks.count > 0
-                          ? summary.chargebacks.included_in_revenue
-                            ? `${summary.chargebacks.rate_pct}% of gross · ${summary.chargebacks.count} dispute(s) · already in Volume net`
-                            : `${summary.chargebacks.rate_pct}% of Stripe gross · ${summary.chargebacks.count} dispute(s)`
-                          : "No disputes in this period"
+                        (summary.chargebacks.pnl_cost ?? 0) > 0
+                          ? `${formatMoney(summary.chargebacks.pnl_cost!, currency)} withdrawn from balance · deducted from profit`
+                          : summary.chargebacks.count > 0
+                            ? `${summary.chargebacks.count} dispute(s) opened in this period`
+                            : "No disputes in this period"
                       }
                       icon={ShieldAlert}
                       accent={

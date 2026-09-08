@@ -7,6 +7,7 @@ import logging
 import secrets
 import time
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
@@ -53,6 +54,35 @@ from app.integrations.stripe.client import StripeClient
 from app.tracking.credentials import mask_api_key_hint
 
 logger = logging.getLogger(__name__)
+
+
+def dominant_settlement_currency(snapshots: Iterable[Any]) -> str | None:
+    """The currency the money is actually in, across every Stripe MID.
+
+    Only accounts that moved money get a vote. An idle MID reports a currency
+    too, and if it were allowed to decide, real amounts would be relabeled and
+    then FX-converted as though they had been charged in that currency.
+    """
+    activity: dict[str, tuple[int, Decimal]] = {}
+    for snapshot in snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        totals = snapshot.get("totals")
+        if not isinstance(totals, dict) or not totals.get("has_activity"):
+            continue
+        currency = str(
+            totals.get("settlement_currency") or totals.get("currency") or ""
+        ).upper()
+        if not currency:
+            continue
+        charges, volume = activity.get(currency, (0, Decimal("0")))
+        activity[currency] = (
+            charges + int(totals.get("charge_count") or 0),
+            volume + abs(Decimal(str(totals.get("net") or 0))),
+        )
+    if not activity:
+        return None
+    return max(activity.items(), key=lambda kv: kv[1])[0]
 
 
 class _DashboardCache:
@@ -856,6 +886,10 @@ class AnalyticsService:
             "one_time_gross": Decimal("0"),
             "subscription_net": Decimal("0"),
             "one_time_net": Decimal("0"),
+            "dispute_net": Decimal("0"),
+            "dispute_fees": Decimal("0"),
+            "platform_fee_net": Decimal("0"),
+            "ledger_dispute_count": 0,
             "charge_count": 0,
             "subscription_count": 0,
             "one_time_count": 0,
@@ -888,6 +922,7 @@ class AnalyticsService:
                 "delay_days": None,
                 "holds": [],
                 "reserve_total": Decimal("0"),
+                "accounts": [],
             },
         }
 
@@ -914,6 +949,9 @@ class AnalyticsService:
                 "one_time_gross",
                 "subscription_net",
                 "one_time_net",
+                "dispute_net",
+                "dispute_fees",
+                "platform_fee_net",
             )
         }
         daily_net: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
@@ -921,6 +959,7 @@ class AnalyticsService:
         daily_fees: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         daily_sub_net: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         daily_one_net: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        ledger_dispute_count = 0
         charge_count = 0
         subscription_count = 0
         one_time_count = 0
@@ -946,6 +985,7 @@ class AnalyticsService:
         balance_delay_days: int | None = None
         balance_holds: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
         balance_reserve_total = Decimal("0")
+        account_rows: list[dict[str, Any]] = []
 
         async def _account_snapshot(acct: AnalyticsStripeAccount) -> dict:
             """Charges, disputes and balance for one MID — fetched concurrently."""
@@ -967,7 +1007,9 @@ class AnalyticsService:
                 return_exceptions=True,
             )
             return {
+                "id": str(acct.id),
                 "label": acct.label,
+                "hint": acct.secret_key_hint,
                 "totals": totals,
                 "disputes": disputes,
                 "balance": balance,
@@ -977,13 +1019,38 @@ class AnalyticsService:
             *(_account_snapshot(acct) for acct in accounts), return_exceptions=True
         )
 
+        detected_currency = dominant_settlement_currency(snapshots)
+
         for snapshot in snapshots:
             if isinstance(snapshot, BaseException):
                 errors.append(str(snapshot))
                 continue
             label = snapshot.get("label") or "Stripe account"
+            # One row per processor so the UI can show each MID on its own
+            row: dict[str, Any] = {
+                "id": snapshot.get("id"),
+                "label": label,
+                "hint": snapshot.get("hint"),
+                "currency": None,
+                "gross": Decimal("0"),
+                "net": Decimal("0"),
+                "fees": Decimal("0"),
+                "charge_count": 0,
+                "dispute_count": 0,
+                "dispute_cost": Decimal("0"),
+                "balance_currency": None,
+                "available": Decimal("0"),
+                "pending": Decimal("0"),
+                "reserve_total": Decimal("0"),
+                "delay_days": None,
+                "counted": True,
+                "error": None,
+            }
             if snapshot.get("fatal"):
                 errors.append(f"{label}: {snapshot['fatal']}")
+                row["error"] = str(snapshot["fatal"])
+                row["counted"] = False
+                account_rows.append(row)
                 continue
             totals = snapshot.get("totals")
             disputes = snapshot.get("disputes")
@@ -991,30 +1058,55 @@ class AnalyticsService:
 
             if isinstance(totals, BaseException):
                 errors.append(f"{label}: {totals}")
+                row["error"] = str(totals)
+                row["counted"] = False
             elif isinstance(totals, dict):
-                for k in totals_acc:
-                    totals_acc[k] += Decimal(str(totals.get(k) or 0))
-                charge_count += int(totals.get("charge_count") or 0)
-                subscription_count += int(totals.get("subscription_count") or 0)
-                one_time_count += int(totals.get("one_time_count") or 0)
-                refund_count += int(totals.get("refund_count") or 0)
                 acct_cur = str(
                     totals.get("settlement_currency") or totals.get("currency") or ""
                 ).upper() or None
+                row["currency"] = acct_cur
+                row["gross"] = Decimal(str(totals.get("gross") or 0))
+                row["net"] = Decimal(str(totals.get("net") or 0))
+                row["fees"] = Decimal(str(totals.get("fees") or 0))
+                row["charge_count"] = int(totals.get("charge_count") or 0)
+                row["dispute_count"] = int(totals.get("dispute_count") or 0)
+                row["dispute_cost"] = -Decimal(str(totals.get("dispute_net") or 0))
+                mixed_currency = bool(
+                    detected_currency
+                    and acct_cur
+                    and acct_cur != detected_currency
+                    and totals.get("has_activity")
+                )
+                if mixed_currency:
+                    # Summing two settlement currencies would silently invent money
+                    note = (
+                        f"settles in {acct_cur}, not {detected_currency} — "
+                        f"its volume is excluded from this period"
+                    )
+                    errors.append(f"{label} {note}")
+                    row["error"] = note
+                    row["counted"] = False
                 if acct_cur and not detected_currency:
                     detected_currency = acct_cur
-                elif acct_cur and prefer and acct_cur == prefer:
-                    detected_currency = prefer
-                for day, val in (totals.get("daily_net") or {}).items():
-                    daily_net[day] += Decimal(str(val))
-                for day, val in (totals.get("daily_gross") or {}).items():
-                    daily_gross[day] += Decimal(str(val))
-                for day, val in (totals.get("daily_fees") or {}).items():
-                    daily_fees[day] += Decimal(str(val))
-                for day, val in (totals.get("daily_subscription_net") or {}).items():
-                    daily_sub_net[day] += Decimal(str(val))
-                for day, val in (totals.get("daily_one_time_net") or {}).items():
-                    daily_one_net[day] += Decimal(str(val))
+
+                if not mixed_currency:
+                    for k in totals_acc:
+                        totals_acc[k] += Decimal(str(totals.get(k) or 0))
+                    charge_count += int(totals.get("charge_count") or 0)
+                    subscription_count += int(totals.get("subscription_count") or 0)
+                    one_time_count += int(totals.get("one_time_count") or 0)
+                    refund_count += int(totals.get("refund_count") or 0)
+                    ledger_dispute_count += int(totals.get("dispute_count") or 0)
+                    for day, val in (totals.get("daily_net") or {}).items():
+                        daily_net[day] += Decimal(str(val))
+                    for day, val in (totals.get("daily_gross") or {}).items():
+                        daily_gross[day] += Decimal(str(val))
+                    for day, val in (totals.get("daily_fees") or {}).items():
+                        daily_fees[day] += Decimal(str(val))
+                    for day, val in (totals.get("daily_subscription_net") or {}).items():
+                        daily_sub_net[day] += Decimal(str(val))
+                    for day, val in (totals.get("daily_one_time_net") or {}).items():
+                        daily_one_net[day] += Decimal(str(val))
 
             if isinstance(disputes, BaseException):
                 errors.append(f"{label} disputes: {disputes}")
@@ -1032,10 +1124,30 @@ class AnalyticsService:
 
             if isinstance(balance, BaseException):
                 errors.append(f"{label} balance: {balance}")
+                row["error"] = row["error"] or str(balance)
             elif isinstance(balance, dict):
                 if balance.get("error"):
                     errors.append(f"{label} balance: {balance['error']}")
+                    row["error"] = row["error"] or str(balance["error"])
                 else:
+                    row["balance_currency"] = (
+                        str(balance.get("currency") or "").upper() or None
+                    )
+                    row["available"] = Decimal(str(balance.get("available") or 0))
+                    row["pending"] = Decimal(str(balance.get("pending") or 0))
+                    reserve = Decimal(str(balance.get("reserve_total") or 0))
+                    if reserve <= 0:
+                        reserve = sum(
+                            (
+                                Decimal(str(h.get("amount") or 0))
+                                for h in (balance.get("holds") or [])
+                            ),
+                            Decimal("0"),
+                        )
+                    row["reserve_total"] = reserve
+                    if balance.get("delay_days") is not None:
+                        row["delay_days"] = int(balance["delay_days"])
+
                     bal_cur = str(balance.get("currency") or "").upper() or None
                     if bal_cur and not balance_currency:
                         balance_currency = bal_cur
@@ -1060,9 +1172,7 @@ class AnalyticsService:
                         if balance_delay_days is None or delay_i > balance_delay_days:
                             balance_delay_days = delay_i
 
-        if prefer and detected_currency != prefer:
-            # Settlement should match store when account pays out in store currency
-            detected_currency = detected_currency or prefer
+            account_rows.append(row)
 
         gross_for_rate = totals_acc["gross"]
         rate_pct = 0.0
@@ -1087,6 +1197,7 @@ class AnalyticsService:
             "daily_fees": {k: str(v) for k, v in daily_fees.items()},
             "daily_subscription_net": {k: str(v) for k, v in daily_sub_net.items()},
             "daily_one_time_net": {k: str(v) for k, v in daily_one_net.items()},
+            "ledger_dispute_count": ledger_dispute_count,
             "disputes": {
                 "count": dispute_acc["count"],
                 "open_count": dispute_acc["open_count"],
@@ -1112,6 +1223,7 @@ class AnalyticsService:
                 "reserve_total": balance_reserve_total
                 if balance_reserve_total > 0
                 else sum(balance_holds.values(), Decimal("0")),
+                "accounts": account_rows,
             },
         }
 
@@ -1761,6 +1873,10 @@ class AnalyticsService:
         stripe_one_time_net_native = Decimal(str(stripe_totals.get("one_time_net") or 0))
         stripe_sub_gross_native = Decimal(str(stripe_totals.get("subscription_gross") or 0))
         stripe_one_time_gross_native = Decimal(str(stripe_totals.get("one_time_gross") or 0))
+        # Chargebacks and account-level Stripe fees are real costs but are not part
+        # of Dashboard "Volume net", so they are charged to profit separately.
+        dispute_ledger_native = -Decimal(str(stripe_totals.get("dispute_net") or 0))
+        platform_fee_native = -Decimal(str(stripe_totals.get("platform_fee_net") or 0))
         stripe_charge_count = int(stripe_totals["charge_count"] or 0)
         stripe_sub_count = int(stripe_totals.get("subscription_count") or 0)
         stripe_one_time_count = int(stripe_totals.get("one_time_count") or 0)
@@ -1832,6 +1948,8 @@ class AnalyticsService:
         stripe_one_time_net = stripe_one_time_net_native
         stripe_sub_gross = stripe_sub_gross_native
         stripe_one_time_gross = stripe_one_time_gross_native
+        dispute_ledger_cost = dispute_ledger_native
+        platform_fee_cost = platform_fee_native
         dispute_amount = dispute_amount_native
         dispute_open_amount = dispute_open_amount_native
         dispute_won_amount = dispute_won_amount_native
@@ -1899,6 +2017,16 @@ class AnalyticsService:
                 )
                 stripe_refunds = await convert_amount(
                     stripe_refunds_native,
+                    from_currency=stripe_currency,
+                    to_currency=pnl_currency,
+                )
+                dispute_ledger_cost = await convert_amount(
+                    dispute_ledger_native,
+                    from_currency=stripe_currency,
+                    to_currency=pnl_currency,
+                )
+                platform_fee_cost = await convert_amount(
+                    platform_fee_native,
                     from_currency=stripe_currency,
                     to_currency=pnl_currency,
                 )
@@ -1988,6 +2116,58 @@ class AnalyticsService:
             except FxError:
                 pass
 
+        async def _to_display(amount: Decimal, from_currency: str | None) -> Decimal:
+            if not from_currency or from_currency == pnl_currency or amount == 0:
+                return amount
+            try:
+                return await convert_amount(
+                    amount, from_currency=from_currency, to_currency=pnl_currency
+                )
+            except FxError:
+                return amount
+
+        # One row per connected processor, so the balance section can be read
+        # combined or one MID at a time. Each MID may settle in its own currency.
+        balance_accounts: list[dict[str, Any]] = []
+        for acct_row in balance_raw.get("accounts") or []:
+            bal_cur = str(acct_row.get("balance_currency") or "").upper() or None
+            vol_cur = str(acct_row.get("currency") or "").upper() or None
+
+            def _row_amount(field: str) -> Decimal:
+                return Decimal(str(acct_row.get(field) or 0))
+
+            balance_accounts.append(
+                {
+                    "id": acct_row.get("id"),
+                    "label": acct_row.get("label") or "Stripe account",
+                    "hint": acct_row.get("hint"),
+                    "currency": pnl_currency,
+                    "native_currency": bal_cur or vol_cur,
+                    "available": _money(
+                        await _to_display(_row_amount("available"), bal_cur)
+                    ),
+                    "pending": _money(
+                        await _to_display(_row_amount("pending"), bal_cur)
+                    ),
+                    "reserve_total": _money(
+                        await _to_display(_row_amount("reserve_total"), bal_cur)
+                    ),
+                    "revenue_net": _money(await _to_display(_row_amount("net"), vol_cur)),
+                    "revenue_gross": _money(
+                        await _to_display(_row_amount("gross"), vol_cur)
+                    ),
+                    "fees": _money(await _to_display(_row_amount("fees"), vol_cur)),
+                    "chargeback_cost": _money(
+                        await _to_display(_row_amount("dispute_cost"), vol_cur)
+                    ),
+                    "charge_count": int(acct_row.get("charge_count") or 0),
+                    "dispute_count": int(acct_row.get("dispute_count") or 0),
+                    "delay_days": acct_row.get("delay_days"),
+                    "counted": bool(acct_row.get("counted", True)),
+                    "error": acct_row.get("error"),
+                }
+            )
+
         dispute_rate_pct = 0.0
         if stripe_gross > 0 and dispute_amount > 0:
             dispute_rate_pct = float(
@@ -2030,9 +2210,9 @@ class AnalyticsService:
             gross_profit = gross_profit + applied_prior_revenue - applied_prior_costs
 
         display_revenue = base_revenue + applied_prior_revenue
-        # Disputes are already in Stripe Volume net (adjustment BTs). Keep stats visible
-        # but do not deduct again from profit — that would double-count vs Dashboard.
-        chargeback_cost = Decimal("0")
+        # Revenue now equals Stripe Dashboard "Volume net", which excludes disputes,
+        # so chargebacks are charged to profit here from the ledger adjustments.
+        chargeback_cost = dispute_ledger_cost if stripe_connected else Decimal("0")
         chargeback_recovered = dispute_won_amount if stripe_connected else Decimal("0")
         investment_period = self._period_manual_investments(
             db, store_id, since=since, until=until
@@ -2060,8 +2240,13 @@ class AnalyticsService:
                 ]
             except FxError:
                 pass
+        stripe_platform_fees = platform_fee_cost if stripe_connected else Decimal("0")
         net_profit = (
-            gross_profit - ad_spend - chargeback_cost - investment_cost
+            gross_profit
+            - ad_spend
+            - chargeback_cost
+            - stripe_platform_fees
+            - investment_cost
         )
 
         meta_est_variable_costs = Decimal("0")
@@ -2380,6 +2565,7 @@ class AnalyticsService:
                 "stripe_one_time_net": _money(stripe_one_time_net),
                 "stripe_fees": _money(stripe_fees),
                 "stripe_refunds": _money(stripe_refunds),
+                "stripe_platform_fees": _money(stripe_platform_fees),
                 "stripe_charges": stripe_charge_count,
                 "stripe_subscription_charges": stripe_sub_count,
                 "stripe_one_time_charges": stripe_one_time_count,
@@ -2396,10 +2582,12 @@ class AnalyticsService:
                     "open_amount": _money(dispute_open_amount),
                     "won_amount": _money(dispute_won_amount),
                     "lost_amount": _money(dispute_lost_amount),
-                    # Already included in Stripe volume net (revenue); shown for visibility only
+                    # Deducted from profit as its own line; revenue matches Stripe Volume net
                     "pnl_cost": _money(chargeback_cost),
+                    "ledger_amount": _money(dispute_ledger_cost),
+                    "ledger_count": int(stripe_totals.get("ledger_dispute_count") or 0),
                     "recovered": _money(chargeback_recovered),
-                    "included_in_revenue": True,
+                    "included_in_revenue": False,
                     "currency": pnl_currency,
                     "native_currency": dispute_currency,
                     "rate_pct": dispute_rate_pct,
@@ -2414,6 +2602,7 @@ class AnalyticsService:
                     "native_pending": _money(balance_pending_native),
                     "delay_days": balance_delay_days,
                     "reserve_total": _money(balance_reserve_total),
+                    "accounts": balance_accounts,
                     "holds": [
                         {"days": int(h["days"]), "amount": _money(h["amount"])}
                         for h in balance_holds
@@ -2559,10 +2748,14 @@ class AnalyticsService:
                     "title": "Revenue from Stripe processors only",
                     "message": (
                         f"Period revenue is Stripe Volume net ({money(approx_revenue)}) in {currency} "
-                        f"— same ledger as Dashboard (charges − fees − refunds − disputes). "
+                        f"— the same ledger and figure as the Stripe Dashboard "
+                        f"(charges − refunds − processing fees). "
                         f"Shopify is storefront/checkout only and is never used as revenue."
                     ),
-                    "action": "Chargeback cards are informational; disputes are already in Volume net.",
+                    "action": (
+                        "Chargebacks and Stripe account fees are deducted from profit "
+                        "as their own lines, not hidden inside revenue."
+                    ),
                 }
             )
         elif not stripe_connected:
