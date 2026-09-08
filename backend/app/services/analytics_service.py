@@ -56,6 +56,24 @@ from app.tracking.credentials import mask_api_key_hint
 logger = logging.getLogger(__name__)
 
 
+def lifetime_window_start(
+    current_start: datetime, first_activity: datetime | None
+) -> datetime:
+    """Start of an "All time" window: the earliest real activity, never later.
+
+    The store row is created when the user connects the store, which is usually
+    months after Stripe started taking payments, so it cannot bound the window.
+    """
+    if first_activity is None or first_activity >= current_start:
+        return current_start
+    return first_activity.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+# A Stripe account's first transaction is immutable once it exists
+_FIRST_ACTIVITY_TTL_SECONDS = 24 * 60 * 60
+_first_activity_cache: dict[str, tuple[float, int | None]] = {}
+
+
 def dominant_settlement_currency(snapshots: Iterable[Any]) -> str | None:
     """The currency the money is actually in, across every Stripe MID.
 
@@ -839,6 +857,45 @@ class AnalyticsService:
             "stripe_account_count": len(self._list_stripe_accounts(db, store_id)),
         }
 
+    async def _earliest_stripe_activity(
+        self, db: Session, store_id: str
+    ) -> datetime | None:
+        """Oldest ledger entry across every MID — the true start of "All time".
+
+        An account's first transaction never changes, so this is cached for a
+        long time; finding it costs a walk to the end of the ledger.
+        """
+        accounts = db.scalars(
+            select(AnalyticsStripeAccount).where(
+                AnalyticsStripeAccount.store_id == store_id,
+                AnalyticsStripeAccount.is_active.is_(True),
+            )
+        ).all()
+        if not accounts:
+            return None
+
+        async def _first(acct: AnalyticsStripeAccount) -> int | None:
+            key = str(acct.id)
+            hit = _first_activity_cache.get(key)
+            if hit and time.monotonic() - hit[0] < _FIRST_ACTIVITY_TTL_SECONDS:
+                return hit[1]
+            try:
+                secret = decrypt_value(acct.secret_key_encrypted)
+                found = await StripeClient(secret).earliest_activity_at()
+            except Exception as e:
+                logger.info("Stripe first activity skipped for %s: %s", acct.label, e)
+                return None
+            _first_activity_cache[key] = (time.monotonic(), found)
+            return found
+
+        results = await asyncio.gather(
+            *(_first(acct) for acct in accounts), return_exceptions=True
+        )
+        stamps = [r for r in results if isinstance(r, int) and r > 0]
+        if not stamps:
+            return None
+        return datetime.fromtimestamp(min(stamps), UTC)
+
     async def _stripe_period_totals(
         self,
         db: Session,
@@ -902,6 +959,9 @@ class AnalyticsService:
             "daily_fees": {},
             "daily_subscription_net": {},
             "daily_one_time_net": {},
+            "daily_dispute_net": {},
+            "daily_platform_fee_net": {},
+            "daily_charge_count": {},
             "disputes": {
                 "count": 0,
                 "open_count": 0,
@@ -959,6 +1019,9 @@ class AnalyticsService:
         daily_fees: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         daily_sub_net: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         daily_one_net: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        daily_dispute_net: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        daily_platform_fee_net: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        daily_charges: dict[str, int] = defaultdict(int)
         ledger_dispute_count = 0
         charge_count = 0
         subscription_count = 0
@@ -1107,6 +1170,12 @@ class AnalyticsService:
                         daily_sub_net[day] += Decimal(str(val))
                     for day, val in (totals.get("daily_one_time_net") or {}).items():
                         daily_one_net[day] += Decimal(str(val))
+                    for day, val in (totals.get("daily_dispute_net") or {}).items():
+                        daily_dispute_net[day] += Decimal(str(val))
+                    for day, val in (totals.get("daily_platform_fee_net") or {}).items():
+                        daily_platform_fee_net[day] += Decimal(str(val))
+                    for day, val in (totals.get("daily_charge_count") or {}).items():
+                        daily_charges[day] += int(val)
 
             if isinstance(disputes, BaseException):
                 errors.append(f"{label} disputes: {disputes}")
@@ -1197,6 +1266,9 @@ class AnalyticsService:
             "daily_fees": {k: str(v) for k, v in daily_fees.items()},
             "daily_subscription_net": {k: str(v) for k, v in daily_sub_net.items()},
             "daily_one_time_net": {k: str(v) for k, v in daily_one_net.items()},
+            "daily_dispute_net": {k: str(v) for k, v in daily_dispute_net.items()},
+            "daily_platform_fee_net": {k: str(v) for k, v in daily_platform_fee_net.items()},
+            "daily_charge_count": dict(daily_charges),
             "ledger_dispute_count": ledger_dispute_count,
             "disputes": {
                 "count": dispute_acc["count"],
@@ -1424,6 +1496,20 @@ class AnalyticsService:
             custom_until=custom_until,
             timezone_name=ads_timezone,
         )
+
+        # "All time" starts at the store row, which is created when the user
+        # connects the store — months after Stripe started taking payments.
+        # Shopify orders and Meta spend already use their own lifetime, so
+        # without this the window truncates revenue only, and the P&L compares
+        # a few weeks of sales against years of ad spend.
+        if period == "all" and not settings_row.analytics_start_date:
+            widened = lifetime_window_start(
+                start_dt, await self._earliest_stripe_activity(db, store_id)
+            )
+            if widened != start_dt:
+                start_dt = widened
+                since = _iso_date(start_dt)
+
         currency = (store.currency or "USD").upper()
         store_currency = currency
         pnl_currency = _resolve_display_currency(settings_row.display_currency, store_currency)
@@ -1641,9 +1727,11 @@ class AnalyticsService:
 
         if period == "all" and daily_shopify:
             earliest = min(daily_shopify.keys())
-            # Expand chart window to earliest Shopify order — do NOT use this to clip Meta spend
-            start_dt = datetime.strptime(earliest, "%Y-%m-%d").replace(tzinfo=UTC)
-            since = earliest
+            # Only ever widen: Stripe history can start before the first Shopify
+            # order, and moving the window forward would hide revenue we counted.
+            if earliest < since:
+                start_dt = datetime.strptime(earliest, "%Y-%m-%d").replace(tzinfo=UTC)
+                since = earliest
 
         # --- Meta Ads ---
         ad_spend = Decimal("0")
@@ -1925,6 +2013,9 @@ class AnalyticsService:
         daily_stripe_native = {
             d: Decimal(str(v)) for d, v in (stripe_totals.get("daily_net") or {}).items()
         }
+        daily_stripe_charges = {
+            d: int(v) for d, v in (stripe_totals.get("daily_charge_count") or {}).items()
+        }
         daily_fees_native_map = {
             d: Decimal(str(v)) for d, v in (stripe_totals.get("daily_fees") or {}).items()
         }
@@ -1937,6 +2028,14 @@ class AnalyticsService:
         }
         daily_gross_native = {
             d: Decimal(str(v)) for d, v in (stripe_totals.get("daily_gross") or {}).items()
+        }
+        daily_dispute_native = {
+            d: Decimal(str(v))
+            for d, v in (stripe_totals.get("daily_dispute_net") or {}).items()
+        }
+        daily_platform_native = {
+            d: Decimal(str(v))
+            for d, v in (stripe_totals.get("daily_platform_fee_net") or {}).items()
         }
 
         # Start from Stripe-native amounts; convert only stripe_currency → display
@@ -1962,6 +2061,8 @@ class AnalyticsService:
         balance_reserve_total = balance_reserve_native
         stripe_fx_note: str | None = None
         daily_stripe_cad: dict[str, Decimal] = dict(daily_stripe_native)
+        daily_dispute_cad: dict[str, Decimal] = dict(daily_dispute_native)
+        daily_platform_cad: dict[str, Decimal] = dict(daily_platform_native)
 
         if (
             stripe_connected
@@ -2025,10 +2126,24 @@ class AnalyticsService:
                     from_currency=stripe_currency,
                     to_currency=pnl_currency,
                 )
+                _, daily_dispute_cad = await convert_daily_map(
+                    daily_dispute_native,
+                    from_currency=stripe_currency,
+                    to_currency=pnl_currency,
+                    since=since,
+                    until=until,
+                )
                 platform_fee_cost = await convert_amount(
                     platform_fee_native,
                     from_currency=stripe_currency,
                     to_currency=pnl_currency,
+                )
+                _, daily_platform_cad = await convert_daily_map(
+                    daily_platform_native,
+                    from_currency=stripe_currency,
+                    to_currency=pnl_currency,
+                    since=since,
+                    until=until,
                 )
                 stripe_fx_note = (
                     f"Stripe settlement {stripe_currency} → {pnl_currency} "
@@ -2286,9 +2401,16 @@ class AnalyticsService:
             _money(display_revenue / gross_profit) if gross_profit > 0 else 0
         )
 
-        attribution_gap = shopify_revenue - meta_purchase_value
+        # Compare Meta's attributed value against the revenue the P&L actually
+        # uses. Shopify is storefront only, so most sales never appear there and
+        # measuring against it can read as over-attribution when Meta is in fact
+        # tracking a fraction of the real revenue.
+        attribution_base = (
+            display_revenue if revenue_source == "stripe" else shopify_revenue
+        )
+        attribution_gap = attribution_base - meta_purchase_value
         attribution_coverage_pct = (
-            _pct(meta_purchase_value, shopify_revenue) if shopify_revenue > 0 else 0.0
+            _pct(meta_purchase_value, attribution_base) if attribution_base > 0 else 0.0
         )
 
         # Funnel conversion rates (Meta)
@@ -2318,6 +2440,16 @@ class AnalyticsService:
                 cursor += timedelta(days=1)
 
         daily_chart = []
+
+        def _sum_day_or_month(mapping: dict[str, Decimal], key: str) -> Decimal:
+            if use_monthly:
+                prefix = key[:7]
+                return sum(
+                    (amt for day, amt in mapping.items() if day.startswith(prefix)),
+                    Decimal("0"),
+                )
+            return mapping.get(key, Decimal("0"))
+
         for key in chart_keys:
             if use_monthly:
                 s = {"revenue": Decimal("0"), "orders": 0}
@@ -2350,10 +2482,26 @@ class AnalyticsService:
                 day_stripe_rev = daily_stripe_cad.get(key, Decimal("0"))
             day_rev = day_stripe_rev if revenue_source == "stripe" else Decimal("0")
             day_spend = m["spend"]  # Meta spend stays in store currency
-            day_orders = s["orders"] if s["orders"] else (1 if day_stripe_rev != 0 else 0)
-            # Fees already in Stripe net; shipping/COGS allocated at period level only
-            day_cost = Decimal("0")
-            day_gross = day_rev - day_cost
+            # Keep the order count on the same basis as the revenue plotted next
+            # to it: Stripe charges, since most sales never touch Shopify.
+            if revenue_source == "stripe":
+                day_orders = (
+                    sum(
+                        n
+                        for day, n in daily_stripe_charges.items()
+                        if day.startswith(key[:7])
+                    )
+                    if use_monthly
+                    else daily_stripe_charges.get(key, 0)
+                )
+            else:
+                day_orders = s["orders"]
+
+            # Same P&L as the KPI: Volume net already excludes processing fees
+            # and refunds; chargebacks and Stripe account fees are extra lines.
+            day_chargebacks = -_sum_day_or_month(daily_dispute_cad, key)
+            day_platform = -_sum_day_or_month(daily_platform_cad, key)
+            day_profit = day_rev - day_spend - day_chargebacks - day_platform
             daily_chart.append(
                 {
                     "date": key,
@@ -2363,7 +2511,7 @@ class AnalyticsService:
                     "meta_purchase_value": _money(day_meta_rev),
                     "ad_spend": _money(day_spend),
                     "orders": int(day_orders),
-                    "profit": _money(day_gross - day_spend),
+                    "profit": _money(day_profit),
                 }
             )
 
@@ -2389,7 +2537,7 @@ class AnalyticsService:
             shopify_connected=shopify_connected,
             meta_configured=meta_configured,
             missing_cost_items=missing_cost_items,
-            shopify_revenue=shopify_revenue,
+            attribution_base=attribution_base,
             approx_revenue=approx_revenue,
             revenue_source=revenue_source,
             meta_purchase_value=meta_purchase_value,
@@ -2689,7 +2837,7 @@ class AnalyticsService:
         shopify_connected: bool,
         meta_configured: bool,
         missing_cost_items: int,
-        shopify_revenue: Decimal,
+        attribution_base: Decimal,
         approx_revenue: Decimal,
         revenue_source: str,
         meta_purchase_value: Decimal,
@@ -2813,14 +2961,14 @@ class AnalyticsService:
                 )
 
         # Attribution gap is diagnostic only — Meta purchase value is never used as revenue
-        if shopify_revenue > 0 and meta_purchase_value > 0 and attribution_coverage_pct < 40:
+        if attribution_base > 0 and meta_purchase_value > 0 and attribution_coverage_pct < 40:
             insights.append(
                 {
                     "level": "info",
                     "title": "Meta tracks fewer purchases than store orders",
                     "message": (
                         f"Meta attributes {attribution_coverage_pct}% of store revenue "
-                        f"({money(meta_purchase_value)} of {money(shopify_revenue)}). "
+                        f"({money(meta_purchase_value)} of {money(attribution_base)}). "
                         "Profit still uses store/Stripe revenue − ad spend."
                     ),
                     "action": "Optional: verify pixel + CAPI if you rely on Meta campaign ROAS for optimization.",

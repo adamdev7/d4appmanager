@@ -573,7 +573,7 @@ export function AnalyticsPage() {
                   value={formatMoney(summary.net_profit, currency)}
                   hint={
                     summary.revenue_source === "stripe" || summary.revenue_source === "stripe_mrr"
-                      ? `Stripe Volume net − ads (${currency})`
+                      ? `Stripe Volume net − ads − chargebacks (${currency})`
                       : "Revenue − COGS − fees − shipping − ads"
                   }
                   icon={Wallet}

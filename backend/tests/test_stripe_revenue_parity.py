@@ -76,3 +76,24 @@ def test_charge_ledger_reproduces_stripe_dashboard_figures():
     assert bucket["gross"] == Decimal("181.20")
     assert bucket["net"] == Decimal("168.71")
     assert bucket["gross"] - bucket["fees"] == bucket["net"]
+
+
+def test_pnl_subtracts_chargebacks_once_not_from_revenue():
+    """Stripe Dashboard Net volume does not include dispute adjustments.
+
+    Sept 7 on the live MID: Dashboard Gross 181.20, Net 168.71. The 86.29
+    chargeback that day is a separate `adjustment` — the original charge BT
+    is unchanged. Subtracting it from profit is counting it once. Folding it
+    into revenue *and* subtracting it again would be the double-count.
+    """
+    revenue = Decimal("168.71")
+    processing_fees = Decimal("12.49")
+    chargebacks = Decimal("86.29")
+    ads = Decimal("246.28")
+    net_profit = revenue - ads - chargebacks
+    assert net_profit == Decimal("-163.86")
+    # Processing fees are already inside Net volume
+    assert revenue == Decimal("181.20") - processing_fees
+    double_counted = (revenue - chargebacks) - ads - chargebacks
+    assert double_counted == net_profit - chargebacks
+

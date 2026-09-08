@@ -314,7 +314,7 @@ export function ProfitBreakdown({
       : null;
   const stripeGrossNote =
     summary.revenue_source === "stripe" && (summary.stripe_revenue_gross || 0) > 0
-      ? `Stripe gross volume ${money(summary.stripe_revenue_gross || 0, currency)} · refunds ${money(summary.stripe_refunds || 0, currency)} (${summary.stripe_refund_count ?? 0}) · matches Dashboard Volume net for revenue`
+      ? `Stripe gross volume ${money(summary.stripe_revenue_gross || 0, currency)} · refunds ${money(summary.stripe_refunds || 0, currency)} (${summary.stripe_refund_count ?? 0}) · processing fees already out of revenue`
       : null;
   const stripeBreakdownNote =
     summary.revenue_source === "stripe"
@@ -332,7 +332,7 @@ export function ProfitBreakdown({
   const cb = summary.chargebacks;
   const chargebackNote =
     cb && (cb.count > 0 || (cb.pnl_cost ?? 0) > 0)
-      ? `Chargebacks withdrew ${money(cb.pnl_cost ?? 0, currency)} from the Stripe balance in this window (disputes ${cb.count}: lost ${cb.lost_count} · open ${cb.open_count} · won ${cb.won_count}). Withdrawals can relate to charges from earlier periods.`
+      ? `Chargebacks withdrew ${money(cb.pnl_cost ?? 0, currency)} in this window (disputes ${cb.count}: lost ${cb.lost_count} · open ${cb.open_count} · won ${cb.won_count}). Stripe does not take that off the original charge, so it is deducted here once — not from revenue again.`
       : null;
 
   return (
@@ -340,11 +340,10 @@ export function ProfitBreakdown({
       <CardHeader>
         <CardTitle>Profit Breakdown</CardTitle>
         <CardDescription>
-          P&amp;L is in store currency (CAD). Revenue is Stripe Dashboard Volume net
-          (balance transactions: charges − fees − refunds − disputes). Shopify is not a
-          revenue source. Meta ad spend and dated manual investments are deducted after
-          gross profit. Dispute cards are informational when already in Volume net. MRR uses
-          spot FX.
+          P&amp;L in {currency}. Revenue is Stripe Dashboard Net volume (charges −
+          refunds − processing fees) — the same figure as the dashboard widget.
+          Chargebacks are a separate withdrawal, so they are deducted once after
+          gross profit, not hidden inside revenue. Shopify is not a revenue source.
         </CardDescription>
       </CardHeader>
 

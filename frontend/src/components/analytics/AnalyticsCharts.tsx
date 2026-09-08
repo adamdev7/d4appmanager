@@ -143,7 +143,10 @@ export function ProfitChart({
     <Card padding="lg" className="min-w-0 overflow-hidden">
       <CardHeader>
         <CardTitle>{periodLabel} Net Profit</CardTitle>
-        <CardDescription>Estimated profit after product costs, fees, and ad spend</CardDescription>
+        <CardDescription>
+          Same formula as the KPI: Stripe Net volume − ads − chargebacks − Stripe
+          account fees. Product costs and shipping stay on the period total.
+        </CardDescription>
       </CardHeader>
       <div className="h-52 sm:h-56 xl:h-72 2xl:h-80 w-full min-w-0">
         <ResponsiveContainer width="100%" height="100%">

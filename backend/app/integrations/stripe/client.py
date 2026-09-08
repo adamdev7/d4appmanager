@@ -115,6 +115,41 @@ class StripeClient:
         ok, _, currency = await self.test_connection()
         return currency.upper() if ok and currency else None
 
+    async def earliest_activity_at(self, *, max_pages: int = 200) -> int | None:
+        """Unix timestamp of the oldest balance transaction, or None if never used.
+
+        Needed for "All time": a store row is created when the user connects the
+        store, which is usually long after Stripe started taking payments, so it
+        cannot be used as the start of the account's history.
+        """
+        oldest: int | None = None
+        async with httpx.AsyncClient(timeout=60) as client:
+            starting_after: str | None = None
+            for _ in range(max_pages):
+                params: list[tuple[str, str | int]] = [("limit", 100)]
+                if starting_after:
+                    params.append(("starting_after", starting_after))
+                resp = await client.get(
+                    f"{STRIPE_API_BASE}/balance_transactions",
+                    params=params,
+                    auth=(self.secret_key, ""),
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                batch = list(payload.get("data") or [])
+                if not batch:
+                    break
+                # Stripe returns newest first, so the last row of the last page wins
+                created = batch[-1].get("created")
+                if created:
+                    oldest = int(created)
+                if not payload.get("has_more"):
+                    break
+                starting_after = batch[-1].get("id")
+                if not starting_after:
+                    break
+        return oldest
+
     async def retrieve_balance_summary(
         self,
         *,
@@ -497,6 +532,7 @@ class StripeClient:
             "daily_one_time_net": defaultdict(lambda: Decimal("0")),
             "daily_dispute_net": defaultdict(lambda: Decimal("0")),
             "daily_platform_fee_net": defaultdict(lambda: Decimal("0")),
+            "daily_charge_count": defaultdict(int),
         }
 
     # Sales ledger — exactly what Stripe Dashboard reports as "Volume net"
@@ -544,11 +580,12 @@ class StripeClient:
         limit_pages: int = 200,
     ) -> dict[str, Any]:
         """
-        Period revenue aligned with Stripe Dashboard **Volume net**.
+        Period revenue aligned with Stripe Dashboard **Net volume**.
 
-        Primary totals come from balance_transactions (same ledger as Dashboard):
-        charge/payment gross, fees, refunds, and dispute adjustments.
-        Charge list still supplies charge counts and subscription vs one-time split.
+        Net volume is charges − refunds − processing fees. A chargeback does
+        not shrink the original charge row — Stripe posts a separate
+        `adjustment` — so disputes are returned on their own fields and must
+        be deducted from profit once, not folded into revenue.
         """
         preferred = _norm_currency(currency)
         buckets: dict[str, dict[str, Any]] = defaultdict(self._empty_money_bucket)
@@ -616,6 +653,7 @@ class StripeClient:
                     if bt_type in self._GROSS_VOLUME_TYPES:
                         b["gross"] += amount
                         b["daily_gross"][day_key] += amount
+                        b["daily_charge_count"][day_key] += 1
                     elif bt_type in self._REFUND_VOLUME_TYPES:
                         b["refunds"] += abs(amount)
                         b["refund_count"] += 1
@@ -836,6 +874,9 @@ class StripeClient:
             "daily_one_time_net": _plain(b.get("daily_one_time_net")),
             "daily_dispute_net": _plain(b.get("daily_dispute_net")),
             "daily_platform_fee_net": _plain(b.get("daily_platform_fee_net")),
+            "daily_charge_count": {
+                k: int(v) for k, v in dict(b.get("daily_charge_count") or {}).items()
+            },
         }
 
     async def period_dispute_stats(
