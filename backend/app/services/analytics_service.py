@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import secrets
+import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -24,7 +27,14 @@ from app.db.models import (
     StoreStatus,
     User,
 )
-from app.integrations.fx import FxError, convert_amount, convert_amount_with_rate, convert_daily_map
+from app.integrations.fx import (
+    FxError,
+    convert_amount,
+    convert_amount_with_rate,
+    convert_daily_map,
+    get_rate,
+    get_rates_range,
+)
 from app.integrations.meta.client import (
     MetaAdsClient,
     parse_meta_funnel,
@@ -32,9 +42,54 @@ from app.integrations.meta.client import (
     parse_meta_purchase_value,
     parse_meta_purchases,
 )
+from app.integrations.meta.windows import (
+    META_BILLING_CURRENCY,
+    cached_account_info,
+    preset_window,
+    today_in_zone,
+)
 from app.integrations.shopify.client import ShopifyClient
 from app.integrations.stripe.client import StripeClient
 from app.tracking.credentials import mask_api_key_hint
+
+logger = logging.getLogger(__name__)
+
+
+class _DashboardCache:
+    """Short-lived cache so switching timeframes back and forth is instant.
+
+    The upstream APIs (Shopify, Stripe, Meta) are the slow part and their data
+    for a closed window does not change minute to minute, so a small TTL keeps
+    the dashboard responsive without showing stale numbers for long.
+    """
+
+    def __init__(self, ttl_seconds: int = 120, max_entries: int = 64) -> None:
+        self.ttl = ttl_seconds
+        self.max_entries = max_entries
+        self._entries: dict[tuple, tuple[float, dict]] = {}
+
+    def get(self, key: tuple) -> dict | None:
+        hit = self._entries.get(key)
+        if not hit:
+            return None
+        stored_at, payload = hit
+        if time.monotonic() - stored_at > self.ttl:
+            self._entries.pop(key, None)
+            return None
+        return payload
+
+    def set(self, key: tuple, payload: dict) -> None:
+        if len(self._entries) >= self.max_entries:
+            oldest = min(self._entries, key=lambda k: self._entries[k][0])
+            self._entries.pop(oldest, None)
+        self._entries[key] = (time.monotonic(), payload)
+
+    def invalidate_store(self, store_id: str) -> None:
+        for key in [k for k in self._entries if k and k[0] == store_id]:
+            self._entries.pop(key, None)
+
+
+_dashboard_cache = _DashboardCache()
 
 
 def _d(value: float | str | int | None) -> Decimal:
@@ -281,6 +336,7 @@ class AnalyticsService:
             row.mrr_last_synced_at = datetime.now(UTC)
             db.commit()
 
+        _dashboard_cache.invalidate_store(store_id)
         settings = self.get_settings(db, user, store_id)
         if fresh_webhook_secret:
             settings["mrr_webhook_secret"] = fresh_webhook_secret
@@ -372,6 +428,7 @@ class AnalyticsService:
             )
         )
         db.commit()
+        _dashboard_cache.invalidate_store(store_id)
         return {"ok": True, "accounts": self._list_stripe_accounts(db, store_id)}
 
     def delete_stripe_account(self, db: Session, user: User, store_id: str, account_id: str) -> dict:
@@ -381,6 +438,7 @@ class AnalyticsService:
             raise HTTPException(status_code=404, detail="Stripe account not found")
         db.delete(row)
         db.commit()
+        _dashboard_cache.invalidate_store(store_id)
         return {"ok": True, "accounts": self._list_stripe_accounts(db, store_id)}
 
     @staticmethod
@@ -445,6 +503,7 @@ class AnalyticsService:
         db.add(row)
         db.commit()
         db.refresh(row)
+        _dashboard_cache.invalidate_store(store_id)
         return {"ok": True, "investment": self._serialize_investment(row)}
 
     def update_manual_investment(
@@ -476,6 +535,7 @@ class AnalyticsService:
                 row.note = str(note_raw).strip()[:255]
         db.commit()
         db.refresh(row)
+        _dashboard_cache.invalidate_store(store_id)
         return {"ok": True, "investment": self._serialize_investment(row)}
 
     def delete_manual_investment(
@@ -487,6 +547,7 @@ class AnalyticsService:
             raise HTTPException(status_code=404, detail="Investment not found")
         db.delete(row)
         db.commit()
+        _dashboard_cache.invalidate_store(store_id)
         return {"ok": True}
 
     def _period_manual_investments(
@@ -595,6 +656,7 @@ class AnalyticsService:
             source="multi_stripe",
             note=note,
         )
+        _dashboard_cache.invalidate_store(store_id)
         return {
             "ok": len(errors) == 0,
             "mrr": _money(display_mrr),
@@ -646,6 +708,7 @@ class AnalyticsService:
             snapshot_date=day,
             note=body.get("note"),
         )
+        _dashboard_cache.invalidate_store(store_id)
         return {"ok": True, "mrr": _money(mrr), "subscribers": subscribers}
 
     async def _mrr_block(
@@ -766,7 +829,25 @@ class AnalyticsService:
                 AnalyticsStripeAccount.is_active.is_(True),
             )
         ).all()
-        empty: dict[str, Any] = {
+        empty: dict[str, Any] = self._empty_stripe_totals()
+        if not accounts:
+            return empty
+
+        try:
+            since_dt = datetime.strptime(since[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+            until_dt = datetime.strptime(until[:10], "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59, tzinfo=UTC
+            )
+        except ValueError:
+            return empty
+
+        return await self._collect_stripe_totals(
+            accounts, since_dt=since_dt, until_dt=until_dt, currency=currency
+        )
+
+    @staticmethod
+    def _empty_stripe_totals() -> dict[str, Any]:
+        return {
             "gross": Decimal("0"),
             "fees": Decimal("0"),
             "net": Decimal("0"),
@@ -809,17 +890,16 @@ class AnalyticsService:
                 "reserve_total": Decimal("0"),
             },
         }
-        if not accounts:
-            return empty
 
-        try:
-            since_dt = datetime.strptime(since[:10], "%Y-%m-%d").replace(tzinfo=UTC)
-            until_dt = datetime.strptime(until[:10], "%Y-%m-%d").replace(
-                hour=23, minute=59, second=59, tzinfo=UTC
-            )
-        except ValueError:
-            return empty
-
+    async def _collect_stripe_totals(
+        self,
+        accounts: list[AnalyticsStripeAccount],
+        *,
+        since_dt: datetime,
+        until_dt: datetime,
+        currency: str | None,
+    ) -> dict[str, Any]:
+        """Fan out across every MID at once, then merge the settlement totals."""
         since_ts = int(since_dt.timestamp())
         until_ts = int(until_dt.timestamp())
         prefer = (currency or "").upper() or None
@@ -867,17 +947,51 @@ class AnalyticsService:
         balance_holds: dict[int, Decimal] = defaultdict(lambda: Decimal("0"))
         balance_reserve_total = Decimal("0")
 
-        for acct in accounts:
+        async def _account_snapshot(acct: AnalyticsStripeAccount) -> dict:
+            """Charges, disputes and balance for one MID — fetched concurrently."""
             try:
                 key = decrypt_value(acct.secret_key_encrypted)
-                client = StripeClient(key)
-                # Prefer store/settlement currency (CAD) — never prefer Billing presentment (GBP)
-                totals = await client.period_charge_totals(
+            except Exception as e:
+                return {"label": acct.label, "fatal": str(e)}
+            client = StripeClient(key)
+            # Prefer store/settlement currency (CAD) — never prefer Billing presentment (GBP)
+            totals, disputes, balance = await asyncio.gather(
+                client.period_charge_totals(
                     since_ts=since_ts,
                     until_ts=until_ts,
                     currency=prefer,
                     limit_pages=500,
-                )
+                ),
+                client.period_dispute_stats(since_ts=since_ts, until_ts=until_ts),
+                client.retrieve_balance_summary(currency=prefer),
+                return_exceptions=True,
+            )
+            return {
+                "label": acct.label,
+                "totals": totals,
+                "disputes": disputes,
+                "balance": balance,
+            }
+
+        snapshots = await asyncio.gather(
+            *(_account_snapshot(acct) for acct in accounts), return_exceptions=True
+        )
+
+        for snapshot in snapshots:
+            if isinstance(snapshot, BaseException):
+                errors.append(str(snapshot))
+                continue
+            label = snapshot.get("label") or "Stripe account"
+            if snapshot.get("fatal"):
+                errors.append(f"{label}: {snapshot['fatal']}")
+                continue
+            totals = snapshot.get("totals")
+            disputes = snapshot.get("disputes")
+            balance = snapshot.get("balance")
+
+            if isinstance(totals, BaseException):
+                errors.append(f"{label}: {totals}")
+            elif isinstance(totals, dict):
                 for k in totals_acc:
                     totals_acc[k] += Decimal(str(totals.get(k) or 0))
                 charge_count += int(totals.get("charge_count") or 0)
@@ -902,60 +1016,49 @@ class AnalyticsService:
                 for day, val in (totals.get("daily_one_time_net") or {}).items():
                     daily_one_net[day] += Decimal(str(val))
 
-                try:
-                    disputes = await client.period_dispute_stats(
-                        since_ts=since_ts, until_ts=until_ts
-                    )
-                    for field in (
-                        "count",
-                        "open_count",
-                        "won_count",
-                        "lost_count",
-                    ):
-                        dispute_acc[field] += int(disputes.get(field) or 0)
-                    for field in ("amount", "open_amount", "won_amount", "lost_amount"):
-                        dispute_acc[field] += Decimal(str(disputes.get(field) or 0))
-                    if disputes.get("currency") and not dispute_acc["currency"]:
-                        dispute_acc["currency"] = str(disputes["currency"]).upper()
-                    for reason, n in (disputes.get("reasons") or {}).items():
-                        dispute_acc["reasons"][reason] += int(n)
-                    if disputes.get("error"):
-                        errors.append(f"{acct.label} disputes: {disputes['error']}")
-                except Exception as de:
-                    errors.append(f"{acct.label} disputes: {de}")
+            if isinstance(disputes, BaseException):
+                errors.append(f"{label} disputes: {disputes}")
+            elif isinstance(disputes, dict):
+                for field in ("count", "open_count", "won_count", "lost_count"):
+                    dispute_acc[field] += int(disputes.get(field) or 0)
+                for field in ("amount", "open_amount", "won_amount", "lost_amount"):
+                    dispute_acc[field] += Decimal(str(disputes.get(field) or 0))
+                if disputes.get("currency") and not dispute_acc["currency"]:
+                    dispute_acc["currency"] = str(disputes["currency"]).upper()
+                for reason, n in (disputes.get("reasons") or {}).items():
+                    dispute_acc["reasons"][reason] += int(n)
+                if disputes.get("error"):
+                    errors.append(f"{label} disputes: {disputes['error']}")
 
-                try:
-                    bal = await client.retrieve_balance_summary(currency=prefer)
-                    if bal.get("error"):
-                        errors.append(f"{acct.label} balance: {bal['error']}")
-                    else:
-                        bal_cur = str(bal.get("currency") or "").upper() or None
-                        if bal_cur and not balance_currency:
-                            balance_currency = bal_cur
-                        elif bal_cur and prefer and bal_cur == prefer:
-                            balance_currency = prefer
-                        # Only sum buckets in the same currency (avoid mixing FX here)
-                        if not balance_currency or bal_cur == balance_currency:
-                            balance_available += Decimal(str(bal.get("available") or 0))
-                            balance_pending += Decimal(str(bal.get("pending") or 0))
-                            reserve_total = Decimal(str(bal.get("reserve_total") or 0))
-                            if reserve_total > 0:
-                                balance_reserve_total += reserve_total
-                            for hold in bal.get("holds") or []:
-                                days = int(hold.get("days") or 0)
-                                if days > 0:
-                                    balance_holds[days] += Decimal(
-                                        str(hold.get("amount") or 0)
-                                    )
-                        delay = bal.get("delay_days")
-                        if delay is not None:
-                            delay_i = int(delay)
-                            if balance_delay_days is None or delay_i > balance_delay_days:
-                                balance_delay_days = delay_i
-                except Exception as be:
-                    errors.append(f"{acct.label} balance: {be}")
-            except Exception as e:
-                errors.append(f"{acct.label}: {e}")
+            if isinstance(balance, BaseException):
+                errors.append(f"{label} balance: {balance}")
+            elif isinstance(balance, dict):
+                if balance.get("error"):
+                    errors.append(f"{label} balance: {balance['error']}")
+                else:
+                    bal_cur = str(balance.get("currency") or "").upper() or None
+                    if bal_cur and not balance_currency:
+                        balance_currency = bal_cur
+                    elif bal_cur and prefer and bal_cur == prefer:
+                        balance_currency = prefer
+                    # Only sum buckets in the same currency (avoid mixing FX here)
+                    if not balance_currency or bal_cur == balance_currency:
+                        balance_available += Decimal(str(balance.get("available") or 0))
+                        balance_pending += Decimal(str(balance.get("pending") or 0))
+                        reserve_total = Decimal(str(balance.get("reserve_total") or 0))
+                        if reserve_total > 0:
+                            balance_reserve_total += reserve_total
+                        for hold in balance.get("holds") or []:
+                            days = int(hold.get("days") or 0)
+                            if days > 0:
+                                balance_holds[days] += Decimal(
+                                    str(hold.get("amount") or 0)
+                                )
+                    delay = balance.get("delay_days")
+                    if delay is not None:
+                        delay_i = int(delay)
+                        if balance_delay_days is None or delay_i > balance_delay_days:
+                            balance_delay_days = delay_i
 
         if prefer and detected_currency != prefer:
             # Settlement should match store when account pays out in store currency
@@ -1106,6 +1209,7 @@ class AnalyticsService:
                     )
                 )
         db.commit()
+        _dashboard_cache.invalidate_store(store_id)
         return {"ok": True, "updated": len(items)}
 
     def _parse_range(
@@ -1116,9 +1220,13 @@ class AnalyticsService:
         *,
         custom_since: str | None = None,
         custom_until: str | None = None,
+        timezone_name: str | None = None,
     ) -> tuple[datetime, datetime, str, str]:
-        now = datetime.now(UTC)
-        end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        """Resolve a reporting window.
+
+        Presets use the shared Ads Manager window (last N complete days in the ad
+        account timezone) so Analytics ad spend equals what the Ads tab reports.
+        """
         if period == "custom":
             if not custom_since or not custom_until:
                 raise HTTPException(
@@ -1138,18 +1246,19 @@ class AnalyticsService:
                     status_code=400, detail="Start date must be on or before end date"
                 )
         elif period == "all":
+            end = datetime.now(UTC).replace(hour=23, minute=59, second=59, microsecond=0)
             if store and store.created_at:
                 start = store.created_at
                 if start.tzinfo is None:
                     start = start.replace(tzinfo=UTC)
             else:
                 start = datetime(2010, 1, 1, tzinfo=UTC)
-        elif period == "7d":
-            start = end - timedelta(days=6)
-        elif period == "90d":
-            start = end - timedelta(days=89)
         else:
-            start = end - timedelta(days=29)
+            start_d, end_d = preset_window(period, today_in_zone(timezone_name))
+            start = datetime(start_d.year, start_d.month, start_d.day, tzinfo=UTC)
+            end = datetime(
+                end_d.year, end_d.month, end_d.day, 23, 59, 59, tzinfo=UTC
+            )
         start = start.replace(hour=0, minute=0, second=0, microsecond=0)
 
         # Clip to Shopify launch / analytics start so pre-Shopify Meta spend is ignored
@@ -1177,21 +1286,45 @@ class AnalyticsService:
         *,
         custom_since: str | None = None,
         custom_until: str | None = None,
+        refresh: bool = False,
     ) -> dict:
         store = self._ensure_store(db, user, store_id)
         settings_row = get_or_create_analytics_settings(db, store_id)
+        meta_client = self._meta_client(settings_row)
+
+        # Presets must land on the same days as the Ads tab, which means resolving
+        # "today" in the ad account timezone rather than assuming the default.
+        ads_timezone: str | None = None
+        if meta_client:
+            try:
+                account_info = await cached_account_info(
+                    settings_row.meta_ad_account_id, meta_client.get_account_info
+                )
+                ads_timezone = account_info.get("timezone_name")
+            except Exception as e:
+                logger.info("Meta account info skipped for %s: %s", store_id, e)
+
         start_dt, end_dt, since, until = self._parse_range(
             period,
             store,
             settings_row.analytics_start_date,
             custom_since=custom_since,
             custom_until=custom_until,
+            timezone_name=ads_timezone,
         )
         currency = (store.currency or "USD").upper()
         store_currency = currency
         pnl_currency = _resolve_display_currency(settings_row.display_currency, store_currency)
         display_fx_note: str | None = None
         store_to_pnl_rate = Decimal("1")
+
+        cache_key = (store_id, period, since, until, pnl_currency)
+        if refresh:
+            _dashboard_cache.invalidate_store(store_id)
+        else:
+            cached = _dashboard_cache.get(cache_key)
+            if cached is not None:
+                return {**cached, "cached": True}
 
         cost_map = {
             (r.shopify_product_id, r.shopify_variant_id): _d(r.cost_per_unit)
@@ -1210,6 +1343,109 @@ class AnalyticsService:
         shopify_connected = store.status == StoreStatus.CONNECTED.value
         meta_configured = bool(settings_row.meta_access_token_encrypted and settings_row.meta_ad_account_id)
 
+        # Only clip Meta to an explicit analytics start date (Shopify launch), never to first Shopify order
+        meta_since = settings_row.analytics_start_date or None
+        if period != "all":
+            meta_since = since if not meta_since or since >= meta_since else meta_since
+
+        shopify_client = self._shopify_client(store) if shopify_connected else None
+
+        async def _fetch_orders() -> list[dict]:
+            if shopify_client is None:
+                return []
+            if period == "all" and not settings_row.analytics_start_date:
+                return await shopify_client.list_all_orders_in_range(
+                    created_at_max=end_dt.isoformat(), max_pages=100
+                )
+            return await shopify_client.list_all_orders_in_range(
+                created_at_min=start_dt.isoformat(), created_at_max=end_dt.isoformat()
+            )
+
+        async def _fetch_meta() -> dict:
+            if meta_client is None:
+                return {}
+            # Lifetime totals avoid truncating All-time spend when no start date is set
+            lifetime = period == "all" and not settings_row.analytics_start_date
+            window = {"since": meta_since or since, "until": until}
+            try:
+                if lifetime:
+                    total_rows, daily_rows, campaign_rows = await asyncio.gather(
+                        meta_client.get_account_insights_all(
+                            date_preset="maximum", time_increment="all_days"
+                        ),
+                        meta_client.get_account_insights_all(
+                            date_preset="maximum", time_increment=1
+                        ),
+                        meta_client.get_campaign_insights(date_preset="maximum"),
+                    )
+                else:
+                    total_rows, daily_rows, campaign_rows = await asyncio.gather(
+                        meta_client.get_account_insights_all(
+                            **window, time_increment="all_days"
+                        ),
+                        meta_client.get_account_insights_all(**window, time_increment=1),
+                        meta_client.get_campaign_insights(**window),
+                    )
+            except Exception as e:
+                return {"error": str(e)}
+            return {
+                "total_rows": total_rows,
+                "daily_rows": daily_rows,
+                "campaign_rows": campaign_rows,
+            }
+
+        async def _warm_fx() -> None:
+            """Pre-load the rates the P&L will need so FX is not a serial hop later."""
+            wanted = {store_currency, META_BILLING_CURRENCY} - {pnl_currency}
+            await asyncio.gather(
+                *(get_rate(src, pnl_currency) for src in wanted if src),
+                *(
+                    get_rates_range(src, pnl_currency, since=since, until=until)
+                    for src in wanted
+                    if src
+                ),
+                return_exceptions=True,
+            )
+
+        # Every upstream call runs concurrently — this is the whole page latency.
+        orders_result, meta_result, stripe_result, mrr_result, _fx = await asyncio.gather(
+            _fetch_orders(),
+            _fetch_meta(),
+            self._stripe_period_totals(
+                db, store_id, since=since, until=until, currency=store_currency
+            ),
+            self._mrr_block(
+                db,
+                store_id,
+                settings_row,
+                store_currency=pnl_currency,
+                # MRR is billed in presentment currency (often GBP) — not settlement CAD
+                stripe_native_currency=(settings_row.mrr_currency or None),
+            ),
+            _warm_fx(),
+            return_exceptions=True,
+        )
+
+        if isinstance(orders_result, BaseException):
+            raise HTTPException(
+                status_code=502, detail=f"Shopify orders fetch failed: {orders_result}"
+            ) from orders_result
+        orders: list[dict] = orders_result
+
+        meta_data: dict = {} if isinstance(meta_result, BaseException) else meta_result
+        if isinstance(meta_result, BaseException):
+            meta_data = {"error": str(meta_result)}
+
+        if isinstance(stripe_result, BaseException):
+            logger.warning("Stripe totals failed for %s: %s", store_id, stripe_result)
+            stripe_totals = self._empty_stripe_totals()
+            stripe_totals["error"] = str(stripe_result)
+        else:
+            stripe_totals = stripe_result
+
+        mrr_block = None if isinstance(mrr_result, BaseException) else mrr_result
+        mrr_requested_currency = pnl_currency
+
         # --- Shopify orders ---
         revenue = Decimal("0")
         refunds = Decimal("0")
@@ -1225,21 +1461,6 @@ class AnalyticsService:
         orders_data: list[dict] = []
 
         if shopify_connected:
-            client = self._shopify_client(store)
-            try:
-                if period == "all" and not settings_row.analytics_start_date:
-                    orders = await client.list_all_orders_in_range(
-                        created_at_max=end_dt.isoformat(),
-                        max_pages=100,
-                    )
-                else:
-                    orders = await client.list_all_orders_in_range(
-                        created_at_min=start_dt.isoformat(),
-                        created_at_max=end_dt.isoformat(),
-                    )
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=f"Shopify orders fetch failed: {e}") from e
-
             for order in orders:
                 if order.get("cancelled_at"):
                     continue
@@ -1312,11 +1533,6 @@ class AnalyticsService:
             start_dt = datetime.strptime(earliest, "%Y-%m-%d").replace(tzinfo=UTC)
             since = earliest
 
-        # Only clip Meta to an explicit analytics start date (Shopify launch), never to first Shopify order
-        meta_since = settings_row.analytics_start_date or None
-        if period != "all":
-            meta_since = since if not meta_since or since >= meta_since else meta_since
-
         # --- Meta Ads ---
         ad_spend = Decimal("0")
         impressions = 0
@@ -1338,31 +1554,13 @@ class AnalyticsService:
         campaigns: list[dict] = []
         meta_error: str | None = None
 
-        meta_client = self._meta_client(settings_row)
-        if meta_client:
+        if meta_data.get("error"):
+            meta_error = str(meta_data["error"])
+        elif meta_client:
             try:
-                # Lifetime / period totals (single row) — avoids truncating All-time spend
-                if period == "all" and not settings_row.analytics_start_date:
-                    total_rows = await meta_client.get_account_insights_all(
-                        date_preset="maximum", time_increment="all_days"
-                    )
-                    daily_rows = await meta_client.get_account_insights_all(
-                        date_preset="maximum", time_increment=1
-                    )
-                elif period == "all" and settings_row.analytics_start_date:
-                    total_rows = await meta_client.get_account_insights_all(
-                        since=meta_since, until=until, time_increment="all_days"
-                    )
-                    daily_rows = await meta_client.get_account_insights_all(
-                        since=meta_since, until=until, time_increment=1
-                    )
-                else:
-                    total_rows = await meta_client.get_account_insights_all(
-                        since=meta_since or since, until=until, time_increment="all_days"
-                    )
-                    daily_rows = await meta_client.get_account_insights_all(
-                        since=meta_since or since, until=until, time_increment=1
-                    )
+                total_rows = meta_data.get("total_rows") or []
+                daily_rows = meta_data.get("daily_rows") or []
+                campaign_rows = meta_data.get("campaign_rows") or []
 
                 # Prefer aggregated totals for summary KPIs
                 for row in total_rows:
@@ -1404,14 +1602,6 @@ class AnalyticsService:
                         since = earliest_meta
                         start_dt = datetime.strptime(earliest_meta, "%Y-%m-%d").replace(tzinfo=UTC)
 
-                if period == "all" and not settings_row.analytics_start_date:
-                    campaign_rows = await meta_client.get_campaign_insights(date_preset="maximum")
-                elif settings_row.analytics_start_date or period != "all":
-                    campaign_rows = await meta_client.get_campaign_insights(
-                        since=meta_since or since, until=until
-                    )
-                else:
-                    campaign_rows = await meta_client.get_campaign_insights(date_preset="maximum")
                 for row in campaign_rows:
                     spend = _d(row.get("spend"))
                     purchases = parse_meta_purchases(row.get("actions"))
@@ -1448,10 +1638,11 @@ class AnalyticsService:
 
         # Meta Ads spend is always billed in CAD for this business — never Shopify/Stripe/GBP.
         # Do not trust Meta account currency if it disagrees (can be mis-set on the ad account).
-        meta_currency = "CAD"
+        meta_currency = META_BILLING_CURRENCY
         ad_spend_native = ad_spend
         meta_purchase_value_native = meta_purchase_value
         ad_spend_currency = meta_currency
+        meta_to_pnl_rate = Decimal("1")
 
         fx_notes: list[str] = []
 
@@ -1561,10 +1752,6 @@ class AnalyticsService:
             )
 
         # --- Stripe period revenue: keep settlement-native, convert later to display ---
-        store_currency = currency
-        stripe_totals = await self._stripe_period_totals(
-            db, store_id, since=since, until=until, currency=store_currency
-        )
         # Settlement-native amounts (balance_transaction currency — may be CAD/USD/GBP)
         stripe_gross_native = Decimal(str(stripe_totals["gross"]))
         stripe_fees_native = Decimal(str(stripe_totals["fees"]))
@@ -2096,14 +2283,15 @@ class AnalyticsService:
                 },
             )
 
-        mrr_block = await self._mrr_block(
-            db,
-            store_id,
-            settings_row,
-            store_currency=pnl_currency,
-            # MRR is billed in presentment currency (often GBP) — not settlement CAD
-            stripe_native_currency=(settings_row.mrr_currency or None),
-        )
+        if mrr_block and pnl_currency != mrr_requested_currency:
+            # Display currency fell back after an FX failure — relabel MRR to match
+            mrr_block = await self._mrr_block(
+                db,
+                store_id,
+                settings_row,
+                store_currency=pnl_currency,
+                stripe_native_currency=(settings_row.mrr_currency or None),
+            )
         if mrr_block:
             if not mrr_block.get("currency"):
                 mrr_block["currency"] = pnl_currency
@@ -2149,7 +2337,7 @@ class AnalyticsService:
             )
             insights = insights[:8]
 
-        return {
+        payload = {
             "store_id": store_id,
             "store_name": store.name,
             # Primary display currency for revenue / profit (user preference)
@@ -2161,6 +2349,18 @@ class AnalyticsService:
             "period": period,
             "chart_granularity": "monthly" if use_monthly else "daily",
             "date_range": {"since": since, "until": until},
+            # Presets are the same complete-day window the Ads tab reports on
+            "range_mode": "complete_days" if period not in ("custom", "all") else period,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "cached": False,
+            "ads_reconciliation": {
+                "spend_billed": _money(ad_spend_native),
+                "billing_currency": meta_currency,
+                "spend_display": _money(ad_spend),
+                "fx_rate": float(meta_to_pnl_rate),
+                "window": {"since": since, "until": until},
+                "matches_ads_tab": period != "all",
+            },
             "connections": {
                 "shopify": shopify_connected,
                 "meta": meta_configured and meta_error is None,
@@ -2290,6 +2490,8 @@ class AnalyticsService:
             "insights": insights,
             "mrr": mrr_block,
         }
+        _dashboard_cache.set(cache_key, payload)
+        return payload
 
     def _build_insights(
         self,

@@ -7,7 +7,6 @@ import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import HTTPException
@@ -38,17 +37,20 @@ from app.integrations.meta.client import (
     parse_meta_purchases,
     parse_meta_video_3s_plays,
 )
+from app.integrations.meta.windows import (
+    DEFAULT_ADS_TIMEZONE as _DEFAULT_ADS_TZ,
+    META_BILLING_CURRENCY as _META_BILLING_CURRENCY,
+    ads_zone as _zone,
+    cached_account_info as _cached_account_info,
+    preset_window as _preset_window,
+)
 from app.integrations.shopify.client import ShopifyClient
 from app.services.analytics_service import AnalyticsService
 from app.tracking.credentials import mask_api_key_hint
 
 logger = logging.getLogger(__name__)
 
-# This business bills Meta in CAD. Do not label spend with Shopify/Stripe currency (often GBP).
-_META_BILLING_CURRENCY = "CAD"
-_DEFAULT_ADS_TZ = "America/Toronto"
 _HIDDEN_STATUSES = frozenset({"DELETED", "ARCHIVED"})
-_PERIOD_COMPLETE_DAYS = {"1d": 1, "7d": 7, "14d": 14, "30d": 30, "90d": 90}
 
 
 def _d(value: object) -> Decimal:
@@ -68,24 +70,6 @@ def _pct(part: float, whole: float) -> float:
     if whole <= 0:
         return 0.0
     return (part / whole) * 100
-
-
-def _zone(name: str | None) -> ZoneInfo:
-    for candidate in (name, _DEFAULT_ADS_TZ, "UTC"):
-        if not candidate:
-            continue
-        try:
-            return ZoneInfo(candidate)
-        except Exception:
-            continue
-    return ZoneInfo("UTC")
-
-
-def _complete_days_window(today: date, days: int) -> tuple[date, date]:
-    """Last `days` complete days ending yesterday — Meta Ads Manager preset behaviour."""
-    end_d = today - timedelta(days=1)
-    start_d = end_d - timedelta(days=max(days, 1) - 1)
-    return start_d, end_d
 
 
 def _status_label(raw: str | None) -> str:
@@ -285,8 +269,7 @@ class AdsService:
                 start_d = date(2010, 1, 1)
             end_d = today
         else:
-            days = _PERIOD_COMPLETE_DAYS.get(period, 30)
-            start_d, end_d = _complete_days_window(today, days)
+            start_d, end_d = _preset_window(period, today)
 
         start = datetime(start_d.year, start_d.month, start_d.day, tzinfo=tz)
         end = datetime(end_d.year, end_d.month, end_d.day, 23, 59, 59, tzinfo=tz)
@@ -634,7 +617,9 @@ class AdsService:
         client = self._meta_client(analytics)
         if client:
             try:
-                info = await client.get_account_info()
+                info = await _cached_account_info(
+                    analytics.meta_ad_account_id, client.get_account_info
+                )
                 account_name = info.get("name")
                 if info.get("timezone_name"):
                     account_timezone = str(info["timezone_name"])

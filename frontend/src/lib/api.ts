@@ -774,13 +774,14 @@ export const api = {
     overview: (
       storeId: string,
       period: AnalyticsPeriod = "30d",
-      options: { since?: string; until?: string } = {}
+      options: { since?: string; until?: string; refresh?: boolean } = {}
     ) => {
       const params = new URLSearchParams({ period });
       if (period === "custom" && options.since && options.until) {
         params.set("since", options.since);
         params.set("until", options.until);
       }
+      if (options.refresh) params.set("refresh", "true");
       return request<AnalyticsDashboard>(
         `/analytics/stores/${storeId}/overview?${params}`
       );

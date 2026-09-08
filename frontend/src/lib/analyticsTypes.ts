@@ -1,4 +1,11 @@
-export type AnalyticsPeriod = "7d" | "30d" | "90d" | "all" | "custom";
+export type AnalyticsPeriod =
+  | "1d"
+  | "7d"
+  | "14d"
+  | "30d"
+  | "90d"
+  | "all"
+  | "custom";
 
 export type ManualInvestment = {
   id: string;
@@ -96,6 +103,19 @@ export type AnalyticsDashboard = {
   period: AnalyticsPeriod;
   chart_granularity: "daily" | "monthly";
   date_range: { since: string; until: string };
+  /** "complete_days" for presets — the same window the Ads tab reports on. */
+  range_mode?: string;
+  generated_at?: string;
+  cached?: boolean;
+  /** Proof that Analytics ad spend and the Ads tab are the same number. */
+  ads_reconciliation?: {
+    spend_billed: number;
+    billing_currency: string;
+    spend_display: number;
+    fx_rate: number;
+    window: { since: string; until: string };
+    matches_ads_tab: boolean;
+  };
   connections: {
     shopify: boolean;
     meta: boolean;

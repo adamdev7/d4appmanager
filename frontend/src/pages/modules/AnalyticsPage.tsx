@@ -49,7 +49,9 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof BarChart3 }> = [
 ];
 
 const PERIODS: Array<{ id: Exclude<AnalyticsPeriod, "custom">; label: string }> = [
+  { id: "1d", label: "Yesterday" },
   { id: "7d", label: "7 days" },
+  { id: "14d", label: "14 days" },
   { id: "30d", label: "30 days" },
   { id: "90d", label: "90 days" },
   { id: "all", label: "All time" },
@@ -81,57 +83,141 @@ function formatRangeLabel(since: string, until: string) {
   }
 }
 
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6" aria-busy="true" aria-label="Loading analytics">
+      {[4, 4].map((count, row) => (
+        <div
+          key={row}
+          className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4"
+        >
+          {Array.from({ length: count }).map((_, i) => (
+            <div
+              key={i}
+              className="h-[104px] rounded-xl border border-border bg-surface-muted/50 animate-pulse"
+            />
+          ))}
+        </div>
+      ))}
+      <div className="grid gap-4 xl:grid-cols-2">
+        <div className="h-72 rounded-xl border border-border bg-surface-muted/50 animate-pulse" />
+        <div className="h-72 rounded-xl border border-border bg-surface-muted/50 animate-pulse" />
+      </div>
+    </div>
+  );
+}
+
 export function AnalyticsPage() {
   const { activeStore, stores } = useStore();
   const storeId = activeStore?.id ?? stores[0]?.id ?? null;
 
   const [tab, setTab] = useState<Tab>("dashboard");
   const [period, setPeriod] = useState<AnalyticsPeriod>("30d");
-  const [customSince, setCustomSince] = useState(daysAgoISO(29));
-  const [customUntil, setCustomUntil] = useState(todayISO());
-  const [appliedSince, setAppliedSince] = useState(daysAgoISO(29));
-  const [appliedUntil, setAppliedUntil] = useState(todayISO());
+  // Presets end yesterday (complete days), so custom pickers default the same way
+  const [customSince, setCustomSince] = useState(daysAgoISO(30));
+  const [customUntil, setCustomUntil] = useState(daysAgoISO(1));
+  const [appliedSince, setAppliedSince] = useState(daysAgoISO(30));
+  const [appliedUntil, setAppliedUntil] = useState(daysAgoISO(1));
   const [calendarOpen, setCalendarOpen] = useState(false);
   const calendarRef = useRef<HTMLDivElement>(null);
   const [dashboard, setDashboard] = useState<AnalyticsDashboard | null>(null);
   const [settings, setSettings] = useState<AnalyticsSettings | null>(null);
   const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [holdBreakdownOpen, setHoldBreakdownOpen] = useState(false);
   const [savingCurrency, setSavingCurrency] = useState(false);
+  const [settingsVersion, setSettingsVersion] = useState(0);
 
-  const load = useCallback(async () => {
-    if (!storeId) {
-      setLoading(false);
-      return;
-    }
-    if (period === "custom" && (!appliedSince || !appliedUntil)) {
-      setLoading(false);
-      return;
-    }
-    setError("");
-    try {
-      const [dash, sett] = await Promise.all([
-        api.analytics.overview(storeId, period, {
+  // Already-seen timeframes render instantly, then refresh in the background
+  const cacheRef = useRef(new Map<string, AnalyticsDashboard>());
+  const requestSeq = useRef(0);
+
+  const cacheKey =
+    period === "custom"
+      ? `${storeId}:custom:${appliedSince}:${appliedUntil}`
+      : `${storeId}:${period}`;
+
+  const load = useCallback(
+    async ({ refresh = false }: { refresh?: boolean } = {}) => {
+      if (!storeId) {
+        setLoading(false);
+        return;
+      }
+      if (period === "custom" && (!appliedSince || !appliedUntil)) {
+        setLoading(false);
+        return;
+      }
+      if (refresh) cacheRef.current.clear();
+
+      const cached = refresh ? undefined : cacheRef.current.get(cacheKey);
+      if (cached) {
+        setDashboard(cached);
+        setLoading(false);
+      } else {
+        setLoading((prev) => prev || !dashboard);
+      }
+
+      const seq = ++requestSeq.current;
+      setUpdating(true);
+      setError("");
+      try {
+        const dash = await api.analytics.overview(storeId, period, {
           since: period === "custom" ? appliedSince : undefined,
           until: period === "custom" ? appliedUntil : undefined,
-        }),
-        api.analytics.getSettings(storeId),
-      ]);
-      setDashboard(dash);
-      setSettings(sett);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load analytics");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [storeId, period, appliedSince, appliedUntil]);
+          refresh,
+        });
+        cacheRef.current.set(cacheKey, dash);
+        if (seq !== requestSeq.current) return;
+        setDashboard(dash);
+      } catch (err) {
+        if (seq !== requestSeq.current) return;
+        setError(err instanceof Error ? err.message : "Could not load analytics");
+      } finally {
+        if (seq === requestSeq.current) {
+          setLoading(false);
+          setUpdating(false);
+          setRefreshing(false);
+        }
+      }
+    },
+    // `dashboard` is read only to decide whether to blank the page — not a trigger
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [storeId, period, appliedSince, appliedUntil, cacheKey]
+  );
 
+  // A different store shares nothing with the previous one — start clean
   useEffect(() => {
+    cacheRef.current.clear();
+    setDashboard(null);
     setLoading(true);
+  }, [storeId]);
+
+  // Revalidate on entering the dashboard so edits made in the other tabs show up
+  useEffect(() => {
+    if (tab !== "dashboard") return;
     load();
+  }, [load, tab]);
+
+  // Settings never change with the timeframe — fetch them once per store
+  useEffect(() => {
+    if (!storeId) return;
+    let cancelled = false;
+    api.analytics
+      .getSettings(storeId)
+      .then((s) => {
+        if (!cancelled) setSettings(s);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [storeId, settingsVersion]);
+
+  const reloadAfterChange = useCallback(() => {
+    setSettingsVersion((v) => v + 1);
+    load({ refresh: true });
   }, [load]);
 
   useEffect(() => {
@@ -154,7 +240,7 @@ export function AnalyticsPage() {
 
   const refresh = async () => {
     setRefreshing(true);
-    await load();
+    await load({ refresh: true });
   };
 
   const selectPreset = (id: Exclude<AnalyticsPeriod, "custom">) => {
@@ -208,7 +294,8 @@ export function AnalyticsPage() {
     try {
       await api.analytics.updateSettings(storeId, { display_currency: code });
       setRefreshing(true);
-      await load();
+      setSettingsVersion((v) => v + 1);
+      await load({ refresh: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update currency");
     } finally {
@@ -234,6 +321,12 @@ export function AnalyticsPage() {
       : dashboard?.date_range
         ? formatRangeLabel(dashboard.date_range.since, dashboard.date_range.until)
         : null;
+  const completeDays = dashboard?.range_mode === "complete_days";
+  const adsMatch = dashboard?.ads_reconciliation;
+  // Meta bills in CAD; show that number so it can be checked against the Ads tab
+  const adSpendBilled =
+    adsMatch?.spend_billed ?? summary?.ad_spend_native ?? null;
+  const adSpendBilledCurrency = adsMatch?.billing_currency ?? "CAD";
 
   return (
     <div className="space-y-6 pb-10 w-full min-w-0 overflow-x-hidden">
@@ -255,7 +348,10 @@ export function AnalyticsPage() {
             Shopify is storefront/checkout only (orders &amp; COGS), never counted as revenue.
           </p>
           {rangeHint && (
-            <p className="text-xs text-content-subtle mt-2 break-words">{rangeHint}</p>
+            <p className="text-xs text-content-subtle mt-2 break-words">
+              {rangeHint}
+              {completeDays && " · complete days only, the same window as the Ads tab"}
+            </p>
           )}
         </div>
 
@@ -272,6 +368,12 @@ export function AnalyticsPage() {
                 Stripe {dashboard.connections.stripe ? "connected" : "not set"}
               </Badge>
             </>
+          )}
+          {updating && !loading && (
+            <Badge variant="muted" className="inline-flex items-center gap-1.5">
+              <RefreshCw className="h-3 w-3 animate-spin" />
+              Updating
+            </Badge>
           )}
           <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
             <RefreshCw className={cn("h-4 w-4 mr-1.5", refreshing && "animate-spin")} />
@@ -310,7 +412,7 @@ export function AnalyticsPage() {
         <AnalyticsSettingsPanel
           storeId={storeId}
           settings={settings}
-          onSaved={() => load()}
+          onSaved={reloadAfterChange}
         />
       )}
 
@@ -319,7 +421,11 @@ export function AnalyticsPage() {
       )}
 
       {tab === "investments" && (
-        <ManualInvestmentPanel storeId={storeId} currency={storeCurrency} onChanged={() => load()} />
+        <ManualInvestmentPanel
+          storeId={storeId}
+          currency={storeCurrency}
+          onChanged={reloadAfterChange}
+        />
       )}
 
       {tab === "dashboard" && (
@@ -345,8 +451,8 @@ export function AnalyticsPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setCustomSince(period === "custom" ? appliedSince : daysAgoISO(29));
-                  setCustomUntil(period === "custom" ? appliedUntil : todayISO());
+                  setCustomSince(period === "custom" ? appliedSince : daysAgoISO(30));
+                  setCustomUntil(period === "custom" ? appliedUntil : daysAgoISO(1));
                   setCalendarOpen((o) => !o);
                 }}
                 title="Custom date range"
@@ -409,9 +515,7 @@ export function AnalyticsPage() {
           </div>
 
           {loading ? (
-            <Card padding="lg">
-              <p className="text-content-muted text-sm">Loading analytics…</p>
-            </Card>
+            <DashboardSkeleton />
           ) : dashboard && summary ? (
             <div className="space-y-6">
               {dashboard.connections.meta_error && (
@@ -423,6 +527,16 @@ export function AnalyticsPage() {
               )}
 
               {/* Hero KPIs */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Wallet className="h-4 w-4 text-brand-600" />
+                <h2 className="text-sm font-semibold text-content">
+                  Profitability this period
+                </h2>
+                <Badge variant="muted">{currency}</Badge>
+                {rangeHint && (
+                  <span className="text-xs text-content-subtle">{rangeHint}</span>
+                )}
+              </div>
               <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 [&>*]:min-w-0">
                 <MetricCard
                   label="Net Profit"
@@ -457,10 +571,13 @@ export function AnalyticsPage() {
                     summary.ad_spend > 0
                       ? [
                           `CPA ${formatMoney(summary.cpa || 0, currency)}`,
-                          summary.ad_spend_native != null && currency !== "CAD"
-                            ? `native ${formatMoney(summary.ad_spend_native, "CAD")}`
-                            : "Meta billed in CAD",
-                        ].join(" · ")
+                          adSpendBilled != null && currency !== adSpendBilledCurrency
+                            ? `Meta billed ${formatMoney(adSpendBilled, adSpendBilledCurrency)}`
+                            : `Meta billed in ${adSpendBilledCurrency}`,
+                          adsMatch?.matches_ads_tab ? "matches Ads tab" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")
                       : "Connect Meta in Settings"
                   }
                   icon={Megaphone}
@@ -481,6 +598,15 @@ export function AnalyticsPage() {
               </div>
 
               {/* Secondary KPIs */}
+              <div className="flex flex-wrap items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-brand-600" />
+                <h2 className="text-sm font-semibold text-content">
+                  Sales &amp; ad efficiency
+                </h2>
+                <span className="text-xs text-content-subtle">
+                  Where the money and the traffic actually come from
+                </span>
+              </div>
               <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 [&>*]:min-w-0">
                 <MetricCard
                   label="Gross Profit"
