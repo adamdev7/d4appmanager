@@ -22,7 +22,6 @@ import { Badge } from "@/components/ui/Badge";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { EMPTY_DASHBOARD_OVERVIEW, type DashboardOverview } from "@/lib/dashboardTypes";
-import { cn } from "@/lib/cn";
 
 const QUICK_LINKS = [
   { to: "/modules/ai-email", label: "AI Email", icon: Sparkles },
@@ -145,7 +144,7 @@ export function DashboardPage() {
         </motion.div>
       )}
 
-      <section className={cn(loading && "opacity-70 transition-opacity")}>
+      <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-medium text-content-subtle uppercase tracking-wider">
             Workspace

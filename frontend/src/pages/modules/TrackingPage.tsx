@@ -171,7 +171,7 @@ export function TrackingPage() {
   const { activeStore } = useStore();
   const [tab, setTab] = useState<Tab>("orders");
   const [overview, setOverview] = useState<TrackingOverview | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
   const [syncMessage, setSyncMessage] = useState("");
@@ -559,7 +559,16 @@ export function TrackingPage() {
               </div>
             </div>
 
-            {!overview?.recent_orders.length ? (
+            {loading && !overview ? (
+              <div className="px-6 py-8 space-y-3" aria-busy="true" aria-label="Loading orders">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div
+                    key={i}
+                    className="h-14 rounded-lg border border-border bg-surface-muted/50 animate-pulse"
+                  />
+                ))}
+              </div>
+            ) : !overview?.recent_orders.length ? (
               <div className="px-6 py-12 text-center">
                 <PackageSearch className="h-10 w-10 mx-auto text-content-subtle mb-3" />
                 <p className="text-sm font-medium text-content">No orders synced yet</p>
@@ -720,10 +729,12 @@ function StatCard({
   loading?: boolean;
 }) {
   return (
-    <div className="rounded-xl border border-border bg-surface p-4">
-      <p className="text-2xl font-semibold text-content tabular-nums">
-        {loading && value === undefined ? "—" : (value ?? 0)}
-      </p>
+    <div className="rounded-xl border border-border bg-surface p-4 min-h-[72px]">
+      {loading && value === undefined ? (
+        <div className="h-8 w-12 rounded-md bg-surface-muted animate-pulse" />
+      ) : (
+        <p className="text-2xl font-semibold text-content tabular-nums">{value ?? 0}</p>
+      )}
       <p className="text-xs text-content-muted mt-1">{label}</p>
     </div>
   );

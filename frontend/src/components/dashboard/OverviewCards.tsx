@@ -1,8 +1,8 @@
 import { motion } from "framer-motion";
 import { Minus } from "lucide-react";
 import { Card } from "@/components/ui/Card";
+import { Skeleton } from "@/components/ui/Loading";
 import type { OverviewMetric } from "@/lib/dashboardTypes";
-import { cn } from "@/lib/cn";
 
 export function OverviewCards({
   metrics,
@@ -11,6 +11,24 @@ export function OverviewCards({
   metrics: OverviewMetric[];
   loading?: boolean;
 }) {
+  if (loading) {
+    return (
+      <div
+        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 xl:gap-5 2xl:gap-6"
+        aria-busy="true"
+        aria-label="Loading workspace stats"
+      >
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Card key={i} className="space-y-3">
+            <Skeleton className="h-4 w-24 border-0" />
+            <Skeleton className="h-8 w-20 border-0" />
+            <Skeleton className="h-3 w-32 border-0" />
+          </Card>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 xl:gap-5 2xl:gap-6">
       {metrics.map((m, i) => (
@@ -20,7 +38,7 @@ export function OverviewCards({
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: i * 0.05, duration: 0.3 }}
         >
-          <Card className={cn(loading && "opacity-60")}>
+          <Card>
             <p className="text-sm xl:text-base text-content-muted">{m.label}</p>
             <p className="mt-2 text-2xl xl:text-3xl 2xl:text-4xl font-bold tracking-tight text-content tabular-nums">
               {m.value}

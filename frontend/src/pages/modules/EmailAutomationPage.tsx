@@ -20,6 +20,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Ca
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Switch } from "@/components/ui/Switch";
+import { ListSkeleton, SoftLoading } from "@/components/ui/Loading";
 import { RuleActionsMenu } from "@/components/email/RuleActionsMenu";
 import {
   TemplateEditorModal,
@@ -79,7 +80,7 @@ export function EmailAutomationPage() {
   const [rules, setRules] = useState<Rule[]>([]);
   const [events, setEvents] = useState<EventMeta[]>([]);
   const [logs, setLogs] = useState<SendLog[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [seeding, setSeeding] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -258,18 +259,31 @@ export function EmailAutomationPage() {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        <div className="rounded-xl border border-border bg-surface p-4">
-          <p className="text-2xl font-semibold text-content">{activeCount}</p>
-          <p className="text-xs text-content-muted mt-1">Automations turned on</p>
-        </div>
-        <div className="rounded-xl border border-border bg-surface p-4">
-          <p className="text-2xl font-semibold text-content">{rules.length}</p>
-          <p className="text-xs text-content-muted mt-1">Available emails</p>
-        </div>
-        <div className="rounded-xl border border-border bg-surface p-4 col-span-2 sm:col-span-1">
-          <p className="text-2xl font-semibold text-content">{sentCount}</p>
-          <p className="text-xs text-content-muted mt-1">Emails sent (recent)</p>
-        </div>
+        {loading && rules.length === 0 ? (
+          <>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div
+                key={i}
+                className="rounded-xl border border-border bg-surface p-4 animate-pulse h-[72px]"
+              />
+            ))}
+          </>
+        ) : (
+          <>
+            <div className="rounded-xl border border-border bg-surface p-4">
+              <p className="text-2xl font-semibold text-content">{activeCount}</p>
+              <p className="text-xs text-content-muted mt-1">Automations turned on</p>
+            </div>
+            <div className="rounded-xl border border-border bg-surface p-4">
+              <p className="text-2xl font-semibold text-content">{rules.length}</p>
+              <p className="text-xs text-content-muted mt-1">Available emails</p>
+            </div>
+            <div className="rounded-xl border border-border bg-surface p-4 col-span-2 sm:col-span-1">
+              <p className="text-2xl font-semibold text-content">{sentCount}</p>
+              <p className="text-xs text-content-muted mt-1">Emails sent (recent)</p>
+            </div>
+          </>
+        )}
       </div>
 
       {error && (
@@ -289,7 +303,9 @@ export function EmailAutomationPage() {
           </Link>
         </div>
 
-        {rules.length === 0 ? (
+        {loading && rules.length === 0 ? (
+          <ListSkeleton rows={5} />
+        ) : rules.length === 0 ? (
           <Card padding="lg" className="text-center py-12">
             <Mail className="h-10 w-10 text-content-subtle mx-auto mb-3" />
             <CardTitle className="text-lg">No emails set up yet</CardTitle>
@@ -302,6 +318,7 @@ export function EmailAutomationPage() {
             </Button>
           </Card>
         ) : (
+          <SoftLoading active={loading} showOverlay={false}>
           <ul className="space-y-3">
             {rules.map((rule, i) => {
               const meta = eventLabel(rule.event_type, events);
@@ -361,6 +378,7 @@ export function EmailAutomationPage() {
               );
             })}
           </ul>
+          </SoftLoading>
         )}
       </section>
 
@@ -372,7 +390,11 @@ export function EmailAutomationPage() {
           </CardTitle>
           <CardDescription>Emails your automations have tried to send recently.</CardDescription>
         </CardHeader>
-        {logs.length === 0 ? (
+        {loading && logs.length === 0 ? (
+          <div className="px-6 pb-6">
+            <ListSkeleton rows={4} />
+          </div>
+        ) : logs.length === 0 ? (
           <p className="text-sm text-content-muted px-6 pb-6">
             Nothing sent yet. Turn on an automation and trigger a Shopify event (like a new order).
           </p>

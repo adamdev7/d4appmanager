@@ -33,6 +33,12 @@ import { Badge } from "@/components/ui/Badge";
 import { Switch } from "@/components/ui/Switch";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
+import {
+  ListSkeleton,
+  MetricGridSkeleton,
+  SoftLoading,
+  UpdatingBadge,
+} from "@/components/ui/Loading";
 import type { GmailAccount } from "@/types";
 
 type Tab = "inbox" | "stats" | "business" | "settings" | "logs";
@@ -421,7 +427,8 @@ export function AIEmailAssistantPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [stats, setStats] = useState<AssistantStats | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -549,8 +556,13 @@ export function AIEmailAssistantPage() {
       setStats(null);
       return;
     }
-    const s = await api.aiEmailAssistant.stats(activeStore.id);
-    setStats(s as AssistantStats);
+    setStatsLoading(true);
+    try {
+      const s = await api.aiEmailAssistant.stats(activeStore.id);
+      setStats(s as AssistantStats);
+    } finally {
+      setStatsLoading(false);
+    }
   }, [activeStore?.id]);
 
   const loadAll = useCallback(async () => {
@@ -966,6 +978,7 @@ export function AIEmailAssistantPage() {
           )}
         </div>
         <div className="flex flex-wrap gap-2 shrink-0">
+          {loading && <UpdatingBadge />}
           <Button variant="outline" onClick={loadAll} disabled={loading}>
             <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
             Refresh
@@ -1156,7 +1169,11 @@ export function AIEmailAssistantPage() {
             </div>
 
             <ul className="flex-1 overflow-y-auto min-h-0">
-              {filteredInbox.length === 0 && (
+              {loading && inbox.length === 0 ? (
+                <li className="px-3 py-4">
+                  <ListSkeleton rows={8} />
+                </li>
+              ) : filteredInbox.length === 0 ? (
                 <li className="px-6 py-16 text-center">
                   <Mail className="h-8 w-8 text-content-subtle mx-auto mb-3 opacity-60" />
                   <p className="text-sm text-content-muted">
@@ -1170,7 +1187,7 @@ export function AIEmailAssistantPage() {
                       : "Try another filter."}
                   </p>
                 </li>
-              )}
+              ) : null}
               {filteredInbox.map((item) => {
                 const name = displayName(item.sender, item.sender_email);
                 const st = effectiveStatus(item);
@@ -1622,17 +1639,20 @@ export function AIEmailAssistantPage() {
                 time saved so you can focus on growing the store.
               </p>
             </div>
-            <Button variant="outline" onClick={loadStats} disabled={loading}>
-              <RefreshCw className={cn("h-4 w-4 mr-2", loading && "animate-spin")} />
+            <Button variant="outline" onClick={loadStats} disabled={loading || statsLoading}>
+              <RefreshCw className={cn("h-4 w-4 mr-2", (loading || statsLoading) && "animate-spin")} />
               Refresh stats
             </Button>
           </div>
 
-          {!stats ? (
+          {(loading || statsLoading) && !stats ? (
+            <MetricGridSkeleton rows={1} cols={4} />
+          ) : !stats ? (
             <Card className="p-10 text-center text-sm text-content-muted">
-              Loading stats…
+              Stats unavailable
             </Card>
           ) : (
+            <SoftLoading active={statsLoading || loading} showOverlay={false}>
             <>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {[
@@ -1842,6 +1862,7 @@ export function AIEmailAssistantPage() {
                 </ul>
               </Card>
             </>
+            </SoftLoading>
           )}
         </motion.div>
       )}

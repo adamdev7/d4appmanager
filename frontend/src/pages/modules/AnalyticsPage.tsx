@@ -27,6 +27,12 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import {
+  DashboardBodySkeleton,
+  SoftLoading,
+  Spinner,
+  UpdatingBadge,
+} from "@/components/ui/Loading";
 import { MetricCard } from "@/components/analytics/MetricCard";
 import { OrdersChart, ProfitChart, RevenueSpendChart } from "@/components/analytics/AnalyticsCharts";
 import {
@@ -83,30 +89,6 @@ function formatRangeLabel(since: string, until: string) {
   }
 }
 
-function DashboardSkeleton() {
-  return (
-    <div className="space-y-6" aria-busy="true" aria-label="Loading analytics">
-      {[4, 4].map((count, row) => (
-        <div
-          key={row}
-          className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2 xl:grid-cols-4"
-        >
-          {Array.from({ length: count }).map((_, i) => (
-            <div
-              key={i}
-              className="h-[104px] rounded-xl border border-border bg-surface-muted/50 animate-pulse"
-            />
-          ))}
-        </div>
-      ))}
-      <div className="grid gap-4 xl:grid-cols-2">
-        <div className="h-72 rounded-xl border border-border bg-surface-muted/50 animate-pulse" />
-        <div className="h-72 rounded-xl border border-border bg-surface-muted/50 animate-pulse" />
-      </div>
-    </div>
-  );
-}
-
 export function AnalyticsPage() {
   const { activeStore, stores } = useStore();
   const storeId = activeStore?.id ?? stores[0]?.id ?? null;
@@ -130,11 +112,14 @@ export function AnalyticsPage() {
   // "all" = every connected processor combined, otherwise a single account id
   const [balanceScope, setBalanceScope] = useState("all");
   const [savingCurrency, setSavingCurrency] = useState(false);
+  const [pendingCurrency, setPendingCurrency] = useState<string | null>(null);
   const [settingsVersion, setSettingsVersion] = useState(0);
 
   // Already-seen timeframes render instantly, then refresh in the background
   const cacheRef = useRef(new Map<string, AnalyticsDashboard>());
   const requestSeq = useRef(0);
+  const dashboardRef = useRef<AnalyticsDashboard | null>(null);
+  dashboardRef.current = dashboard;
 
   const cacheKey =
     period === "custom"
@@ -157,8 +142,9 @@ export function AnalyticsPage() {
       if (cached) {
         setDashboard(cached);
         setLoading(false);
-      } else {
-        setLoading((prev) => prev || !dashboard);
+      } else if (!dashboardRef.current) {
+        // First paint only — keep prior metrics visible on period/currency refetch
+        setLoading(true);
       }
 
       const seq = ++requestSeq.current;
@@ -302,6 +288,7 @@ export function AnalyticsPage() {
   const setDisplayCurrency = async (code: string) => {
     if (!storeId || savingCurrency || code === currency) return;
     setSavingCurrency(true);
+    setPendingCurrency(code);
     setError("");
     try {
       await api.analytics.updateSettings(storeId, { display_currency: code });
@@ -312,6 +299,7 @@ export function AnalyticsPage() {
       setError(err instanceof Error ? err.message : "Could not update currency");
     } finally {
       setSavingCurrency(false);
+      setPendingCurrency(null);
     }
   };
 
@@ -399,14 +387,18 @@ export function AnalyticsPage() {
               </Badge>
             </>
           )}
-          {updating && !loading && (
-            <Badge variant="muted" className="inline-flex items-center gap-1.5">
-              <RefreshCw className="h-3 w-3 animate-spin" />
-              Updating
-            </Badge>
+          {(updating || savingCurrency) && !loading && (
+            <UpdatingBadge label={savingCurrency ? "Converting currency" : "Updating"} />
           )}
-          <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
-            <RefreshCw className={cn("h-4 w-4 mr-1.5", refreshing && "animate-spin")} />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={refresh}
+            disabled={refreshing || updating || savingCurrency}
+          >
+            <RefreshCw
+              className={cn("h-4 w-4 mr-1.5", (refreshing || updating) && "animate-spin")}
+            />
             Refresh
           </Button>
         </div>
@@ -466,9 +458,10 @@ export function AnalyticsPage() {
               <button
                 key={p.id}
                 type="button"
+                disabled={updating || savingCurrency}
                 onClick={() => selectPreset(p.id)}
                 className={cn(
-                  "px-3 sm:px-4 py-2 rounded-lg text-sm font-medium border transition-colors shrink-0",
+                  "px-3 sm:px-4 py-2 rounded-lg text-sm font-medium border transition-colors shrink-0 disabled:opacity-60",
                   period === p.id
                     ? "bg-brand-600 text-white border-brand-600"
                     : "border-border text-content-muted hover:border-border-strong hover:text-content"
@@ -480,6 +473,7 @@ export function AnalyticsPage() {
             <div className="relative ml-auto sm:ml-0" ref={calendarRef}>
               <button
                 type="button"
+                disabled={updating || savingCurrency}
                 onClick={() => {
                   setCustomSince(period === "custom" ? appliedSince : daysAgoISO(30));
                   setCustomUntil(period === "custom" ? appliedUntil : daysAgoISO(1));
@@ -489,7 +483,7 @@ export function AnalyticsPage() {
                 aria-label="Custom date range"
                 aria-expanded={calendarOpen}
                 className={cn(
-                  "inline-flex h-9 w-9 items-center justify-center rounded-lg border transition-colors",
+                  "inline-flex h-9 w-9 items-center justify-center rounded-lg border transition-colors disabled:opacity-60",
                   period === "custom" || calendarOpen
                     ? "bg-brand-600 text-white border-brand-600"
                     : "border-border text-content-muted hover:border-border-strong hover:text-content"
@@ -528,25 +522,34 @@ export function AnalyticsPage() {
                 <button
                   key={code}
                   type="button"
-                  disabled={savingCurrency}
+                  disabled={savingCurrency || updating}
                   onClick={() => setDisplayCurrency(code)}
                   title={`Show analytics in ${code}`}
                   className={cn(
-                    "px-2.5 py-1.5 rounded-md text-xs font-semibold transition-colors",
-                    currency === code
+                    "inline-flex items-center justify-center gap-1.5 min-w-[2.75rem] px-2.5 py-1.5 rounded-md text-xs font-semibold transition-colors disabled:opacity-60",
+                    (pendingCurrency ?? currency) === code
                       ? "bg-brand-600 text-white"
                       : "text-content-muted hover:text-content"
                   )}
                 >
-                  {code}
+                  {savingCurrency && pendingCurrency === code ? (
+                    <Spinner className="h-3 w-3" />
+                  ) : (
+                    code
+                  )}
                 </button>
               ))}
             </div>
           </div>
 
           {loading ? (
-            <DashboardSkeleton />
+            <DashboardBodySkeleton />
           ) : dashboard && summary ? (
+            <SoftLoading
+              active={updating || savingCurrency}
+              showOverlay={false}
+              label={savingCurrency ? "Converting currency…" : "Updating…"}
+            >
             <div className="space-y-6">
               {dashboard.connections.meta_error && (
                 <Card padding="md" className="border-amber-500/30 bg-amber-500/5">
@@ -1148,6 +1151,7 @@ export function AnalyticsPage() {
                 </Card>
               )}
             </div>
+            </SoftLoading>
           ) : null}
         </>
       )}

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Mail, Package, Store, Zap, Inbox } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
+import { ListSkeleton } from "@/components/ui/Loading";
 import { api } from "@/lib/api";
 import { useStore } from "@/context/StoreContext";
 import { cn } from "@/lib/cn";
@@ -41,7 +42,7 @@ export function ActivityFeed() {
         <CardTitle>Recent activity</CardTitle>
       </CardHeader>
       {loading ? (
-        <p className="text-sm text-content-subtle px-3 py-4">Loading…</p>
+        <ListSkeleton rows={4} className="px-1" />
       ) : items.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
           <Inbox className="h-10 w-10 text-content-subtle mb-3" />

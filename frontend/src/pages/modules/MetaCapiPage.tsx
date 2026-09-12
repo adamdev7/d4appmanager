@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -28,6 +28,12 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
+import {
+  ListSkeleton,
+  MetricGridSkeleton,
+  SoftLoading,
+  UpdatingBadge,
+} from "@/components/ui/Loading";
 
 type Tab = "overview" | "events" | "settings";
 
@@ -90,9 +96,11 @@ export function MetaCapiPage() {
   const [eventNameFilter, setEventNameFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(false);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [error, setError] = useState("");
-
+  const statsRef = useRef<MetaCapiStats | null>(null);
+  statsRef.current = stats;
   const [enabled, setEnabled] = useState(false);
   const [pixelId, setPixelId] = useState("");
   const [token, setToken] = useState("");
@@ -137,13 +145,18 @@ export function MetaCapiPage() {
   const load = useCallback(async () => {
     if (!storeId) {
       setLoading(false);
+      setUpdating(false);
       setStats(null);
       setSettings(null);
       setEvents([]);
       setEventTypeCounts({});
       return;
     }
-    setLoading(true);
+    if (statsRef.current) {
+      setUpdating(true);
+    } else {
+      setLoading(true);
+    }
     setError("");
     try {
       const s = await api.metaCapi.stats(storeId);
@@ -162,6 +175,7 @@ export function MetaCapiPage() {
       setError(err instanceof Error ? err.message : "Failed to load");
     } finally {
       setLoading(false);
+      setUpdating(false);
     }
   }, [storeId]);
 
@@ -331,18 +345,21 @@ export function MetaCapiPage() {
             matches the browser Pixel.
           </p>
         </div>
-        <Button
-          type="button"
-          variant="secondary"
-          onClick={() => {
-            void load();
-            void loadEvents();
-          }}
-          disabled={loading}
-        >
-          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-          Refresh
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {updating && !loading && <UpdatingBadge />}
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              void load();
+              void loadEvents();
+            }}
+            disabled={loading || updating}
+          >
+            <RefreshCw className={cn("h-4 w-4", (loading || updating) && "animate-spin")} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       <div className="flex gap-1 border-b border-border">
@@ -373,6 +390,10 @@ export function MetaCapiPage() {
 
       {tab === "overview" && (
         <div className="space-y-6">
+          {loading && !stats ? (
+            <MetricGridSkeleton rows={1} cols={4} />
+          ) : (
+            <SoftLoading active={updating} showOverlay={false}>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card padding="lg">
               <p className="text-xs font-medium uppercase tracking-wider text-content-subtle">
@@ -404,6 +425,8 @@ export function MetaCapiPage() {
               </p>
             </Card>
           </div>
+            </SoftLoading>
+          )}
 
           <Card padding="lg">
             <CardHeader>
@@ -694,7 +717,7 @@ export function MetaCapiPage() {
             </div>
 
             {eventsLoading && events.length === 0 ? (
-              <p className="text-sm text-content-muted">Loading events…</p>
+              <ListSkeleton rows={6} />
             ) : events.length === 0 ? (
               <p className="text-sm text-content-muted">
                 No events match this filter. Try All, or confirm the theme browser token is set.

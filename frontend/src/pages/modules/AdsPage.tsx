@@ -22,6 +22,12 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import {
+  DashboardBodySkeleton,
+  ListSkeleton,
+  SoftLoading,
+  UpdatingBadge,
+} from "@/components/ui/Loading";
 import { MetricCard } from "@/components/analytics/MetricCard";
 import { AdsCreativeHealthChart, AdsSpendCpmChart } from "@/components/ads/AdsCharts";
 import {
@@ -107,20 +113,40 @@ export function AdsPage() {
   const [reports, setReports] = useState<AdsAiReport[]>([]);
   const [activeReport, setActiveReport] = useState<AdsAiReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [reportsLoading, setReportsLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [error, setError] = useState("");
   const [reportError, setReportError] = useState("");
+  const requestSeq = useRef(0);
+  const dashboardRef = useRef<AdsDashboard | null>(null);
+  const prevStoreIdRef = useRef(storeId);
+  if (prevStoreIdRef.current !== storeId) {
+    prevStoreIdRef.current = storeId;
+    dashboardRef.current = null;
+  } else {
+    dashboardRef.current = dashboard;
+  }
 
   const load = useCallback(async () => {
     if (!storeId) {
       setLoading(false);
+      setUpdating(false);
       return;
     }
     if (period === "custom" && (!appliedSince || !appliedUntil)) {
       setLoading(false);
+      setUpdating(false);
       return;
+    }
+    const seq = ++requestSeq.current;
+    const hasData = !!dashboardRef.current;
+    if (hasData) {
+      setUpdating(true);
+    } else {
+      setLoading(true);
     }
     setError("");
     try {
@@ -132,32 +158,47 @@ export function AdsPage() {
         }),
         api.ads.getSettings(storeId),
       ]);
+      if (seq !== requestSeq.current) return;
       setDashboard(dash);
       setSettings(sett);
       if (dash.ai.latest_report) setActiveReport(dash.ai.latest_report);
     } catch (err) {
+      if (seq !== requestSeq.current) return;
       setError(err instanceof Error ? err.message : "Could not load ads");
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+        setUpdating(false);
+        setRefreshing(false);
+      }
     }
   }, [storeId, period, appliedSince, appliedUntil]);
 
   const loadReports = useCallback(async () => {
     if (!storeId) return;
+    setReportsLoading(true);
     try {
       const list = await api.ads.listReports(storeId);
       setReports(list);
       if (list[0] && !activeReport) setActiveReport(list[0]);
     } catch {
       /* ignore */
+    } finally {
+      setReportsLoading(false);
     }
   }, [storeId, activeReport]);
 
   useEffect(() => {
-    setLoading(true);
     load();
   }, [load]);
+
+  useEffect(() => {
+    // Hard reset when switching stores so we never show the wrong account's KPIs
+    dashboardRef.current = null;
+    setDashboard(null);
+    setLoading(true);
+    setUpdating(false);
+  }, [storeId]);
 
   useEffect(() => {
     if (tab === "reports") loadReports();
@@ -304,13 +345,15 @@ export function AdsPage() {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {updating && !loading && <UpdatingBadge />}
           {PERIODS.map((p) => (
             <button
               key={p.id}
               type="button"
+              disabled={loading || updating}
               onClick={() => selectPreset(p.id)}
               className={cn(
-                "h-9 rounded-lg px-3 text-sm font-medium transition-colors",
+                "h-9 rounded-lg px-3 text-sm font-medium transition-colors disabled:opacity-60",
                 period === p.id
                   ? "bg-brand-600 text-white"
                   : "bg-surface-muted text-content-muted hover:text-content"
@@ -322,6 +365,7 @@ export function AdsPage() {
           <div className="relative" ref={calendarRef}>
             <button
               type="button"
+              disabled={loading || updating}
               onClick={() => {
                 setCustomSince(period === "custom" ? appliedSince : daysAgoISO(7));
                 setCustomUntil(period === "custom" ? appliedUntil : daysAgoISO(1));
@@ -331,7 +375,7 @@ export function AdsPage() {
               aria-label="Custom date range"
               aria-expanded={calendarOpen}
               className={cn(
-                "inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors",
+                "inline-flex h-9 w-9 items-center justify-center rounded-lg transition-colors disabled:opacity-60",
                 period === "custom" || calendarOpen
                   ? "bg-brand-600 text-white"
                   : "bg-surface-muted text-content-muted hover:text-content"
@@ -365,8 +409,12 @@ export function AdsPage() {
               </div>
             )}
           </div>
-          <Button variant="secondary" onClick={refresh} disabled={refreshing || loading}>
-            <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
+          <Button
+            variant="secondary"
+            onClick={refresh}
+            disabled={refreshing || loading || updating}
+          >
+            <RefreshCw className={cn("h-4 w-4", (refreshing || updating) && "animate-spin")} />
             Refresh
           </Button>
         </div>
@@ -402,7 +450,7 @@ export function AdsPage() {
       )}
 
       {loading && !dashboard ? (
-        <p className="text-sm text-content-muted">Loading live Meta ads…</p>
+        <DashboardBodySkeleton />
       ) : tab === "settings" ? (
         <AdsSettingsPanel storeId={storeId} settings={settings} onSaved={load} />
       ) : tab === "reports" ? (
@@ -445,32 +493,36 @@ export function AdsPage() {
               <p className="text-xs font-medium uppercase tracking-wide text-content-subtle mb-2">
                 History
               </p>
-              <ul className="space-y-1">
-                {reports.length === 0 && (
-                  <li className="text-sm text-content-muted py-2">No reports yet</li>
-                )}
-                {reports.map((r) => (
-                  <li key={r.id}>
-                    <button
-                      type="button"
-                      onClick={() => setActiveReport(r)}
-                      className={cn(
-                        "w-full text-left rounded-lg px-2.5 py-2 text-sm transition-colors",
-                        activeReport?.id === r.id
-                          ? "bg-brand-500/10 text-brand-700 dark:text-brand-400"
-                          : "hover:bg-surface-muted text-content"
-                      )}
-                    >
-                      <span className="font-medium block truncate">{r.title}</span>
-                      <span className="text-xs text-content-muted">
-                        {r.created_at
-                          ? new Date(r.created_at).toLocaleString()
-                          : r.report_type}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              {reportsLoading && reports.length === 0 ? (
+                <ListSkeleton rows={4} />
+              ) : (
+                <ul className="space-y-1">
+                  {reports.length === 0 && (
+                    <li className="text-sm text-content-muted py-2">No reports yet</li>
+                  )}
+                  {reports.map((r) => (
+                    <li key={r.id}>
+                      <button
+                        type="button"
+                        onClick={() => setActiveReport(r)}
+                        className={cn(
+                          "w-full text-left rounded-lg px-2.5 py-2 text-sm transition-colors",
+                          activeReport?.id === r.id
+                            ? "bg-brand-500/10 text-brand-700 dark:text-brand-400"
+                            : "hover:bg-surface-muted text-content"
+                        )}
+                      >
+                        <span className="font-medium block truncate">{r.title}</span>
+                        <span className="text-xs text-content-muted">
+                          {r.created_at
+                            ? new Date(r.created_at).toLocaleString()
+                            : r.report_type}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </Card>
 
             <Card padding="lg">
@@ -494,6 +546,8 @@ export function AdsPage() {
                     {activeReport.body_markdown}
                   </div>
                 </div>
+              ) : reportsLoading ? (
+                <ListSkeleton rows={6} />
               ) : (
                 <p className="text-sm text-content-muted">Generate a report to see AI analysis here.</p>
               )}
@@ -515,6 +569,7 @@ export function AdsPage() {
           </Button>
         </Card>
       ) : (
+        <SoftLoading active={updating} showOverlay={false}>
         <div className="space-y-6">
           {dashboard.meta_error && (
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
@@ -676,6 +731,7 @@ export function AdsPage() {
 
           <AttributionPanel attribution={dashboard.attribution} />
         </div>
+        </SoftLoading>
       )}
 
       <AdsReportTimeframeModal
