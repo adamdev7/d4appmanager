@@ -30,6 +30,9 @@ from app.integrations.meta.client import (
     parse_meta_cpa,
     parse_meta_float,
     parse_meta_funnel,
+    parse_meta_link_clicks,
+    parse_meta_link_cpc,
+    parse_meta_link_ctr,
     parse_meta_outbound_clicks,
     parse_meta_outbound_ctr,
     parse_meta_purchase_roas,
@@ -295,6 +298,7 @@ class AdsService:
         funnel = parse_meta_funnel(row.get("actions"))
         video_3s = parse_meta_video_3s_plays(row)
         outbound = parse_meta_outbound_clicks(row)
+        link_clicks = parse_meta_link_clicks(row) or outbound
         platform_roas = parse_meta_purchase_roas(row.get("purchase_roas"))
         if platform_roas <= 0 and spend > 0 and purchase_value > 0:
             platform_roas = purchase_value / spend
@@ -304,6 +308,7 @@ class AdsService:
             if row.get(key):
                 name = str(row.get(key))
                 break
+        link_ctr = parse_meta_link_ctr(row, impressions)
         return {
             "id": str(row.get("ad_id") or row.get("adset_id") or row.get("campaign_id") or ""),
             "name": name,
@@ -316,11 +321,11 @@ class AdsService:
             "reach": int(reach),
             "frequency": round(frequency, 2),
             "clicks": int(clicks),
-            "ctr": round(parse_meta_float(row, "ctr"), 3),
+            "ctr": round(link_ctr, 3),
             "cpm": round(parse_meta_float(row, "cpm"), 2),
-            "cpc": round(parse_meta_float(row, "cpc"), 2),
-            "outbound_clicks": int(outbound),
-            "outbound_ctr": round(parse_meta_outbound_ctr(row, impressions), 3),
+            "cpc": round(parse_meta_link_cpc(row, spend, link_clicks), 2),
+            "outbound_clicks": int(link_clicks),
+            "outbound_ctr": round(link_ctr or parse_meta_outbound_ctr(row, impressions), 3),
             "hook_rate": round(hook_rate(video_3s, impressions), 2),
             "video_3s_plays": int(video_3s),
             "purchases": int(purchases),
@@ -809,7 +814,9 @@ class AdsService:
                     totals["impressions"] += parse_meta_float(row, "impressions")
                     totals["reach"] += parse_meta_float(row, "reach")
                     totals["clicks"] += parse_meta_float(row, "clicks")
-                    totals["outbound_clicks"] += parse_meta_outbound_clicks(row)
+                    totals["outbound_clicks"] += (
+                        parse_meta_link_clicks(row) or parse_meta_outbound_clicks(row)
+                    )
                     totals["video_3s"] += parse_meta_video_3s_plays(row)
                     totals["purchases"] += parse_meta_purchases(row.get("actions"))
                     totals["purchase_value"] += parse_meta_purchase_value(row.get("action_values"))
@@ -841,7 +848,7 @@ class AdsService:
                             "impressions": int(impressions),
                             "clicks": int(parse_meta_float(row, "clicks")),
                             "cpm": round(parse_meta_float(row, "cpm"), 2),
-                            "ctr": round(parse_meta_float(row, "ctr"), 3),
+                            "ctr": round(parse_meta_link_ctr(row, impressions), 3),
                             "frequency": round(parse_meta_float(row, "frequency"), 2),
                             "outbound_ctr": round(parse_meta_outbound_ctr(row, impressions), 3),
                             "hook_rate": round(hook_rate(video_3s, impressions), 2),
@@ -982,7 +989,9 @@ class AdsService:
         outbound_ctr = (
             (totals["outbound_clicks"] / impressions) * 100 if impressions > 0 else 0.0
         )
-        ctr = _safe_div(totals["clicks"], impressions) * 100 if impressions else 0.0
+        ctr = outbound_ctr if outbound_ctr else (
+            _safe_div(totals["clicks"], impressions) * 100 if impressions else 0.0
+        )
         cpm = _safe_div(spend, impressions) * 1000 if impressions else 0.0
         frequency = totals["frequency"]
         if frequency <= 0 and totals["reach"] > 0:

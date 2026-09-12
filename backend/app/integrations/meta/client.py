@@ -17,30 +17,38 @@ _CAMPAIGN_FIELDS = (
 )
 
 # Richer fields for the dedicated Ads dashboard (creative + delivery health).
+# Link-click CPC/CTR fields match Ads Manager's default "CPC (cost per link click)"
+# and "CTR (link click-through rate)" columns — not all-clicks cpc/ctr.
+_ADS_LINK_FIELDS = (
+    "inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click,"
+    "outbound_clicks,outbound_clicks_ctr,cost_per_outbound_click,website_ctr"
+)
+# results/cost_per_result are Ads Manager result columns; valid on campaign/adset/ad.
+_ADS_RESULT_FIELDS = "results,cost_per_result"
 _ADS_DASHBOARD_ACCOUNT_FIELDS = (
     "spend,impressions,reach,frequency,clicks,cpc,cpm,ctr,"
-    "inline_link_clicks,inline_link_click_ctr,"
-    "outbound_clicks,outbound_clicks_ctr,"
+    f"{_ADS_LINK_FIELDS},"
     "actions,action_values,purchase_roas,cost_per_action_type,"
     "video_play_actions,video_thruplay_watched_actions,"
     "video_continuous_2_sec_watched_actions"
 )
 _ADS_DASHBOARD_CAMPAIGN_FIELDS = (
     "campaign_id,campaign_name,spend,impressions,reach,frequency,clicks,cpc,cpm,ctr,"
-    "inline_link_clicks,inline_link_click_ctr,outbound_clicks,outbound_clicks_ctr,"
+    f"{_ADS_LINK_FIELDS},{_ADS_RESULT_FIELDS},"
     "actions,action_values,purchase_roas,cost_per_action_type,"
     "video_play_actions,video_continuous_2_sec_watched_actions"
 )
 _ADS_DASHBOARD_ADSET_FIELDS = (
     "campaign_id,campaign_name,adset_id,adset_name,spend,impressions,reach,frequency,"
-    "clicks,cpc,cpm,ctr,inline_link_clicks,outbound_clicks,"
+    "clicks,cpc,cpm,ctr,"
+    f"{_ADS_LINK_FIELDS},{_ADS_RESULT_FIELDS},"
     "actions,action_values,purchase_roas,cost_per_action_type,"
     "video_play_actions,video_continuous_2_sec_watched_actions"
 )
 _ADS_DASHBOARD_AD_FIELDS = (
     "campaign_id,campaign_name,adset_id,adset_name,ad_id,ad_name,"
     "spend,impressions,reach,frequency,clicks,cpc,cpm,ctr,"
-    "inline_link_clicks,inline_link_click_ctr,outbound_clicks,outbound_clicks_ctr,"
+    f"{_ADS_LINK_FIELDS},{_ADS_RESULT_FIELDS},"
     "actions,action_values,purchase_roas,cost_per_action_type,"
     "video_play_actions,video_continuous_2_sec_watched_actions,"
     "quality_ranking,engagement_rate_ranking,conversion_rate_ranking"
@@ -187,6 +195,7 @@ class MetaAdsClient:
             time_increment=time_increment,
             breakdown_fields=fields,
             max_pages=max_pages,
+            use_unified_attribution_setting=rich,
         )
 
     async def get_campaign_insights(
@@ -207,6 +216,7 @@ class MetaAdsClient:
             time_increment="all_days",
             breakdown_fields=fields,
             max_pages=20,
+            use_unified_attribution_setting=rich,
         )
 
     async def get_adset_insights(
@@ -224,6 +234,7 @@ class MetaAdsClient:
             time_increment="all_days",
             breakdown_fields=_ADS_DASHBOARD_ADSET_FIELDS,
             max_pages=20,
+            use_unified_attribution_setting=True,
         )
 
     async def get_ad_insights(
@@ -241,6 +252,7 @@ class MetaAdsClient:
             time_increment="all_days",
             breakdown_fields=_ADS_DASHBOARD_AD_FIELDS,
             max_pages=30,
+            use_unified_attribution_setting=True,
         )
 
     async def get_account_insights_attribution(
@@ -275,6 +287,7 @@ class MetaAdsClient:
         breakdown_fields: str,
         max_pages: int,
         action_attribution_windows: list[str] | None = None,
+        use_unified_attribution_setting: bool = False,
     ) -> list[dict]:
         first = await self._fetch_insights(
             level=level,
@@ -284,6 +297,7 @@ class MetaAdsClient:
             time_increment=time_increment,
             breakdown_fields=breakdown_fields,
             action_attribution_windows=action_attribution_windows,
+            use_unified_attribution_setting=use_unified_attribution_setting,
         )
         rows = list(first.get("data") or [])
         next_url = (first.get("paging") or {}).get("next")
@@ -311,6 +325,7 @@ class MetaAdsClient:
         time_increment: int | str,
         breakdown_fields: str,
         action_attribution_windows: list[str] | None = None,
+        use_unified_attribution_setting: bool = False,
     ) -> dict:
         params: dict[str, str | int] = {
             "access_token": self.access_token,
@@ -330,11 +345,36 @@ class MetaAdsClient:
             params["action_attribution_windows"] = (
                 "[" + ",".join(f'"{w}"' for w in action_attribution_windows) + "]"
             )
+        if use_unified_attribution_setting:
+            # Match Ads Manager's account-level attribution instead of API defaults.
+            params["use_unified_attribution_setting"] = "true"
         async with httpx.AsyncClient(timeout=90) as client:
             resp = await client.get(
                 f"{META_GRAPH_BASE}/{self.ad_account_id}/insights",
                 params=params,
             )
+            if resp.status_code == 400:
+                err = ""
+                try:
+                    err = str((resp.json().get("error") or {}).get("message") or resp.text).lower()
+                except Exception:
+                    err = (resp.text or "").lower()
+                drop = [
+                    field
+                    for field in ("results", "cost_per_result", "website_ctr")
+                    if field in breakdown_fields.split(",") and field in err
+                ]
+                if not drop and ("results" in err or "cost_per_result" in err):
+                    drop = ["results", "cost_per_result"]
+                if drop:
+                    stripped = ",".join(
+                        f for f in breakdown_fields.split(",") if f.strip() not in drop
+                    )
+                    params["fields"] = stripped
+                    resp = await client.get(
+                        f"{META_GRAPH_BASE}/{self.ad_account_id}/insights",
+                        params=params,
+                    )
             resp.raise_for_status()
             return resp.json()
 
@@ -449,6 +489,28 @@ def parse_meta_video_2s_plays(row: dict) -> float:
     return _sum_video_action_values(row.get("video_continuous_2_sec_watched_actions"))
 
 
+def _first_insight_value(raw) -> float:
+    """Read a Meta insights metric that may be a scalar or [{value}] / [{values:[{value}]}]."""
+    if raw is None or raw == "":
+        return 0.0
+    if isinstance(raw, list):
+        if not raw:
+            return 0.0
+        return _first_insight_value(raw[0])
+    if isinstance(raw, dict):
+        nested = raw.get("values")
+        if isinstance(nested, list) and nested:
+            return _first_insight_value(nested[0])
+        try:
+            return float(raw.get("value") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def parse_meta_outbound_clicks(row: dict) -> float:
     clicks = _sum_video_action_values(row.get("outbound_clicks"))
     if clicks > 0:
@@ -459,14 +521,23 @@ def parse_meta_outbound_clicks(row: dict) -> float:
         return 0.0
 
 
+def parse_meta_link_clicks(row: dict) -> float:
+    """Ads Manager 'link clicks' — inline link clicks, then outbound."""
+    try:
+        inline = float(row.get("inline_link_clicks") or 0)
+        if inline > 0:
+            return inline
+    except (TypeError, ValueError):
+        pass
+    return parse_meta_outbound_clicks(row)
+
+
 def parse_meta_outbound_ctr(row: dict, impressions: float) -> float:
     """Outbound CTR as a percentage."""
     raw = row.get("outbound_clicks_ctr")
-    if isinstance(raw, list) and raw:
-        try:
-            return float(raw[0].get("value") or 0)
-        except (TypeError, ValueError, IndexError):
-            pass
+    listed = _first_insight_value(raw)
+    if listed > 0:
+        return listed
     try:
         inline = float(row.get("inline_link_click_ctr") or 0)
         if inline > 0:
@@ -479,15 +550,62 @@ def parse_meta_outbound_ctr(row: dict, impressions: float) -> float:
     return 0.0
 
 
+def parse_meta_link_ctr(row: dict, impressions: float) -> float:
+    """Ads Manager CTR (link click-through rate), as a percentage."""
+    website = _first_insight_value(row.get("website_ctr"))
+    if website > 0:
+        return website
+    try:
+        inline = float(row.get("inline_link_click_ctr") or 0)
+        if inline > 0:
+            return inline
+    except (TypeError, ValueError):
+        pass
+    return parse_meta_outbound_ctr(row, impressions)
+
+
+def parse_meta_link_cpc(row: dict, spend: float, link_clicks: float) -> float:
+    """Ads Manager CPC (cost per link click)."""
+    inline = _first_insight_value(row.get("cost_per_inline_link_click"))
+    if inline > 0:
+        return inline
+    outbound = _first_insight_value(row.get("cost_per_outbound_click"))
+    if outbound > 0:
+        return outbound
+    if link_clicks > 0 and spend > 0:
+        return spend / link_clicks
+    return parse_meta_float(row, "cpc")
+
+
+# Ads Manager "Website purchases" cost/result uses pixel purchase before omni aggregates.
+_ADS_MANAGER_PURCHASE_COST_TYPES = (
+    "offsite_conversion.fb_pixel_purchase",
+    "purchase",
+    "omni_purchase",
+    "onsite_web_purchase",
+    "web_in_store_purchase",
+)
+
+
 def parse_meta_cpa(row: dict, purchases: float) -> float:
-    """Cost per purchase from cost_per_action_type, else spend / purchases."""
+    """Cost per result as Ads Manager shows it (website purchase when that's the result)."""
+    reported = _first_insight_value(row.get("cost_per_result"))
+    if reported > 0:
+        return reported
+    by_type: dict[str, float] = {}
     for item in row.get("cost_per_action_type") or []:
-        action_type = item.get("action_type") or ""
-        if action_type in _PURCHASE_ACTION_TYPES or action_type.endswith("purchase"):
-            try:
-                return float(item.get("value") or 0)
-            except (TypeError, ValueError):
-                return 0.0
+        action_type = str(item.get("action_type") or "")
+        try:
+            by_type[action_type] = float(item.get("value") or 0)
+        except (TypeError, ValueError):
+            continue
+    for action_type in _ADS_MANAGER_PURCHASE_COST_TYPES:
+        value = by_type.get(action_type) or 0.0
+        if value > 0:
+            return value
+    for action_type, value in by_type.items():
+        if action_type.endswith("purchase") and value > 0:
+            return value
     try:
         spend = float(row.get("spend") or 0)
     except (TypeError, ValueError):

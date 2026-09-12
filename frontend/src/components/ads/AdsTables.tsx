@@ -195,10 +195,11 @@ export function AdsPerformanceTable({
         acc.purchases += r.purchases;
         acc.purchase_value += r.purchase_value;
         acc.clicks += r.clicks;
+        acc.outbound_clicks += r.outbound_clicks;
         acc.reach += r.reach;
         return acc;
       },
-      { spend: 0, impressions: 0, purchases: 0, purchase_value: 0, clicks: 0, reach: 0 }
+      { spend: 0, impressions: 0, purchases: 0, purchase_value: 0, clicks: 0, outbound_clicks: 0, reach: 0 }
     );
   }, [rows]);
 
@@ -215,14 +216,17 @@ export function AdsPerformanceTable({
     k,
     label,
     align = "right",
+    title,
   }: {
     k: SortKey;
     label: string;
     align?: "left" | "right";
+    title?: string;
   }) => (
     <th className={cn("pb-2 pr-3 font-medium whitespace-nowrap", align === "right" && "text-right")}>
       <button
         type="button"
+        title={title}
         onClick={() => toggleSort(k)}
         className="inline-flex items-center gap-1 hover:text-content"
       >
@@ -239,7 +243,7 @@ export function AdsPerformanceTable({
         <div>
           <CardTitle>Performance</CardTitle>
           <CardDescription>
-            Same columns as Ads Manager — billed in {currency}. Click headers to sort.
+            Same columns as Ads Manager (link CPC / link CTR) — billed in {currency}. Click headers to sort.
           </CardDescription>
         </div>
         <div className="relative w-full sm:w-64">
@@ -290,9 +294,9 @@ export function AdsPerformanceTable({
               <SortHead k="cpa" label="Cost / result" />
               <SortHead k="spend" label="Amount spent" />
               <SortHead k="impressions" label="Impressions" />
-              <SortHead k="cpc" label="CPC" />
+              <SortHead k="cpc" label="CPC" title="Cost per link click" />
               <SortHead k="cpm" label="CPM" />
-              <SortHead k="ctr" label="CTR" />
+              <SortHead k="ctr" label="CTR" title="Link click-through rate" />
               <SortHead k="purchase_value" label="Result value" />
               <SortHead k="platform_roas" label="ROAS" />
               <SortHead k="hook_rate" label="Hook %" />
@@ -336,7 +340,9 @@ export function AdsPerformanceTable({
                   <td className="py-2.5 pr-3 text-right tabular-nums whitespace-nowrap">
                     {r.cpm > 0 ? formatMoney(r.cpm, currency) : "—"}
                   </td>
-                  <td className="py-2.5 pr-3 text-right tabular-nums">{r.ctr.toFixed(2)}%</td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums">
+                    {r.impressions > 0 ? `${r.ctr.toFixed(2)}%` : "—"}
+                  </td>
                   <td className="py-2.5 pr-3 text-right tabular-nums whitespace-nowrap">
                     {r.purchase_value > 0 ? formatMoney(r.purchase_value, currency) : "—"}
                   </td>
@@ -352,16 +358,18 @@ export function AdsPerformanceTable({
                             : "text-content-muted"
                     )}
                   >
-                    {r.platform_roas.toFixed(2)}x
+                    {r.spend > 0 ? `${r.platform_roas.toFixed(2)}x` : "—"}
                   </td>
-                  <td className="py-2.5 pr-3 text-right tabular-nums">{r.hook_rate.toFixed(1)}</td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums">
+                    {r.hook_rate > 0 ? r.hook_rate.toFixed(1) : "—"}
+                  </td>
                   <td
                     className={cn(
                       "py-2.5 text-right tabular-nums",
                       r.frequency >= 3.5 && "text-amber-600 dark:text-amber-400 font-medium"
                     )}
                   >
-                    {r.frequency.toFixed(2)}
+                    {r.frequency > 0 ? r.frequency.toFixed(2) : "—"}
                   </td>
                 </tr>
               ))
@@ -384,7 +392,11 @@ export function AdsPerformanceTable({
                   {totals.impressions.toLocaleString()}
                 </td>
                 <td className="py-2.5 pr-3 text-right tabular-nums whitespace-nowrap">
-                  {totals.clicks > 0 ? formatMoney(totals.spend / totals.clicks, currency) : "—"}
+                  {totals.outbound_clicks > 0
+                    ? formatMoney(totals.spend / totals.outbound_clicks, currency)
+                    : totals.clicks > 0
+                      ? formatMoney(totals.spend / totals.clicks, currency)
+                      : "—"}
                 </td>
                 <td className="py-2.5 pr-3 text-right tabular-nums whitespace-nowrap">
                   {totals.impressions > 0
@@ -393,7 +405,7 @@ export function AdsPerformanceTable({
                 </td>
                 <td className="py-2.5 pr-3 text-right tabular-nums">
                   {totals.impressions > 0
-                    ? `${((totals.clicks / totals.impressions) * 100).toFixed(2)}%`
+                    ? `${(((totals.outbound_clicks || totals.clicks) / totals.impressions) * 100).toFixed(2)}%`
                     : "—"}
                 </td>
                 <td className="py-2.5 pr-3 text-right tabular-nums whitespace-nowrap">
