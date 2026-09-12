@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
-import { ListSkeleton, SoftLoading } from "@/components/ui/Loading";
+import { BrandLoader, SoftLoading } from "@/components/ui/Loading";
 import { api } from "@/lib/api";
 import { useStore } from "@/context/StoreContext";
 import type { GmailAccount } from "@/types";
@@ -160,11 +160,13 @@ export function GmailSettingsPage() {
       <section>
         <h2 className="text-lg font-semibold text-content mb-4">Sender accounts</h2>
         {loading && accounts.length === 0 ? (
-          <ListSkeleton rows={3} />
+          <div className="flex justify-center py-12">
+            <BrandLoader size="sm" />
+          </div>
         ) : accounts.length === 0 ? (
           <p className="text-sm text-content-muted">No Gmail accounts connected.</p>
         ) : (
-          <SoftLoading active={loading} showOverlay={false}>
+          <SoftLoading active={loading}>
             <div className="space-y-3">
               {accounts.map((account, i) => (
                 <motion.div
@@ -233,7 +235,7 @@ export function GmailSettingsPage() {
         )}
       </section>
 
-      <SoftLoading active={loading && accounts.length > 0} showOverlay={false}>
+      <SoftLoading active={loading && accounts.length > 0}>
         <Card padding="lg">
           <CardHeader>
             <CardTitle>Email settings</CardTitle>

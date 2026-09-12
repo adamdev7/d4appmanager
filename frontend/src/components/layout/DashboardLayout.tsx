@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { Outlet } from "react-router-dom";
-import { motion } from "framer-motion";
+import { Outlet, useLocation } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import { Sidebar } from "./Sidebar";
 import { TopNavbar } from "./TopNavbar";
 import { SiteFooter } from "./SiteFooter";
+import { BrandLoader } from "@/components/ui/Loading";
 import { cn } from "@/lib/cn";
 
 export function DashboardLayout() {
+  const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [routeLoading, setRouteLoading] = useState(false);
 
   const closeMobile = useCallback(() => setMobileOpen(false), []);
 
@@ -38,6 +41,13 @@ export function DashboardLayout() {
       document.body.style.overflow = prev;
     };
   }, [mobileOpen]);
+
+  // Brief brand loader on every in-app page navigation
+  useEffect(() => {
+    setRouteLoading(true);
+    const t = window.setTimeout(() => setRouteLoading(false), 420);
+    return () => window.clearTimeout(t);
+  }, [location.pathname]);
 
   return (
     <div className="min-h-dvh bg-surface-muted">
@@ -71,7 +81,7 @@ export function DashboardLayout() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.25 }}
-          className="flex-1 w-full min-w-0 max-w-none"
+          className="relative flex-1 w-full min-w-0 max-w-none"
           style={{
             paddingLeft: "var(--page-gutter-x)",
             paddingRight: "var(--page-gutter-x)",
@@ -79,7 +89,29 @@ export function DashboardLayout() {
             paddingBottom: "var(--page-gutter-y)",
           }}
         >
-          <div className="mx-auto w-full min-w-0 max-w-none">
+          <AnimatePresence>
+            {routeLoading && (
+              <motion.div
+                key="route-loader"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                className="pointer-events-none absolute inset-0 z-20 flex items-start justify-center pt-[min(28vh,220px)]"
+                aria-hidden={!routeLoading}
+              >
+                <div className="rounded-full bg-surface/90 p-2.5 shadow-elevated border border-border/80 backdrop-blur-sm">
+                  <BrandLoader size="sm" />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          <div
+            className={cn(
+              "mx-auto w-full min-w-0 max-w-none transition-opacity duration-200",
+              routeLoading && "opacity-40"
+            )}
+          >
             <Outlet />
           </div>
         </motion.main>

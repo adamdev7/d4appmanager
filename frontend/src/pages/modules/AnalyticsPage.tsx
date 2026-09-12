@@ -545,11 +545,7 @@ export function AnalyticsPage() {
           {loading ? (
             <DashboardBodySkeleton />
           ) : dashboard && summary ? (
-            <SoftLoading
-              active={updating || savingCurrency}
-              showOverlay={false}
-              label={savingCurrency ? "Converting currency…" : "Updating…"}
-            >
+            <SoftLoading active={updating || savingCurrency}>
             <div className="space-y-6">
               {dashboard.connections.meta_error && (
                 <Card padding="md" className="border-amber-500/30 bg-amber-500/5">

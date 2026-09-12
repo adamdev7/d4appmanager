@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
+import { BrandLoader } from "@/components/ui/Loading";
 import { api } from "@/lib/api";
 import type { AppModule } from "@/types";
 import { cn } from "@/lib/cn";
@@ -183,16 +184,12 @@ export function AppModulesGrid() {
 
   if (loading) {
     return (
-      <div className="space-y-3">
-        <div className="h-4 w-40 rounded bg-surface-muted animate-pulse" />
-        <div className="grid gap-4 sm:grid-cols-2 xl:gap-5">
-          {[0, 1, 2, 3].map((i) => (
-            <div
-              key={i}
-              className="h-36 xl:h-40 rounded-xl border border-border bg-surface animate-pulse"
-            />
-          ))}
-        </div>
+      <div
+        className="flex min-h-[180px] items-center justify-center rounded-xl border border-border bg-surface py-12"
+        aria-busy="true"
+        aria-label="Loading apps"
+      >
+        <BrandLoader size="sm" />
       </div>
     );
   }

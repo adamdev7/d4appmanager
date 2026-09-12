@@ -22,6 +22,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Ca
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
+import { BrandLoader } from "@/components/ui/Loading";
 import { TrackingSettingsPanel } from "@/components/tracking/TrackingSettingsPanel";
 import { TrackingOrderRow } from "@/components/tracking/TrackingOrderRow";
 
@@ -560,13 +561,8 @@ export function TrackingPage() {
             </div>
 
             {loading && !overview ? (
-              <div className="px-6 py-8 space-y-3" aria-busy="true" aria-label="Loading orders">
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <div
-                    key={i}
-                    className="h-14 rounded-lg border border-border bg-surface-muted/50 animate-pulse"
-                  />
-                ))}
+              <div className="flex justify-center px-6 py-16" aria-busy="true" aria-label="Loading orders">
+                <BrandLoader size="sm" />
               </div>
             ) : !overview?.recent_orders.length ? (
               <div className="px-6 py-12 text-center">

@@ -30,7 +30,7 @@ import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 import {
   ListSkeleton,
-  MetricGridSkeleton,
+  PageLoader,
   SoftLoading,
   UpdatingBadge,
 } from "@/components/ui/Loading";
@@ -391,9 +391,9 @@ export function MetaCapiPage() {
       {tab === "overview" && (
         <div className="space-y-6">
           {loading && !stats ? (
-            <MetricGridSkeleton rows={1} cols={4} />
+            <PageLoader className="min-h-[180px] py-10" size="sm" />
           ) : (
-            <SoftLoading active={updating} showOverlay={false}>
+            <SoftLoading active={updating}>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card padding="lg">
               <p className="text-xs font-medium uppercase tracking-wider text-content-subtle">

@@ -18,6 +18,75 @@ export function Spinner({ className, ...props }: HTMLAttributes<HTMLSpanElement>
   );
 }
 
+const brandLoaderSize = {
+  sm: { wrap: "h-10 w-10", logo: "h-5 w-5", ring: "border-[2.5px]" },
+  md: { wrap: "h-14 w-14", logo: "h-7 w-7", ring: "border-[3px]" },
+  lg: { wrap: "h-16 w-16", logo: "h-8 w-8", ring: "border-[3px]" },
+} as const;
+
+/**
+ * Brand loader — green spinning ring with the App Manager logo centered.
+ * Use for page loads and soft-refresh overlays.
+ */
+export function BrandLoader({
+  size = "md",
+  className,
+  label,
+}: {
+  size?: keyof typeof brandLoaderSize;
+  className?: string;
+  label?: string;
+}) {
+  const s = brandLoaderSize[size];
+  return (
+    <div
+      role="status"
+      aria-label={label ?? "Loading"}
+      className={cn("inline-flex flex-col items-center gap-3", className)}
+    >
+      <div className={cn("relative", s.wrap)}>
+        <span
+          className={cn(
+            "absolute inset-0 rounded-full border-brand-500/25 border-t-brand-600 border-r-brand-500 animate-spin",
+            s.ring
+          )}
+        />
+        <span className="absolute inset-0 flex items-center justify-center">
+          <img
+            src="/app-manager-logo.png"
+            alt=""
+            className={cn("object-contain rounded-md", s.logo)}
+          />
+        </span>
+      </div>
+      {label ? <p className="text-sm text-content-muted">{label}</p> : null}
+    </div>
+  );
+}
+
+/** Centered brand loader for full page / section first loads. */
+export function PageLoader({
+  label,
+  className,
+  size = "md",
+}: {
+  label?: string;
+  className?: string;
+  size?: keyof typeof brandLoaderSize;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex min-h-[min(420px,55vh)] w-full items-center justify-center py-16",
+        className
+      )}
+      aria-busy="true"
+    >
+      <BrandLoader size={size} label={label} />
+    </div>
+  );
+}
+
 /** Pulse placeholder block. */
 export function Skeleton({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
@@ -39,39 +108,38 @@ export function UpdatingBadge({ label = "Updating" }: { label?: string }) {
 }
 
 /**
- * Soft refetch wrapper: keep prior content visible, dim it, and mark busy.
+ * Soft refetch wrapper: keep prior content visible, dim it, and show brand loader.
  * Use for currency / timeframe / stats refreshes instead of blanking the page.
  */
 export function SoftLoading({
   active,
   children,
   className,
-  label = "Updating…",
+  label,
   showOverlay = true,
 }: {
   active: boolean;
   children: ReactNode;
   className?: string;
   label?: string;
-  /** Floating pill over content (set false if the page header already shows UpdatingBadge). */
+  /** Floating brand loader over content (set false if the page header already shows UpdatingBadge). */
   showOverlay?: boolean;
 }) {
   return (
-    <div
-      className={cn(
-        "relative transition-[opacity,filter] duration-200",
-        active && "opacity-55",
-        className
-      )}
-      aria-busy={active || undefined}
-    >
-      {children}
+    <div className={cn("relative", className)} aria-busy={active || undefined}>
+      <div
+        className={cn(
+          "transition-opacity duration-200",
+          active && "opacity-50 pointer-events-none"
+        )}
+      >
+        {children}
+      </div>
       {active && showOverlay && (
-        <div className="pointer-events-none absolute inset-x-0 top-8 z-10 flex justify-center">
-          <span className="inline-flex items-center gap-2 rounded-full border border-border bg-surface/95 px-3 py-1.5 text-xs font-medium text-content shadow-elevated backdrop-blur-sm">
-            <Spinner className="h-3.5 w-3.5 text-brand-600" />
-            {label}
-          </span>
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          <div className="rounded-full bg-surface/95 p-2.5 shadow-elevated backdrop-blur-sm border border-border/80">
+            <BrandLoader size="sm" label={label} />
+          </div>
         </div>
       )}
     </div>
@@ -105,18 +173,9 @@ export function MetricGridSkeleton({
   );
 }
 
-/** Full dashboard body skeleton (metrics + charts). */
+/** Full dashboard body first-load — centered brand loader. */
 export function DashboardBodySkeleton() {
-  return (
-    <div className="space-y-6" aria-busy="true" aria-label="Loading dashboard">
-      <MetricGridSkeleton rows={2} cols={4} />
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Skeleton className="h-72" />
-        <Skeleton className="h-72" />
-      </div>
-      <Skeleton className="h-64" />
-    </div>
-  );
+  return <PageLoader />;
 }
 
 /** Compact list-row skeletons (activity, inbox, reports). */
@@ -136,12 +195,7 @@ export function ListSkeleton({ rows = 5, className }: { rows?: number; className
   );
 }
 
-/** Centered page-section spinner with optional label. */
-export function PageSpinner({ label = "Loading…" }: { label?: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-3 py-16 text-content-muted" role="status">
-      <Spinner className="h-6 w-6 text-brand-600" />
-      <p className="text-sm">{label}</p>
-    </div>
-  );
+/** @deprecated Prefer PageLoader — kept as alias for older call sites. */
+export function PageSpinner({ label }: { label?: string }) {
+  return <PageLoader label={label} />;
 }

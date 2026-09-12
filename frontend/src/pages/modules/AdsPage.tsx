@@ -569,7 +569,7 @@ export function AdsPage() {
           </Button>
         </Card>
       ) : (
-        <SoftLoading active={updating} showOverlay={false}>
+        <SoftLoading active={updating}>
         <div className="space-y-6">
           {dashboard.meta_error && (
             <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">

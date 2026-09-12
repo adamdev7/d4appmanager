@@ -34,8 +34,8 @@ import { Switch } from "@/components/ui/Switch";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/lib/cn";
 import {
-  ListSkeleton,
-  MetricGridSkeleton,
+  BrandLoader,
+  PageLoader,
   SoftLoading,
   UpdatingBadge,
 } from "@/components/ui/Loading";
@@ -1170,8 +1170,8 @@ export function AIEmailAssistantPage() {
 
             <ul className="flex-1 overflow-y-auto min-h-0">
               {loading && inbox.length === 0 ? (
-                <li className="px-3 py-4">
-                  <ListSkeleton rows={8} />
+                <li className="flex items-center justify-center px-3 py-16">
+                  <BrandLoader size="sm" />
                 </li>
               ) : filteredInbox.length === 0 ? (
                 <li className="px-6 py-16 text-center">
@@ -1646,13 +1646,13 @@ export function AIEmailAssistantPage() {
           </div>
 
           {(loading || statsLoading) && !stats ? (
-            <MetricGridSkeleton rows={1} cols={4} />
+            <PageLoader className="min-h-[220px] py-10" size="sm" />
           ) : !stats ? (
             <Card className="p-10 text-center text-sm text-content-muted">
               Stats unavailable
             </Card>
           ) : (
-            <SoftLoading active={statsLoading || loading} showOverlay={false}>
+            <SoftLoading active={statsLoading || loading}>
             <>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {[

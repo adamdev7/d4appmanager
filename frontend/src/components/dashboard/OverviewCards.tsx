@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { Minus } from "lucide-react";
 import { Card } from "@/components/ui/Card";
-import { Skeleton } from "@/components/ui/Loading";
+import { BrandLoader } from "@/components/ui/Loading";
 import type { OverviewMetric } from "@/lib/dashboardTypes";
 
 export function OverviewCards({
@@ -14,17 +14,11 @@ export function OverviewCards({
   if (loading) {
     return (
       <div
-        className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 xl:gap-5 2xl:gap-6"
+        className="flex min-h-[140px] items-center justify-center rounded-xl border border-border bg-surface py-10"
         aria-busy="true"
         aria-label="Loading workspace stats"
       >
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Card key={i} className="space-y-3">
-            <Skeleton className="h-4 w-24 border-0" />
-            <Skeleton className="h-8 w-20 border-0" />
-            <Skeleton className="h-3 w-32 border-0" />
-          </Card>
-        ))}
+        <BrandLoader size="sm" />
       </div>
     );
   }

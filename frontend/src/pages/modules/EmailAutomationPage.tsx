@@ -20,7 +20,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Ca
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Switch } from "@/components/ui/Switch";
-import { ListSkeleton, SoftLoading } from "@/components/ui/Loading";
+import { ListSkeleton, PageLoader, SoftLoading } from "@/components/ui/Loading";
 import { RuleActionsMenu } from "@/components/email/RuleActionsMenu";
 import {
   TemplateEditorModal,
@@ -304,7 +304,7 @@ export function EmailAutomationPage() {
         </div>
 
         {loading && rules.length === 0 ? (
-          <ListSkeleton rows={5} />
+          <PageLoader className="min-h-[200px] py-10" size="sm" />
         ) : rules.length === 0 ? (
           <Card padding="lg" className="text-center py-12">
             <Mail className="h-10 w-10 text-content-subtle mx-auto mb-3" />
@@ -318,7 +318,7 @@ export function EmailAutomationPage() {
             </Button>
           </Card>
         ) : (
-          <SoftLoading active={loading} showOverlay={false}>
+          <SoftLoading active={loading}>
           <ul className="space-y-3">
             {rules.map((rule, i) => {
               const meta = eventLabel(rule.event_type, events);

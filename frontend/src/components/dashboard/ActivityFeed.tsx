@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Mail, Package, Store, Zap, Inbox } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
-import { ListSkeleton } from "@/components/ui/Loading";
+import { BrandLoader } from "@/components/ui/Loading";
 import { api } from "@/lib/api";
 import { useStore } from "@/context/StoreContext";
 import { cn } from "@/lib/cn";
@@ -42,7 +42,9 @@ export function ActivityFeed() {
         <CardTitle>Recent activity</CardTitle>
       </CardHeader>
       {loading ? (
-        <ListSkeleton rows={4} className="px-1" />
+        <div className="flex justify-center py-10">
+          <BrandLoader size="sm" />
+        </div>
       ) : items.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
           <Inbox className="h-10 w-10 text-content-subtle mb-3" />

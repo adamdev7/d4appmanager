@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AuthLayout } from "@/components/layout/AuthLayout";
+import { BrandLoader } from "@/components/ui/Loading";
 import { useAuth } from "@/context/AuthContext";
 
 export function GoogleCallbackPage() {
@@ -45,9 +46,9 @@ export function GoogleCallbackPage() {
           </Link>
         </div>
       ) : (
-        <div className="flex items-center gap-3 text-sm text-content-muted">
-          <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-          Please wait
+        <div className="flex flex-col items-center justify-center gap-3 py-4">
+          <BrandLoader size="sm" />
+          <p className="text-sm text-content-muted">Please wait</p>
         </div>
       )}
     </AuthLayout>

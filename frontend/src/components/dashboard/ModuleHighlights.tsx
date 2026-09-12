@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { ArrowRight, Mail, Package, Sparkles, BarChart3, Megaphone } from "lucide-react";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
+import { BrandLoader } from "@/components/ui/Loading";
 import type { ModuleHighlight } from "@/lib/dashboardTypes";
 import { cn } from "@/lib/cn";
 
@@ -45,27 +46,28 @@ export function ModuleHighlights({
 }) {
   if (!loading && highlights.length === 0) return null;
 
-  const items = loading && highlights.length === 0
-    ? Array.from({ length: 5 }).map((_, i) => ({
-        slug: `skeleton-${i}`,
-        name: "—",
-        status: "setup",
-        stat_label: "…",
-        stat_value: "—",
-        hint: "Loading",
-      }))
-    : highlights;
+  if (loading && highlights.length === 0) {
+    return (
+      <div
+        className="flex min-h-[140px] items-center justify-center rounded-xl border border-border bg-surface py-10"
+        aria-busy="true"
+        aria-label="Loading module stats"
+      >
+        <BrandLoader size="sm" />
+      </div>
+    );
+  }
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5 xl:gap-5 2xl:gap-6">
-      {items.map((item, i) => {
+      {highlights.map((item, i) => {
         const Icon = ICONS[item.slug as keyof typeof ICONS] ?? Package;
-        const disabled = item.status === "coming_soon" || loading;
+        const disabled = item.status === "coming_soon";
 
         const inner = (
           <Card
-            hover={!disabled && !loading}
-            className={cn("h-full", loading && "opacity-60 animate-pulse", disabled && !loading && "opacity-75")}
+            hover={!disabled}
+            className={cn("h-full", disabled && "opacity-75")}
           >
             <div className="flex items-start justify-between gap-2">
               <div className="flex h-10 w-10 xl:h-12 xl:w-12 items-center justify-center rounded-xl bg-brand-500/10 text-brand-600 dark:text-brand-400">
