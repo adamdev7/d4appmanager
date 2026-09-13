@@ -20,6 +20,27 @@ OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations"
 OPENAI_IMAGE_EDITS_URL = "https://api.openai.com/v1/images/edits"
 
+# Newer OpenAI models reject custom temperature (only the default is allowed).
+_NO_CUSTOM_TEMPERATURE_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
+
+
+def model_omits_temperature(model: str) -> bool:
+    slug = (model or "").strip().lower()
+    return any(slug.startswith(prefix) for prefix in _NO_CUSTOM_TEMPERATURE_PREFIXES)
+
+
+def temperature_unsupported_in_response(body: str) -> bool:
+    text = (body or "").lower()
+    return "temperature" in text and ("unsupported" in text or "does not support" in text)
+
+
+def should_retry_without_temperature(payload: dict[str, Any], status_code: int, body: str) -> bool:
+    return (
+        status_code == 400
+        and "temperature" in payload
+        and temperature_unsupported_in_response(body)
+    )
+
 
 class AdsOpenAIClient:
     """Server-side OpenAI client for AI Ads. Never expose the API key to the frontend."""
@@ -83,13 +104,14 @@ class AdsOpenAIClient:
 
         payload: dict[str, Any] = {
             "model": model,
-            "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_content},
             ],
             "response_format": {"type": "json_object"},
         }
+        if not model_omits_temperature(model):
+            payload["temperature"] = temperature
 
         raw = await self._chat(payload, operation=operation, request_id=request_id, model=model)
         parsed = _loads_json(raw)
@@ -126,14 +148,15 @@ class AdsOpenAIClient:
         operation: str = "complete_text",
     ) -> str:
         request_id = str(uuid.uuid4())
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
-            "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
         }
+        if not model_omits_temperature(model):
+            payload["temperature"] = temperature
         return await self._chat(payload, operation=operation, request_id=request_id, model=model)
 
     async def _chat(
@@ -147,11 +170,17 @@ class AdsOpenAIClient:
         last_error: OpenAIServiceError | None = None
         max_attempts = settings.openai_max_retries
         started = time.perf_counter()
+        payload = dict(payload)
+        if model_omits_temperature(model):
+            payload.pop("temperature", None)
         for attempt in range(max_attempts):
             try:
                 async with httpx.AsyncClient(timeout=max(settings.openai_timeout_seconds, 90)) as client:
                     resp = await client.post(OPENAI_CHAT_URL, headers=self._headers(), json=payload)
                     latency = int((time.perf_counter() - started) * 1000)
+                    if should_retry_without_temperature(payload, resp.status_code, resp.text):
+                        payload.pop("temperature", None)
+                        continue
                     if resp.status_code == 429 and attempt < max_attempts - 1:
                         self._log(
                             request_id=request_id,

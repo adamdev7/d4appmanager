@@ -324,3 +324,55 @@ def test_unconfigured_video_provider_does_not_call_vendor():
     result = asyncio.run(provider.generate_video({"duration": 15}))
     assert result["status"] == "planned"
     assert result["provider"] is None
+
+
+def test_gpt6_omits_custom_temperature():
+    from app.services.ai_ads.openai_client import model_omits_temperature, should_retry_without_temperature
+
+    assert model_omits_temperature("gpt-6-astra")
+    assert model_omits_temperature("gpt-5.4")
+    assert not model_omits_temperature("gpt-4o-mini")
+    body = "Unsupported value: 'temperature' does not support 0.5 with this model. Only the default (1) value is supported."
+    assert should_retry_without_temperature({"temperature": 0.5}, 400, body)
+    assert not should_retry_without_temperature({}, 400, body)
+
+
+def test_complete_text_skips_temperature_for_gpt6():
+    import asyncio
+
+    from app.services.ai_ads.openai_client import AdsOpenAIClient
+
+    client = AdsOpenAIClient("sk-test", store_id="s")
+    seen: dict = {}
+
+    async def capture(payload, **_kwargs):
+        seen.update(payload)
+        return "ok"
+
+    with patch.object(client, "_chat", new=AsyncMock(side_effect=capture)):
+        out = asyncio.run(client.complete_text(system="s", user="u", model="gpt-6-astra"))
+    assert out == "ok"
+    assert "temperature" not in seen
+
+
+def test_storyboard_preview_from_video_asset():
+    from app.services.ai_ads.service import _storyboard_preview
+
+    asset = SimpleNamespace(
+        type="VIDEO",
+        video_spec_json=json.dumps(
+            {
+                "spec": {
+                    "hook": "Open on the bracelet",
+                    "duration": 15,
+                    "format": "9:16",
+                    "cta": "SHOP_NOW",
+                    "scenes": [{"duration": 3, "visual": "Close-up on clasp", "text_overlay": "Courage"}],
+                }
+            }
+        ),
+    )
+    preview = _storyboard_preview(asset)
+    assert preview is not None
+    assert preview["duration"] == 15
+    assert preview["scenes"][0]["visual"] == "Close-up on clasp"

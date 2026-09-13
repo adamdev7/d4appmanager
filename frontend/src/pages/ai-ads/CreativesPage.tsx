@@ -178,15 +178,11 @@ function GeneratedCard({
   onRegen: () => void;
 }) {
   const sources = useMemo(() => creative.source_creative_ids ?? [], [creative.source_creative_ids]);
+  const canApprove = creative.status === "READY";
+  const canRegen = creative.status === "READY" || creative.status === "FAILED" || creative.status === "REJECTED";
   return (
     <Card padding="sm" className="flex flex-col gap-3">
-      {creative.preview_url && creative.type === "IMAGE" ? (
-        <img src={creative.preview_url} alt="" className="h-44 w-full rounded-lg object-cover border border-border" />
-      ) : (
-        <div className="h-44 rounded-lg bg-surface-muted flex items-center justify-center text-xs text-content-subtle">
-          {creative.type === "VIDEO" ? "Video storyboard" : "No preview"}
-        </div>
-      )}
+      <CreativePreview creative={creative} />
       <div className="flex items-start justify-between gap-2">
         <CardTitle className="text-sm">{creative.headline || creative.hook || "Untitled"}</CardTitle>
         <Badge variant={statusVariant(creative.status)}>{creative.status}</Badge>
@@ -201,14 +197,18 @@ function GeneratedCard({
       {sources.length > 0 && (
         <p className="text-xs text-content-subtle">Inspired by Meta creatives: {sources.join(", ")}</p>
       )}
-      {creative.status === "READY" && (
+      {canRegen && (
         <div className="flex flex-wrap gap-2 mt-auto">
-          <Button size="sm" onClick={onApprove} isLoading={busy}>
-            Approve
-          </Button>
-          <Button size="sm" variant="outline" onClick={onReject} disabled={busy}>
-            Reject
-          </Button>
+          {canApprove && (
+            <>
+              <Button size="sm" onClick={onApprove} isLoading={busy}>
+                Approve
+              </Button>
+              <Button size="sm" variant="outline" onClick={onReject} disabled={busy}>
+                Reject
+              </Button>
+            </>
+          )}
           <Button size="sm" variant="ghost" onClick={onRegen} disabled={busy}>
             Regenerate
           </Button>
@@ -218,6 +218,44 @@ function GeneratedCard({
         <p className="text-xs text-red-600">{creative.failure_reason}</p>
       )}
     </Card>
+  );
+}
+
+function CreativePreview({ creative }: { creative: AIAdsGeneratedCreative }) {
+  if (creative.preview_url) {
+    return (
+      <img
+        src={creative.preview_url}
+        alt=""
+        className="h-44 w-full rounded-lg object-cover border border-border"
+      />
+    );
+  }
+  const scenes = creative.storyboard?.scenes ?? [];
+  if (creative.type === "VIDEO" && scenes.length > 0) {
+    return (
+      <div className="h-44 rounded-lg bg-surface-muted border border-border overflow-hidden p-3 text-left">
+        <p className="text-[10px] uppercase tracking-wide text-content-subtle mb-2">
+          Storyboard · {creative.storyboard?.duration ?? "—"}s · {creative.storyboard?.format || "9:16"}
+        </p>
+        <ol className="space-y-1.5">
+          {scenes.slice(0, 3).map((scene, i) => (
+            <li key={i} className="text-[11px] text-content-muted line-clamp-2">
+              <span className="text-content-subtle">{i + 1}.</span> {scene.visual || scene.text_overlay}
+            </li>
+          ))}
+        </ol>
+      </div>
+    );
+  }
+  return (
+    <div className="h-44 rounded-lg bg-surface-muted flex items-center justify-center text-xs text-content-subtle px-4 text-center">
+      {creative.status === "FAILED"
+        ? "Image generation failed — regenerate to retry"
+        : creative.type === "VIDEO"
+          ? "Video storyboard (no still yet)"
+          : "No preview"}
+    </div>
   );
 }
 

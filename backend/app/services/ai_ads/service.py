@@ -517,6 +517,34 @@ def _preview(path: str | None, fallback: str | None = None) -> str | None:
     return fallback
 
 
+def _storyboard_preview(a: CreativeAsset) -> dict | None:
+    if a.type != "VIDEO" or not a.video_spec_json:
+        return None
+    try:
+        payload = json.loads(a.video_spec_json)
+    except json.JSONDecodeError:
+        return None
+    spec = payload.get("spec") if isinstance(payload, dict) else None
+    if not isinstance(spec, dict):
+        return None
+    scenes = spec.get("scenes") or []
+    return {
+        "hook": spec.get("hook"),
+        "duration": spec.get("duration"),
+        "format": spec.get("format"),
+        "cta": spec.get("cta"),
+        "scenes": [
+            {
+                "duration": scene.get("duration"),
+                "visual": scene.get("visual"),
+                "text_overlay": scene.get("text_overlay"),
+            }
+            for scene in scenes[:6]
+            if isinstance(scene, dict)
+        ],
+    }
+
+
 def _meta_card(
     m: MetaCreative,
     perf: CreativePerformanceSnapshot | None,
@@ -574,10 +602,12 @@ def _asset_card(a: CreativeAsset | None, detail: bool = False) -> dict:
         "source_strategy_id": a.source_strategy_id,
         "source_creative_ids": json.loads(a.source_creative_ids_json or "[]"),
         "rationale": a.rationale,
+        "visual_direction": a.visual_direction,
         "aspect_ratio": a.aspect_ratio,
         "placement": a.placement,
         "width": a.width,
         "height": a.height,
+        "storyboard": _storyboard_preview(a),
         "failure_reason": a.failure_reason,
         "created_at": a.created_at.isoformat() if a.created_at else None,
     }

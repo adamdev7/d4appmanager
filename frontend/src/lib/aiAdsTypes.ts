@@ -100,9 +100,21 @@ export type AIAdsGeneratedCreative = {
   source_strategy_id?: string | null;
   source_creative_ids?: string[];
   rationale?: string | null;
+  visual_direction?: string | null;
   aspect_ratio?: string | null;
   placement?: string | null;
   video_spec?: unknown;
+  storyboard?: {
+    hook?: string | null;
+    duration?: number | null;
+    format?: string | null;
+    cta?: string | null;
+    scenes?: Array<{
+      duration?: number | null;
+      visual?: string | null;
+      text_overlay?: string | null;
+    }>;
+  } | null;
   failure_reason?: string | null;
   created_at?: string | null;
 };

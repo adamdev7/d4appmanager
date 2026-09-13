@@ -35,7 +35,7 @@ from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.providers.openai_image import OpenAIImageProvider
 from app.services.ai_ads.providers.video_provider import UnconfiguredVideoProvider
 from app.services.ai_ads.recommendation_engine import RecommendationEngine
-from app.services.ai_ads.schemas import CreativeIntelligenceReport, ProductContext
+from app.services.ai_ads.schemas import CreativeIntelligenceReport, ImageGenerationRequest, ProductContext, VideoSpec
 from app.services.ai_ads.strategy import CreativeStrategyEngine
 from app.services.ai_ads.video_planner import VideoCreativePlanner
 from app.services.ai_ads.asset_store import CreativeAssetStore
@@ -344,6 +344,7 @@ class AdsAIOrchestrator:
                     asset.video_spec_json = json.dumps(
                         {"spec": spec.model_dump(), "provider": provider_result}
                     )
+                    await self._attach_video_poster(asset, product, spec, images)
                     score = await scorer.score(
                         concept_name=concept.concept_name,
                         hook=concept.hook,
@@ -381,3 +382,28 @@ class AdsAIOrchestrator:
             job.progress_message = "Failed"
             job.finished_at = datetime.now(UTC)
             self.db.commit()
+
+    async def _attach_video_poster(
+        self,
+        asset: CreativeAsset,
+        product: ProductContext,
+        spec: VideoSpec,
+        images: ImageAdGenerator,
+    ) -> None:
+        """Save a still frame so Library can preview video concepts (no rendered MP4)."""
+        first = spec.scenes[0] if spec.scenes else None
+        visual = (first.visual if first else "") or spec.hook or product.title
+        prompt = (
+            f"Photorealistic advertising still of {product.title}. {visual}. "
+            "Product-accurate, no invented logos, no unreadable text overlays."
+        )
+        try:
+            result = await images.provider.generate(
+                ImageGenerationRequest(prompt=prompt, aspect_ratio="9:16", placement="stories")
+            )
+            asset.local_path = result.local_path
+            asset.preview_url = result.preview_url
+            asset.width = result.width
+            asset.height = result.height
+        except Exception as exc:
+            logger.info("ai_ads video poster skipped store_id=%s err=%s", self.store.id, exc)
