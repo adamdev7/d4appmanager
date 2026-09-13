@@ -380,6 +380,18 @@ class DashboardService:
                     else "Creative health, MER, AI reports"
                 ),
             ),
+            ModuleHighlight(
+                slug="ai-ads",
+                name="AI Ads",
+                status="active" if has_store else "setup",
+                stat_label="Creative engine",
+                stat_value="Ready" if has_store else "—",
+                hint=(
+                    "Connect a store to open AI Ads"
+                    if not has_store
+                    else "Learn from Meta creatives, generate new ads"
+                ),
+            ),
         ]
 
         return DashboardOverviewResponse(
@@ -481,6 +493,14 @@ class DashboardService:
                 slug="ads",
                 status="active" if has_store else "setup",
                 icon="megaphone",
+            ),
+            AppModule(
+                id="mod-ai-ads",
+                name="AI Ads",
+                description="Creative intelligence engine: learn from Meta ads, then generate new image and video concepts.",
+                slug="ai-ads",
+                status="active" if has_store else "setup",
+                icon="wand",
             ),
             AppModule(
                 id="mod-meta-capi",

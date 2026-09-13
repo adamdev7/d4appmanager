@@ -20,6 +20,14 @@ import { TrackingPage } from "@/pages/modules/TrackingPage";
 import { AnalyticsPage } from "@/pages/modules/AnalyticsPage";
 import { AdsPage } from "@/pages/modules/AdsPage";
 import { MetaCapiPage } from "@/pages/modules/MetaCapiPage";
+import { AIAdsLayout } from "@/pages/ai-ads/AIAdsLayout";
+import { AIAdsDashboardPage } from "@/pages/ai-ads/AIAdsDashboardPage";
+import { CreativesPage } from "@/pages/ai-ads/CreativesPage";
+import { GeneratePage } from "@/pages/ai-ads/GeneratePage";
+import { StrategyPage } from "@/pages/ai-ads/StrategyPage";
+import { PerformancePage } from "@/pages/ai-ads/PerformancePage";
+import { RecommendationsPage } from "@/pages/ai-ads/RecommendationsPage";
+import { AIAdsSettingsPage } from "@/pages/ai-ads/AIAdsSettingsPage";
 import { PrivacyPage } from "@/pages/legal/PrivacyPage";
 import { TermsPage } from "@/pages/legal/TermsPage";
 import { HomePage } from "@/pages/HomePage";
@@ -57,6 +65,16 @@ export default function App() {
                 <Route path="/modules/analytics" element={<AnalyticsPage />} />
                 <Route path="/modules/ads" element={<AdsPage />} />
                 <Route path="/modules/meta-capi" element={<MetaCapiPage />} />
+                <Route path="/modules/ai-ads" element={<Navigate to="/ai-ads" replace />} />
+                <Route path="/ai-ads" element={<AIAdsLayout />}>
+                  <Route index element={<AIAdsDashboardPage />} />
+                  <Route path="creatives" element={<CreativesPage />} />
+                  <Route path="generate" element={<GeneratePage />} />
+                  <Route path="strategy" element={<StrategyPage />} />
+                  <Route path="performance" element={<PerformancePage />} />
+                  <Route path="recommendations" element={<RecommendationsPage />} />
+                  <Route path="settings" element={<AIAdsSettingsPage />} />
+                </Route>
                 <Route path="/modules/:slug" element={<ModulePlaceholderPage />} />
               </Route>
 

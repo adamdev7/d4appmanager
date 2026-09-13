@@ -11,6 +11,7 @@ import {
   Sparkles,
   Megaphone,
   Radar,
+  WandSparkles,
   Lock,
   Clock,
   Zap,
@@ -31,6 +32,7 @@ const ICON_MAP: Record<string, typeof Mail> = {
   sparkles: Sparkles,
   megaphone: Megaphone,
   radar: Radar,
+  wand: WandSparkles,
 };
 
 const statusBadge = (s: string) => {
@@ -49,11 +51,13 @@ const statusLabel = (s: string) => {
 
 function moduleHref(mod: AppModule): string {
   if (mod.status === "coming_soon") return "#";
+  if (mod.slug === "ai-ads") return "/ai-ads";
   if (mod.status === "setup") {
     if (
       mod.slug === "tracking" ||
       mod.slug === "analytics" ||
       mod.slug === "ads" ||
+      mod.slug === "ai-ads" ||
       mod.slug === "meta-capi"
     ) {
       return "/settings/stores";

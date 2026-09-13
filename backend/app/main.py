@@ -11,6 +11,7 @@ from app.config import settings
 from app.db.session import init_db
 from app.routes import api_router
 from app.routes import track_order as track_order_routes
+from app.services.ai_ads.weekly_worker import start_ai_ads_worker, stop_ai_ads_worker
 from app.services.meta_capi_worker import start_meta_capi_worker, stop_meta_capi_worker
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -25,7 +26,9 @@ async def lifespan(app: FastAPI):
     init_db()
     start_automation_worker()
     start_meta_capi_worker()
+    start_ai_ads_worker()
     yield
+    await stop_ai_ads_worker()
     await stop_meta_capi_worker()
     await stop_automation_worker()
 

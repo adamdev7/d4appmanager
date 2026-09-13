@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
-import { ArrowRight, Mail, Package, Sparkles, BarChart3, Megaphone } from "lucide-react";
+import { ArrowRight, Mail, Package, Sparkles, BarChart3, Megaphone, WandSparkles } from "lucide-react";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { BrandLoader } from "@/components/ui/Loading";
@@ -13,15 +13,17 @@ const ICONS = {
   email: Mail,
   analytics: BarChart3,
   ads: Megaphone,
+  "ai-ads": WandSparkles,
 } as const;
 
 function moduleHref(h: ModuleHighlight): string {
   if (h.status === "setup") {
-    if (h.slug === "tracking" || h.slug === "analytics" || h.slug === "ads") {
+    if (h.slug === "tracking" || h.slug === "analytics" || h.slug === "ads" || h.slug === "ai-ads") {
       return "/settings/stores";
     }
     return "/settings/gmail";
   }
+  if (h.slug === "ai-ads") return "/ai-ads";
   return `/modules/${h.slug}`;
 }
 
@@ -59,7 +61,7 @@ export function ModuleHighlights({
   }
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5 xl:gap-5 2xl:gap-6">
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 xl:gap-5 2xl:gap-6">
       {highlights.map((item, i) => {
         const Icon = ICONS[item.slug as keyof typeof ICONS] ?? Package;
         const disabled = item.status === "coming_soon";

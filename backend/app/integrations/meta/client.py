@@ -129,6 +129,83 @@ class MetaAdsClient:
             "id,name,adset_id,campaign_id,effective_status,status",
         )
 
+    async def list_ads_with_creatives(self) -> list[dict]:
+        """Ads plus nested creative objects (copy, image/video refs). Fields may be null."""
+        fields = (
+            "id,name,adset_id,campaign_id,effective_status,status,created_time,"
+            "creative{"
+            "id,name,title,body,image_url,thumbnail_url,object_type,video_id,"
+            "image_hash,link_url,call_to_action_type,effective_object_story_id,"
+            "object_story_spec,asset_feed_spec,url_tags,status,thumbnail_id"
+            "}"
+        )
+        return await self._paginate_edge("ads", fields, max_pages=15)
+
+    async def get_object(self, object_id: str, fields: str) -> dict:
+        oid = str(object_id or "").strip()
+        if not oid:
+            return {}
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{META_GRAPH_BASE}/{oid}",
+                params={"access_token": self.access_token, "fields": fields},
+            )
+            if resp.status_code != 200:
+                return {}
+            data = resp.json()
+            return data if isinstance(data, dict) else {}
+
+    async def get_video_meta(self, video_id: str) -> dict:
+        return await self.get_object(
+            video_id, "id,title,picture,source,length,thumbnails{uri,height,width}"
+        )
+
+    async def download_url(self, url: str, *, timeout: float = 45) -> bytes | None:
+        """Download a remote asset. Meta CDN URLs often already include a signature."""
+        if not url:
+            return None
+        params: dict[str, str] = {}
+        if "access_token=" not in url and "fbcdn" in url.lower():
+            params["access_token"] = self.access_token
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                resp = await client.get(url, params=params or None)
+                if resp.status_code != 200:
+                    return None
+                return resp.content
+        except Exception:
+            return None
+
+    async def create_ad_creative(self, payload: dict) -> dict:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{META_GRAPH_BASE}/{self.ad_account_id}/adcreatives",
+                params={"access_token": self.access_token},
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def create_ad(self, payload: dict) -> dict:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{META_GRAPH_BASE}/{self.ad_account_id}/ads",
+                params={"access_token": self.access_token},
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    async def update_ad_status(self, ad_id: str, status: str) -> dict:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{META_GRAPH_BASE}/{ad_id}",
+                params={"access_token": self.access_token},
+                json={"status": status},
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def _paginate_edge(self, edge: str, fields: str, max_pages: int = 8) -> list[dict]:
         params: dict[str, str | int] = {
             "access_token": self.access_token,

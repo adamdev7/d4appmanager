@@ -111,6 +111,23 @@ class Settings(BaseSettings):
     openai_max_retries: int = 3
     openai_timeout_seconds: int = 60
 
+    # AI Ads engine — models are env-configurable; never hard-code in call sites
+    openai_image_model: str = "gpt-image-2"
+    ai_strategy_model: str = "gpt-6-astra"
+    ai_analysis_model: str = "gpt-6-astra"
+    ai_creative_model: str = "gpt-6-astra"
+    ai_image_model: str = ""
+    ai_ad_generation_enabled: bool = False
+    ai_ad_generation_day: str = "monday"
+    ai_ad_image_count: int = 10
+    ai_ad_video_count: int = 10
+    ai_ad_auto_publish: bool = False
+    ai_ad_winner_pct: float = 0.4
+    ai_ad_combination_pct: float = 0.3
+    ai_ad_exploration_pct: float = 0.2
+    ai_ad_experimental_pct: float = 0.1
+    ai_ad_poll_seconds: int = 60
+
     # Autopilot scheduler tick (seconds between checks for due user automations)
     automation_poll_seconds: int = 60
 
@@ -158,6 +175,22 @@ class Settings(BaseSettings):
     @property
     def google_auth_redirect_uri(self) -> str:
         return f"{self.app_url.rstrip('/')}{self.api_prefix}/auth/google/callback"
+
+    @property
+    def resolved_ai_strategy_model(self) -> str:
+        return (self.ai_strategy_model or self.openai_model).strip()
+
+    @property
+    def resolved_ai_analysis_model(self) -> str:
+        return (self.ai_analysis_model or self.resolved_ai_strategy_model).strip()
+
+    @property
+    def resolved_ai_creative_model(self) -> str:
+        return (self.ai_creative_model or self.resolved_ai_strategy_model).strip()
+
+    @property
+    def resolved_ai_image_model(self) -> str:
+        return (self.ai_image_model or self.openai_image_model or "gpt-image-2").strip()
 
 
 settings = Settings()

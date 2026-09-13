@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.routes import (
     ads,
+    ai_ads,
     ai_email_assistant,
     analytics,
     auth,
@@ -34,4 +35,5 @@ api_router.include_router(track_order.router, tags=["track-order"])
 api_router.include_router(tracking.router, prefix="/tracking", tags=["tracking"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 api_router.include_router(ads.router, prefix="/ads", tags=["ads"])
+api_router.include_router(ai_ads.router, prefix="/ai-ads", tags=["ai-ads"])
 api_router.include_router(meta_capi.router, prefix="/meta-capi", tags=["meta-capi"])

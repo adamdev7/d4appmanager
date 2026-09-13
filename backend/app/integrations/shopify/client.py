@@ -447,6 +447,21 @@ class ShopifyClient:
                     break
         return all_checkouts
 
+    async def get_product(self, product_id: str | int) -> dict:
+        """Fetch a single product by numeric Shopify id."""
+        if not self.access_token:
+            raise ValueError("No access token")
+        pid = str(product_id).strip()
+        if pid.startswith("gid://"):
+            pid = pid.rsplit("/", 1)[-1]
+        async with httpx.AsyncClient(timeout=45) as client:
+            resp = await client.get(
+                f"{self.admin_api_base}/products/{pid}.json",
+                headers={"X-Shopify-Access-Token": self.access_token},
+            )
+            resp.raise_for_status()
+            return resp.json()["product"]
+
     async def list_products(self, *, limit: int = 250) -> list[dict]:
         """Fetch products with variants from Shopify."""
         if not self.access_token:

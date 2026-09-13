@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -665,6 +665,298 @@ class MetaCapiAttributionCache(Base):
     fbclid: Mapped[str | None] = mapped_column(String(255), nullable=True)
     client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class StoreAIAdsSettings(Base):
+    """Per-store AI Ads Creative Intelligence Engine preferences."""
+
+    __tablename__ = "store_ai_ads_settings"
+    __table_args__ = (UniqueConstraint("store_id", name="uq_store_ai_ads_settings_store"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    weekly_generation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    generation_day: Mapped[str] = mapped_column(String(16), default="monday")
+    image_count: Mapped[int] = mapped_column(Integer, default=10)
+    video_count: Mapped[int] = mapped_column(Integer, default=10)
+    auto_publish: Mapped[bool] = mapped_column(Boolean, default=False)
+    winner_pct: Mapped[float] = mapped_column(Float, default=0.4)
+    combination_pct: Mapped[float] = mapped_column(Float, default=0.3)
+    exploration_pct: Mapped[float] = mapped_column(Float, default=0.2)
+    experimental_pct: Mapped[float] = mapped_column(Float, default=0.1)
+    brand_style: Mapped[str] = mapped_column(Text, default="")
+    default_audience: Mapped[str] = mapped_column(Text, default="")
+    default_objective: Mapped[str] = mapped_column(String(64), default="conversions")
+    default_placement: Mapped[str] = mapped_column(String(32), default="feed")
+    default_aspect_ratio: Mapped[str] = mapped_column(String(16), default="4:5")
+    creative_styles_json: Mapped[str] = mapped_column(Text, default='["UGC","PRODUCT_DEMO","LIFESTYLE"]')
+    meta_page_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_analyze_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_weekly_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_weekly_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MetaCreative(Base):
+    """Imported Meta ad creative (copy + asset references). Not performance-only."""
+
+    __tablename__ = "ai_ads_meta_creatives"
+    __table_args__ = (
+        UniqueConstraint("store_id", "ad_id", "meta_creative_id", name="uq_ai_ads_meta_creative"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    campaign_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    adset_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    adset_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    ad_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    ad_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    meta_creative_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    video_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    video_thumbnail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    primary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cta: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    destination_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    format: Mapped[str] = mapped_column(String(16), default="OTHER")
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    aspect_ratio: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    placement_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_created_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    creative_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    local_asset_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    local_thumbnail_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    extra_json: Mapped[str] = mapped_column(Text, default="{}")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CreativeGenerationJob(Base):
+    __tablename__ = "ai_ads_generation_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="QUEUED", index=True)
+    product_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_json: Mapped[str] = mapped_column(Text, default="{}")
+    progress_message: Mapped[str] = mapped_column(Text, default="")
+    total_items: Mapped[int] = mapped_column(Integer, default=0)
+    completed_items: Mapped[int] = mapped_column(Integer, default=0)
+    failed_items: Mapped[int] = mapped_column(Integer, default=0)
+    strategy_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CreativeConcept(Base):
+    __tablename__ = "ai_ads_concepts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    product_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ai_ads_generation_jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    type: Mapped[str] = mapped_column(String(32), default="IMAGE")
+    concept_name: Mapped[str] = mapped_column(String(255), default="")
+    angle: Mapped[str] = mapped_column(Text, default="")
+    hook: Mapped[str] = mapped_column(Text, default="")
+    headline: Mapped[str] = mapped_column(Text, default="")
+    primary_text: Mapped[str] = mapped_column(Text, default="")
+    cta: Mapped[str] = mapped_column(String(64), default="")
+    visual_direction: Mapped[str] = mapped_column(Text, default="")
+    audience: Mapped[str] = mapped_column(Text, default="")
+    objective: Mapped[str] = mapped_column(String(64), default="")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    source_strategy_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_creative_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_recommendation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    expected_strength: Mapped[str] = mapped_column(String(32), default="")
+    portfolio_bucket: Mapped[str] = mapped_column(String(32), default="")
+    status: Mapped[str] = mapped_column(String(32), default="DRAFT")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CreativeAsset(Base):
+    """AI-generated (or cached) creative asset stored in the Creative Library."""
+
+    __tablename__ = "ai_ads_creative_assets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    product_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    concept_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ai_ads_concepts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ai_ads_generation_jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_strategy_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_creative_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_recommendation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_product_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    type: Mapped[str] = mapped_column(String(16), default="IMAGE")
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT", index=True)
+    local_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    preview_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    aspect_ratio: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    placement: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    hook: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headline: Mapped[str | None] = mapped_column(Text, nullable=True)
+    primary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cta: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    visual_direction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    score_breakdown_json: Mapped[str] = mapped_column(Text, default="{}")
+    video_spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta_published_creative_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    meta_ad_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CreativePerformanceSnapshot(Base):
+    """Point-in-time performance for a Meta or generated creative. Nulls when Meta omits a metric."""
+
+    __tablename__ = "ai_ads_performance_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    meta_creative_row_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ai_ads_meta_creatives.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    generated_asset_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ai_ads_creative_assets.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    ad_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    impressions: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reach: Mapped[float | None] = mapped_column(Float, nullable=True)
+    clicks: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spend: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ctr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cpc: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cpm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    purchases: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cpa: Mapped[float | None] = mapped_column(Float, nullable=True)
+    conversion_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    roas: Mapped[float | None] = mapped_column(Float, nullable=True)
+    video_views: Mapped[float | None] = mapped_column(Float, nullable=True)
+    video_watch_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    frequency: Mapped[float | None] = mapped_column(Float, nullable=True)
+    date_range_start: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    date_range_end: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    insufficient_data: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CreativeDNA(Base):
+    """Structured Creative DNA extracted from a Meta or generated creative."""
+
+    __tablename__ = "ai_ads_creative_dna"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    meta_creative_row_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ai_ads_meta_creatives.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    generated_asset_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("ai_ads_creative_assets.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    visual_dna_json: Mapped[str] = mapped_column(Text, default="{}")
+    copy_dna_json: Mapped[str] = mapped_column(Text, default="{}")
+    format_dna_json: Mapped[str] = mapped_column(Text, default="{}")
+    performance_dna_json: Mapped[str] = mapped_column(Text, default="{}")
+    analysis_json: Mapped[str] = mapped_column(Text, default="{}")
+    analysis_basis: Mapped[str] = mapped_column(String(32), default="copy_only")
+    model_used: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AIAdStrategy(Base):
+    __tablename__ = "ai_ads_strategies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    product_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    target_audience: Mapped[str] = mapped_column(Text, default="")
+    strategy_json: Mapped[str] = mapped_column(Text, default="{}")
+    intelligence_report_json: Mapped[str] = mapped_column(Text, default="{}")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    model_used: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class BrandAvatar(Base):
+    __tablename__ = "ai_ads_brand_avatars"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128), default="")
+    image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    local_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    usage_rules: Mapped[str] = mapped_column(Text, default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AIRecommendation(Base):
+    __tablename__ = "ai_ads_recommendations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    product_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    explanation: Mapped[str] = mapped_column(Text, default="")
+    supporting_creative_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    supporting_metrics_json: Mapped[str] = mapped_column(Text, default="{}")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    recommended_action: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

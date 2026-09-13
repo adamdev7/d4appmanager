@@ -20,11 +20,37 @@ import type {
   MetaCapiSettings,
   MetaCapiStats,
 } from "@/lib/metaCapiTypes";
+import type {
+  AIAdsAvatar,
+  AIAdsGeneratedCreative,
+  AIAdsJob,
+  AIAdsLibrary,
+  AIAdsMetaCreative,
+  AIAdsOverview,
+  AIAdsPerformance,
+  AIAdsProduct,
+  AIAdsRecommendation,
+  AIAdsSettings,
+  AIAdsStrategy,
+} from "@/lib/aiAdsTypes";
 
 export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
 export type { ManualInvestment, ManualInvestmentsResponse };
 export type { AdsAiReport, AdsDashboard, AdsPeriod, AdsSettings };
 export type { MetaCapiEvent, MetaCapiEventsResponse, MetaCapiSettings, MetaCapiStats };
+export type {
+  AIAdsAvatar,
+  AIAdsGeneratedCreative,
+  AIAdsJob,
+  AIAdsLibrary,
+  AIAdsMetaCreative,
+  AIAdsOverview,
+  AIAdsPerformance,
+  AIAdsProduct,
+  AIAdsRecommendation,
+  AIAdsSettings,
+  AIAdsStrategy,
+};
 
 const API_BASE = "/api/v1";
 
@@ -965,6 +991,99 @@ export const api = {
         not_recoverable?: string[];
       }>(`/meta-capi/stores/${storeId}/backfill-recent`, {
         method: "POST",
+        body: JSON.stringify(data),
+      }),
+  },
+  aiAds: {
+    getOverview: (storeId: string) =>
+      request<AIAdsOverview>(`/ai-ads/stores/${storeId}/overview`),
+    listProducts: (storeId: string) =>
+      request<AIAdsProduct[]>(`/ai-ads/stores/${storeId}/products`),
+    syncMeta: (storeId: string) =>
+      request<Record<string, number>>(`/ai-ads/stores/${storeId}/sync-meta`, { method: "POST" }),
+    analyzePerformance: (storeId: string) =>
+      request<Record<string, unknown>>(`/ai-ads/stores/${storeId}/analyze`, { method: "POST" }),
+    createStrategy: (
+      storeId: string,
+      data: { product_id: string; audience?: string; objective?: string; brand_style?: string }
+    ) =>
+      request<AIAdsStrategy>(`/ai-ads/stores/${storeId}/strategy`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    getStrategy: (storeId: string) =>
+      request<AIAdsStrategy | null>(`/ai-ads/stores/${storeId}/strategy`),
+    createGenerationJob: (
+      storeId: string,
+      data: {
+        product_id: string;
+        image_count?: number;
+        video_count?: number;
+        styles?: string[];
+        audience?: string;
+        objective?: string;
+        placement?: string;
+        aspect_ratio?: string;
+        brand_style?: string;
+        avatar_id?: string;
+      }
+    ) =>
+      request<AIAdsJob>(`/ai-ads/stores/${storeId}/generation-jobs`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    getGenerationJob: (storeId: string, jobId: string) =>
+      request<AIAdsJob>(`/ai-ads/stores/${storeId}/generation-jobs/${jobId}`),
+    listGenerationJobs: (storeId: string) =>
+      request<AIAdsJob[]>(`/ai-ads/stores/${storeId}/generation-jobs`),
+    getJobCreatives: (storeId: string, jobId: string) =>
+      request<AIAdsGeneratedCreative[]>(
+        `/ai-ads/stores/${storeId}/generation-jobs/${jobId}/creatives`
+      ),
+    getCreatives: (
+      storeId: string,
+      opts: { source?: string; status?: string; type?: string; product_id?: string } = {}
+    ) => {
+      const params = new URLSearchParams();
+      if (opts.source) params.set("source", opts.source);
+      if (opts.status) params.set("status", opts.status);
+      if (opts.type) params.set("type", opts.type);
+      if (opts.product_id) params.set("product_id", opts.product_id);
+      const q = params.toString();
+      return request<AIAdsLibrary>(`/ai-ads/stores/${storeId}/creatives${q ? `?${q}` : ""}`);
+    },
+    getCreative: (storeId: string, creativeId: string) =>
+      request<Record<string, unknown>>(`/ai-ads/stores/${storeId}/creatives/${creativeId}`),
+    approveCreative: (storeId: string, creativeId: string) =>
+      request<AIAdsGeneratedCreative>(`/ai-ads/stores/${storeId}/creatives/${creativeId}/approve`, {
+        method: "POST",
+      }),
+    rejectCreative: (storeId: string, creativeId: string) =>
+      request<AIAdsGeneratedCreative>(`/ai-ads/stores/${storeId}/creatives/${creativeId}/reject`, {
+        method: "POST",
+      }),
+    regenerateCreative: (storeId: string, creativeId: string) =>
+      request<AIAdsJob>(`/ai-ads/stores/${storeId}/creatives/${creativeId}/regenerate`, {
+        method: "POST",
+      }),
+    getPerformance: (storeId: string) =>
+      request<{ snapshots: AIAdsPerformance[]; count: number }>(
+        `/ai-ads/stores/${storeId}/performance`
+      ),
+    getRecommendations: (storeId: string) =>
+      request<AIAdsRecommendation[]>(`/ai-ads/stores/${storeId}/recommendations`),
+    getSettings: (storeId: string) =>
+      request<AIAdsSettings>(`/ai-ads/stores/${storeId}/settings`),
+    updateSettings: (storeId: string, data: object) =>
+      request<AIAdsSettings>(`/ai-ads/stores/${storeId}/settings`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    listAvatars: (storeId: string) =>
+      request<AIAdsAvatar[]>(`/ai-ads/stores/${storeId}/avatars`),
+    upsertAvatar: (storeId: string, data: object) =>
+      request<AIAdsAvatar>(`/ai-ads/stores/${storeId}/avatars`, {
+        method: "PUT",
         body: JSON.stringify(data),
       }),
   },
