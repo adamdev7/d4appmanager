@@ -120,18 +120,32 @@ export type AIAdsGeneratedCreative = {
   created_at?: string | null;
 };
 
+export type AIAdsJobLogEntry = {
+  at?: string;
+  step?: string;
+  title?: string;
+  detail?: string;
+  pct?: number;
+};
+
 export type AIAdsJob = {
   job_id: string;
   id: string;
   status: AIAdsJobStatus | string;
   product_id?: string | null;
   progress_message?: string;
+  progress_step?: string;
+  progress_pct?: number;
+  progress_log?: AIAdsJobLogEntry[];
+  thinking?: string;
   total_items?: number;
   completed_items?: number;
   failed_items?: number;
   error_message?: string | null;
   strategy_id?: string | null;
   created_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
 };
 
 export type AIAdsStrategy = {

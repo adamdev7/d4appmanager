@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useStore } from "@/context/StoreContext";
 import { api, type AIAdsAvatar, type AIAdsJob, type AIAdsProduct } from "@/lib/api";
-import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { PageLoader } from "@/components/ui/Loading";
+import { GenerationStudio } from "@/pages/ai-ads/GenerationStudio";
 
 const STYLES = ["UGC", "PRODUCT_DEMO", "LIFESTYLE", "PROBLEM_SOLUTION", "PROMOTIONAL"];
 
 export function GeneratePage() {
+  const navigate = useNavigate();
   const { activeStore, stores } = useStore();
   const storeId = activeStore?.id ?? stores[0]?.id ?? null;
   const [products, setProducts] = useState<AIAdsProduct[]>([]);
@@ -53,16 +55,19 @@ export function GeneratePage() {
       .finally(() => setLoading(false));
   }, [load, storeId]);
 
+  const running = job && ["QUEUED", "RUNNING"].includes(String(job.status));
+  const liveId = running ? job.job_id || job.id : null;
+
   useEffect(() => {
-    if (!storeId || !job || !["QUEUED", "RUNNING"].includes(String(job.status))) return;
+    if (!storeId || !liveId) return;
     const t = window.setInterval(() => {
       api.aiAds
-        .getGenerationJob(storeId, job.job_id || job.id)
+        .getGenerationJob(storeId, liveId)
         .then(setJob)
         .catch(() => undefined);
-    }, 2000);
+    }, 1000);
     return () => window.clearInterval(t);
-  }, [job, storeId]);
+  }, [liveId, storeId]);
 
   function toggleStyle(s: string) {
     setStyles((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
@@ -86,6 +91,7 @@ export function GeneratePage() {
         avatar_id: avatarId || undefined,
       });
       setJob(created);
+      navigate(`/ai-ads/progress/${created.job_id || created.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start generation");
     } finally {
@@ -96,20 +102,16 @@ export function GeneratePage() {
   if (!storeId) return <p className="text-sm text-content-muted">Select a store first.</p>;
   if (loading) return <PageLoader label="Loading products" />;
 
-  const running = job && ["QUEUED", "RUNNING"].includes(String(job.status));
-  const pct =
-    job && job.total_items
-      ? Math.round(((job.completed_items || 0) / Math.max(job.total_items, 1)) * 100)
-      : 0;
-
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
+    <div className="space-y-6">
+      {job && running && <GenerationStudio job={job} />}
       <Card>
         <CardHeader>
           <CardTitle>Generate creatives</CardTitle>
           <CardDescription>
             Learns from your stronger Meta ads (ROAS/CTR), then generates a small batch of complete
-            image ads and video storyboards. Counts stay low to limit OpenAI usage.
+            image ads and video storyboards. Counts stay low to limit OpenAI usage. You will see
+            every step on the live progress page.
           </CardDescription>
         </CardHeader>
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
@@ -223,28 +225,6 @@ export function GeneratePage() {
             Generate creatives
           </Button>
         </div>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Progress</CardTitle>
-          <CardDescription>Jobs do not block the rest of App Manager.</CardDescription>
-        </CardHeader>
-        {!job ? (
-          <p className="text-sm text-content-subtle">No generation job yet.</p>
-        ) : (
-          <div className="space-y-3">
-            <Badge variant={job.status === "FAILED" ? "warning" : "brand"}>{job.status}</Badge>
-            <p className="text-sm text-content">{job.progress_message}</p>
-            <div className="h-2 rounded-full bg-surface-muted overflow-hidden">
-              <div className="h-full bg-brand-600 transition-all" style={{ width: `${pct}%` }} />
-            </div>
-            <p className="text-xs text-content-subtle">
-              {job.completed_items}/{job.total_items} complete
-              {job.failed_items ? ` · ${job.failed_items} failed` : ""}
-            </p>
-            {job.error_message && <p className="text-sm text-red-600">{job.error_message}</p>}
-          </div>
-        )}
       </Card>
     </div>
   );

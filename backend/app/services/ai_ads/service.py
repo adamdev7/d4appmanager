@@ -28,7 +28,8 @@ from app.db.models import (
 )
 from app.integrations.shopify.client import ShopifyClient
 from app.services.ai_ads.complete_creative import clamp_generation_counts
-from app.services.ai_ads.job_runner import enqueue_generation_job
+from app.services.ai_ads.job_progress import append_job_progress, parse_job_log
+from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_running
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.publisher import MetaCreativePublisher
@@ -186,6 +187,9 @@ class AIAdsService:
             )
             .order_by(desc(CreativeGenerationJob.created_at))
         )
+        if running:
+            self._kick_if_stuck(db, user, running)
+            db.refresh(running)
         settings_row = self.get_or_create_settings(db, store_id)
         return {
             "generated_this_week": {"images": images, "videos": videos},
@@ -303,8 +307,17 @@ class AIAdsService:
             status="QUEUED",
             product_id=product_id,
             request_json=json.dumps(payload),
-            progress_message="Queued",
+            progress_message="Queued — starting worker",
+            progress_step="queued",
+            progress_pct=2,
             total_items=int(payload["image_count"]) + int(payload["video_count"]),
+        )
+        append_job_progress(
+            job,
+            step="queued",
+            title="Queued — starting worker",
+            detail="Job saved. The AI worker will load your product, learn from Meta ads, then generate creatives.",
+            pct=2,
         )
         db.add(job)
         db.commit()
@@ -317,6 +330,8 @@ class AIAdsService:
         job = db.get(CreativeGenerationJob, job_id)
         if not job or job.store_id != store_id:
             raise HTTPException(status_code=404, detail="Job not found")
+        self._kick_if_stuck(db, user, job)
+        db.refresh(job)
         return _job_card(job)
 
     def list_jobs(self, db: Session, user: User, store_id: str) -> list[dict]:
@@ -327,7 +342,19 @@ class AIAdsService:
             .order_by(desc(CreativeGenerationJob.created_at))
             .limit(20)
         ).all()
+        for j in jobs:
+            if j.status in ("QUEUED", "RUNNING"):
+                self._kick_if_stuck(db, user, j)
+                db.refresh(j)
         return [_job_card(j) for j in jobs]
+
+    def _kick_if_stuck(self, db: Session, user: User, job: CreativeGenerationJob) -> None:
+        """Re-start a queued job if the worker never picked it up (e.g. after a 500 on Generate)."""
+        if job.status != "QUEUED":
+            return
+        if is_job_running(job.id):
+            return
+        enqueue_generation_job(job.id, resolve_openai_api_key(user) or "")
 
     def job_creatives(self, db: Session, user: User, store_id: str, job_id: str) -> list[dict]:
         self.ensure_store(db, user, store_id)
@@ -657,12 +684,21 @@ def _rec_card(r: AIRecommendation) -> dict:
 
 
 def _job_card(j: CreativeGenerationJob) -> dict:
+    log = parse_job_log(j)
+    latest = log[-1] if log else {}
+    pct = int(getattr(j, "progress_pct", 0) or 0)
+    if pct <= 0 and j.total_items:
+        pct = int(((j.completed_items or 0) / max(j.total_items, 1)) * 100)
     return {
         "job_id": j.id,
         "id": j.id,
         "status": j.status,
         "product_id": j.product_id,
-        "progress_message": j.progress_message,
+        "progress_message": j.progress_message or (latest.get("title") if isinstance(latest, dict) else "") or "",
+        "progress_step": getattr(j, "progress_step", None) or (latest.get("step") if isinstance(latest, dict) else "") or "",
+        "progress_pct": pct,
+        "progress_log": log,
+        "thinking": (latest.get("detail") if isinstance(latest, dict) else "") or "",
         "total_items": j.total_items,
         "completed_items": j.completed_items,
         "failed_items": j.failed_items,

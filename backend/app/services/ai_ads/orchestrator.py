@@ -30,9 +30,10 @@ from app.services.ai_ads.complete_creative import (
     video_spec_from_concept,
     winning_style_notes,
 )
+from app.services.ai_ads.exceptions import AIAdsError, ImageGenerationError
 from app.services.ai_ads.creative_intelligence import CreativeIntelligenceAnalyzer
 from app.services.ai_ads.creative_planner import CreativePlanner
-from app.services.ai_ads.exceptions import AIAdsError, ImageGenerationError
+from app.services.ai_ads.job_progress import append_job_progress
 from app.services.ai_ads.meta_importer import MetaCreativeImporter
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.product_context import normalize_product
@@ -150,8 +151,13 @@ class AdsAIOrchestrator:
     async def run_generation_job(self, job: CreativeGenerationJob) -> None:
         job.status = "RUNNING"
         job.started_at = datetime.now(UTC)
-        job.progress_message = "Loading product context"
-        self.db.commit()
+        self._progress(
+            job,
+            step="product",
+            title="Loading product from Shopify",
+            detail="Reading title, description, and product photos so ads stay factually accurate.",
+            pct=8,
+        )
         try:
             request = json.loads(job.request_json or "{}")
             product = await self.load_product(job.product_id or request.get("product_id"))
@@ -169,8 +175,13 @@ class AdsAIOrchestrator:
             mix = request.get("portfolio_mix")
 
             job.total_items = image_count + video_count
-            job.progress_message = "Learning from Meta campaign performance"
-            self.db.commit()
+            self._progress(
+                job,
+                step="learn",
+                title="Analyzing Meta campaign performance",
+                detail=f"Loaded {product.title}. Ranking existing ads by ROAS and CTR to see which styles are associated with stronger results.",
+                pct=18,
+            )
 
             meta_count = (
                 self.db.scalar(
@@ -179,16 +190,39 @@ class AdsAIOrchestrator:
                 is not None
             )
             if not meta_count:
-                job.progress_message = "Syncing Meta creatives"
-                self.db.commit()
+                self._progress(
+                    job,
+                    step="sync",
+                    title="Syncing Meta ads",
+                    detail="No imported creatives yet. Downloading campaign ads so the engine has winners to learn from.",
+                    pct=22,
+                )
                 try:
                     await self.sync_meta()
                 except Exception as exc:
                     logger.warning("ai_ads job sync skipped store_id=%s err=%s", self.store.id, exc)
+                    self._progress(
+                        job,
+                        step="sync",
+                        title="Meta sync skipped",
+                        detail=f"Continuing with whatever is already imported. ({str(exc)[:160]})",
+                        pct=24,
+                    )
 
             analyzer = CreativeIntelligenceAnalyzer(self.client, self.store.id)
             brief = analyzer.campaign_brief(self.db)
             winning_notes = winning_style_notes(brief.get("winning") or [])
+            winners = brief.get("winning") or []
+            losers = brief.get("losing") or []
+            learn_detail = (
+                f"Found {len(winners)} stronger ads and {len(losers)} weaker ads. "
+                + (
+                    f"Improving styles like: {winning_notes[:180]}."
+                    if winning_notes
+                    else "Not enough spend/ROAS split yet — using product facts and your selected styles."
+                )
+            )
+            self._progress(job, step="learn", title="Learning from winning Meta ads", detail=learn_detail, pct=32)
 
             avatar = None
             if avatar_id:
@@ -196,8 +230,16 @@ class AdsAIOrchestrator:
                 if avatar and avatar.store_id != self.store.id:
                     avatar = None
 
-            job.progress_message = "Planning complete image and video ads"
-            self.db.commit()
+            self._progress(
+                job,
+                step="plan",
+                title="Writing complete ads",
+                detail=(
+                    f"Planning {image_count} image ad(s) and {video_count} video concept(s): "
+                    "hooks, headlines, primary text, CTAs, image shots, and video scenes."
+                ),
+                pct=42,
+            )
             planner = CreativePlanner(self.client, self.store.id)
             strategy, paired = await planner.plan_complete(
                 self.db,
@@ -214,17 +256,46 @@ class AdsAIOrchestrator:
                 job_id=job.id,
             )
             job.strategy_id = strategy.id
-            self.db.commit()
+            self._progress(
+                job,
+                step="plan",
+                title="Creative plan is ready",
+                detail=(strategy.summary or "Concepts drafted.")[:280],
+                pct=52,
+            )
 
             image_provider = OpenAIImageProvider(self.client, self.assets)
             video_provider = UnconfiguredVideoProvider()
+            total = max(len(paired), 1)
 
-            for concept, brief_model in paired:
+            for index, (concept, brief_model) in enumerate(paired):
                 kind = (concept.type or "IMAGE").upper()
-                job.progress_message = (
-                    f"Rendering {'video poster' if kind == 'VIDEO' else 'image'}: {concept.concept_name}"
-                )
-                self.db.commit()
+                base = 55
+                span = 40
+                pct = base + int((index / total) * span)
+                if kind == "VIDEO":
+                    scenes = getattr(brief_model, "scenes", None) or []
+                    self._progress(
+                        job,
+                        step="video",
+                        title=f"Building video storyboard {index + 1} of {total}",
+                        detail=(
+                            f"Working on “{concept.concept_name or concept.hook}”: "
+                            f"{len(scenes) or 3} scenes (hook → product → CTA), then a still frame."
+                        ),
+                        pct=pct,
+                    )
+                else:
+                    self._progress(
+                        job,
+                        step="image",
+                        title=f"Generating image {index + 1} of {total}",
+                        detail=(
+                            f"Rendering “{concept.concept_name or concept.hook}”. "
+                            f"{(concept.visual_direction or concept.hook or '')[:180]}"
+                        ),
+                        pct=pct,
+                    )
                 asset = CreativeAsset(
                     store_id=self.store.id,
                     product_id=product.product_id,
@@ -252,6 +323,13 @@ class AdsAIOrchestrator:
                         provider_result = await video_provider.generate_video(spec.model_dump())
                         asset.video_spec_json = json.dumps(
                             {"spec": spec.model_dump(), "provider": provider_result}
+                        )
+                        self._progress(
+                            job,
+                            step="video",
+                            title=f"Rendering video still {index + 1} of {total}",
+                            detail="Storyboard is set. Generating a preview still for the first scene.",
+                            pct=min(94, pct + 4),
                         )
                         await self._attach_video_poster(asset, product, spec, image_provider)
                         has_media = bool(asset.preview_url)
@@ -296,16 +374,38 @@ class AdsAIOrchestrator:
                     asset.status = "READY"
                     concept.status = "READY"
                     job.completed_items += 1
+                    done_pct = 55 + int(((index + 1) / total) * 40)
+                    self._progress(
+                        job,
+                        step="image" if kind != "VIDEO" else "video",
+                        title=f"Finished {concept.concept_name or kind.lower()}",
+                        detail=f"{job.completed_items} of {job.total_items} creatives ready.",
+                        pct=done_pct,
+                    )
                 except ImageGenerationError as exc:
                     asset.status = "FAILED"
                     asset.failure_reason = exc.message
                     concept.status = "FAILED"
                     job.failed_items += 1
+                    self._progress(
+                        job,
+                        step="error",
+                        title=f"Could not finish {concept.concept_name or kind.lower()}",
+                        detail=exc.message[:280],
+                        pct=job.progress_pct or pct,
+                    )
                 except Exception as exc:
                     asset.status = "FAILED"
                     asset.failure_reason = str(exc)[:500]
                     concept.status = "FAILED"
                     job.failed_items += 1
+                    self._progress(
+                        job,
+                        step="error",
+                        title=f"Could not finish {concept.concept_name or kind.lower()}",
+                        detail=str(exc)[:280],
+                        pct=job.progress_pct or pct,
+                    )
                 self.db.commit()
 
             if job.failed_items and job.completed_items:
@@ -315,16 +415,42 @@ class AdsAIOrchestrator:
                 job.error_message = "All creatives failed"
             else:
                 job.status = "COMPLETED"
-            job.progress_message = "Done"
             job.finished_at = datetime.now(UTC)
-            self.db.commit()
+            self._progress(
+                job,
+                step="done" if job.status != "FAILED" else "error",
+                title="Generation complete" if job.status != "FAILED" else "Generation failed",
+                detail=(
+                    f"{job.completed_items} ready"
+                    + (f", {job.failed_items} failed" if job.failed_items else "")
+                    + ". Open Library to review."
+                ),
+                pct=100 if job.status != "FAILED" else max(job.progress_pct or 0, 90),
+            )
         except Exception as exc:
             logger.exception("ai_ads generation job failed store_id=%s job=%s", self.store.id, job.id)
             job.status = "FAILED"
             job.error_message = str(exc)[:800]
-            job.progress_message = "Failed"
             job.finished_at = datetime.now(UTC)
-            self.db.commit()
+            self._progress(
+                job,
+                step="error",
+                title="Generation stopped",
+                detail=str(exc)[:280],
+                pct=max(job.progress_pct or 0, 8),
+            )
+
+    def _progress(
+        self,
+        job: CreativeGenerationJob,
+        *,
+        step: str,
+        title: str,
+        detail: str = "",
+        pct: int | None = None,
+    ) -> None:
+        append_job_progress(job, step=step, title=title, detail=detail, pct=pct)
+        self.db.commit()
 
     async def _attach_video_poster(
         self,

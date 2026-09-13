@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { PageLoader, UpdatingBadge } from "@/components/ui/Loading";
+import { GenerationStudio } from "@/pages/ai-ads/GenerationStudio";
 
 export function AIAdsDashboardPage() {
   const { activeStore, stores } = useStore();
@@ -35,6 +36,20 @@ export function AIAdsDashboardPage() {
     setLoading(true);
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const live = data?.active_job;
+    const liveId =
+      live && ["QUEUED", "RUNNING"].includes(String(live.status)) ? live.job_id || live.id : null;
+    if (!storeId || !liveId) return;
+    const t = window.setInterval(() => {
+      api.aiAds
+        .getOverview(storeId)
+        .then(setData)
+        .catch(() => undefined);
+    }, 1500);
+    return () => window.clearInterval(t);
+  }, [data?.active_job?.id, data?.active_job?.status, storeId]);
 
   async function sync() {
     if (!storeId) return;
@@ -114,20 +129,7 @@ export function AIAdsDashboardPage() {
         />
       </div>
       {data?.active_job && ["QUEUED", "RUNNING"].includes(String(data.active_job.status)) && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Generation in progress</CardTitle>
-            <CardDescription>
-              {data.active_job.progress_message || data.active_job.status} ·{" "}
-              {data.active_job.completed_items}/{data.active_job.total_items}
-            </CardDescription>
-          </CardHeader>
-          <Link to="/ai-ads/generate">
-            <Button variant="outline" size="sm">
-              View progress
-            </Button>
-          </Link>
-        </Card>
+        <GenerationStudio job={data.active_job} compact />
       )}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>

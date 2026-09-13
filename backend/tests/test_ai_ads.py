@@ -453,3 +453,47 @@ def test_generation_service_can_enqueue_jobs():
     from app.services.ai_ads import service as ai_ads_service
 
     assert callable(ai_ads_service.enqueue_generation_job)
+
+
+def test_append_job_progress_builds_log():
+    from app.services.ai_ads.job_progress import append_job_progress, parse_job_log
+
+    job = SimpleNamespace(progress_step="", progress_message="", progress_pct=0, progress_log_json="[]")
+    append_job_progress(job, step="plan", title="Writing ads", detail="Drafting hooks and scenes", pct=42)
+    append_job_progress(
+        job, step="image", title="Generating image 1 of 2", detail="Rendering the hero still", pct=70
+    )
+    log = parse_job_log(job)
+    assert job.progress_step == "image"
+    assert job.progress_message == "Generating image 1 of 2"
+    assert job.progress_pct == 70
+    assert len(log) == 2
+    assert "hero still" in log[-1]["detail"]
+
+
+def test_job_card_exposes_progress_fields():
+    from app.db.models import CreativeGenerationJob
+    from app.services.ai_ads.service import _job_card
+
+    job = CreativeGenerationJob(
+        store_id="s", user_id="u", status="RUNNING", total_items=2, completed_items=0
+    )
+    job.progress_step = "image"
+    job.progress_pct = 70
+    job.progress_message = "Generating image 1 of 2"
+    job.progress_log_json = json.dumps(
+        [
+            {
+                "at": "2026-09-13T12:00:00+00:00",
+                "step": "image",
+                "title": "Generating image 1 of 2",
+                "detail": "Rendering",
+                "pct": 70,
+            }
+        ]
+    )
+    card = _job_card(job)
+    assert card["progress_pct"] == 70
+    assert card["progress_step"] == "image"
+    assert card["thinking"] == "Rendering"
+    assert card["progress_log"][0]["title"].startswith("Generating")

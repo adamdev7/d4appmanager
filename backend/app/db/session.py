@@ -755,6 +755,31 @@ def _migrate_meta_capi_enrichment_columns() -> None:
                 )
 
 
+def _migrate_ai_ads_job_progress_columns() -> None:
+    """Live generation progress log for the AI Ads studio."""
+    insp = inspect(engine)
+    table = "ai_ads_generation_jobs"
+    if table not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns(table)}
+    dialect = engine.dialect.name
+    additions: list[tuple[str, str]] = [
+        ("progress_step", "VARCHAR(32) DEFAULT ''"),
+        ("progress_pct", "INTEGER DEFAULT 0"),
+        ("progress_log_json", "TEXT DEFAULT '[]'"),
+    ]
+    with engine.begin() as conn:
+        for name, col_type in additions:
+            if name in cols:
+                continue
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {col_type}")
+                )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -770,3 +795,4 @@ def init_db() -> None:
     _migrate_verification_code_attempts()
     _migrate_ai_email_null_store_scope()
     _migrate_meta_capi_enrichment_columns()
+    _migrate_ai_ads_job_progress_columns()
