@@ -367,7 +367,14 @@ def test_storyboard_preview_from_video_asset():
                     "duration": 15,
                     "format": "9:16",
                     "cta": "SHOP_NOW",
-                    "scenes": [{"duration": 3, "visual": "Close-up on clasp", "text_overlay": "Courage"}],
+                    "scenes": [
+                        {
+                            "duration": 3,
+                            "visual": "Close-up on clasp",
+                            "text_overlay": "Courage",
+                            "voiceover": "Feel the courage",
+                        }
+                    ],
                 }
             }
         ),
@@ -376,3 +383,67 @@ def test_storyboard_preview_from_video_asset():
     assert preview is not None
     assert preview["duration"] == 15
     assert preview["scenes"][0]["visual"] == "Close-up on clasp"
+    assert preview["scenes"][0]["voiceover"] == "Feel the courage"
+
+
+def test_clamp_generation_counts_caps_token_use():
+    from app.services.ai_ads.complete_creative import clamp_generation_counts
+
+    assert clamp_generation_counts(40, 40) == (8, 4)
+    assert clamp_generation_counts(3, 2) == (3, 2)
+    assert clamp_generation_counts(-1, 0) == (0, 0)
+
+
+def test_complete_image_prompt_includes_product_and_winners():
+    from app.services.ai_ads.complete_creative import build_image_prompt
+    from app.services.ai_ads.schemas import ProductContext
+
+    prompt = build_image_prompt(
+        product=ProductContext(product_id="1", title="Courage Bracelet", description="Gold plated"),
+        visual_direction="Close-up on clasp",
+        winning_notes="ugc close-up",
+        aspect_ratio="4:5",
+    )
+    assert "Courage Bracelet" in prompt
+    assert "ugc close-up" in prompt
+    assert "4:5" in prompt
+
+
+def test_video_spec_built_without_openai():
+    from app.services.ai_ads.complete_creative import video_spec_from_concept
+    from app.services.ai_ads.schemas import CreativeConceptModel, ProductContext
+
+    spec = video_spec_from_concept(
+        CreativeConceptModel(concept_name="UGC", hook="Feel the courage", headline="Courage Bracelet"),
+        ProductContext(product_id="1", title="Courage Bracelet"),
+    )
+    assert spec.scenes
+    assert spec.hook == "Feel the courage"
+    assert spec.duration >= 10
+
+
+def test_heuristic_score_rewards_complete_media():
+    from app.services.ai_ads.complete_creative import heuristic_score
+
+    ready = heuristic_score(
+        has_media=True,
+        hook="Feel the courage",
+        headline="Courage Bracelet",
+        primary_text="Everyday gold plated bracelet.",
+        visual="Close-up product hero",
+        winning_notes="close-up ugc",
+        portfolio_bucket="winner_variation",
+        product_title="Courage Bracelet",
+    )
+    empty = heuristic_score(
+        has_media=False,
+        hook="",
+        headline="",
+        primary_text="",
+        visual="",
+        winning_notes="",
+        portfolio_bucket="experimental",
+        product_title="Courage Bracelet",
+    )
+    assert ready.total > empty.total
+    assert ready.breakdown.visual_clarity > empty.breakdown.visual_clarity

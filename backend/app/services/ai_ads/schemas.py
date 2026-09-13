@@ -186,6 +186,13 @@ class CreativeStrategyModel(BaseModel):
     confidence: float = 0.0
 
 
+class VideoScene(BaseModel):
+    duration: float = 2
+    visual: str = ""
+    voiceover: str = ""
+    text_overlay: str = ""
+
+
 class CreativeConceptModel(BaseModel):
     type: str = "IMAGE"
     concept_name: str
@@ -195,6 +202,10 @@ class CreativeConceptModel(BaseModel):
     primary_text: str = ""
     cta: str = "SHOP_NOW"
     visual_direction: str = ""
+    image_prompt: str = ""
+    scenes: list[VideoScene] = Field(default_factory=list)
+    voice_direction: str = ""
+    music_direction: str = ""
     audience: str = ""
     objective: str = ""
     rationale: str = ""
@@ -207,11 +218,11 @@ class ConceptBatch(BaseModel):
     concepts: list[CreativeConceptModel] = Field(default_factory=list)
 
 
-class VideoScene(BaseModel):
-    duration: float = 2
-    visual: str = ""
-    voiceover: str = ""
-    text_overlay: str = ""
+class GenerationPlan(BaseModel):
+    """One-shot strategy + complete image/video concepts (copy + visual + scenes)."""
+
+    strategy: CreativeStrategyModel = Field(default_factory=CreativeStrategyModel)
+    concepts: list[CreativeConceptModel] = Field(default_factory=list)
 
 
 class VideoSpec(BaseModel):

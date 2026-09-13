@@ -113,6 +113,7 @@ export type AIAdsGeneratedCreative = {
       duration?: number | null;
       visual?: string | null;
       text_overlay?: string | null;
+      voiceover?: string | null;
     }>;
   } | null;
   failure_reason?: string | null;

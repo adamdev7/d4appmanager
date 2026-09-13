@@ -10,8 +10,15 @@ from app.config import settings
 from app.db.models import AIAdStrategy, BrandAvatar, CreativeConcept, MetaCreative
 from app.services.ai_ads.exceptions import InvalidAIOutput
 from app.services.ai_ads.openai_client import AdsOpenAIClient
-from app.services.ai_ads.prompts import CREATIVE_CONCEPT
-from app.services.ai_ads.schemas import ConceptBatch, CreativeIntelligenceReport, ProductContext
+from app.services.ai_ads.prompts import CREATIVE_CONCEPT, GENERATION_PLAN
+from app.services.ai_ads.schemas import (
+    ConceptBatch,
+    CreativeConceptModel,
+    CreativeIntelligenceReport,
+    CreativeStrategyModel,
+    GenerationPlan,
+    ProductContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +175,186 @@ class CreativePlanner:
         for row in rows:
             db.refresh(row)
         return rows
+
+    async def plan_complete(
+        self,
+        db: Session,
+        *,
+        product: ProductContext,
+        brief: dict[str, Any],
+        image_count: int,
+        video_count: int,
+        styles: list[str],
+        audience: str,
+        objective: str,
+        brand_style: str,
+        mix: dict[str, float] | None = None,
+        avatar: BrandAvatar | None = None,
+        job_id: str | None = None,
+    ) -> tuple[AIAdStrategy, list[tuple[CreativeConcept, Any]]]:
+        """One model call: strategy + complete image and video ads."""
+        from app.services.ai_ads.complete_creative import compact_product
+
+        total = image_count + video_count
+        image_buckets = allocate_portfolio(image_count, mix)
+        video_buckets = allocate_portfolio(video_count, mix)
+        payload: dict[str, Any] = {
+            "product": compact_product(product),
+            "winning_meta_ads": brief.get("winning") or [],
+            "losing_meta_ads": brief.get("losing") or [],
+            "insufficient_performance_split": bool(brief.get("insufficient")),
+            "image_count": image_count,
+            "video_count": video_count,
+            "image_portfolio_buckets": image_buckets,
+            "video_portfolio_buckets": video_buckets,
+            "styles": styles,
+            "audience": audience or None,
+            "objective": objective,
+            "brand_style": brand_style or None,
+            "avatar": None,
+        }
+        if avatar and avatar.active:
+            payload["avatar"] = {
+                "name": avatar.name,
+                "description": avatar.description,
+                "usage_rules": avatar.usage_rules,
+            }
+        user = (
+            f"Return {image_count} IMAGE and {video_count} VIDEO complete ads. "
+            "Improve styles associated with stronger Meta ads. "
+            f"Assign IMAGE portfolio_bucket from image_portfolio_buckets in order, VIDEO from video_portfolio_buckets.\n\n"
+            f"{json.dumps(payload, default=str)[:12000]}"
+        )
+        try:
+            plan = await self.client.complete_json(
+                system=GENERATION_PLAN,
+                user=user,
+                schema=GenerationPlan,
+                model=self.model,
+                operation="generation_plan",
+            )
+            assert isinstance(plan, GenerationPlan)
+            strategy_model = plan.strategy
+            models = list(plan.concepts)
+        except (InvalidAIOutput, Exception) as exc:
+            logger.warning("ai_ads generation plan failed store_id=%s err=%s", self.store_id, exc)
+            strategy_model = CreativeStrategyModel(
+                summary="Use observed winning Meta patterns; generation plan fallback.",
+                target_audience=audience,
+                winning_patterns=[
+                    str(w.get("style") or w.get("headline") or "")
+                    for w in (brief.get("winning") or [])[:4]
+                    if w.get("style") or w.get("headline")
+                ],
+                avoid=["Copy weaker ads that spent with weak CTR/ROAS"],
+                confidence=0.2,
+            )
+            models = []
+
+        images = [c for c in models if (c.type or "IMAGE").upper() != "VIDEO"][:image_count]
+        videos = [c for c in models if (c.type or "").upper() == "VIDEO"][:video_count]
+        while len(images) < image_count:
+            i = len(images)
+            bucket = image_buckets[i] if i < len(image_buckets) else "exploration"
+            images.append(_fallback_concept(product, "IMAGE", bucket, audience, objective, brief, i))
+        while len(videos) < video_count:
+            i = len(videos)
+            bucket = video_buckets[i] if i < len(video_buckets) else "exploration"
+            videos.append(_fallback_concept(product, "VIDEO", bucket, audience, objective, brief, i))
+        for i, concept in enumerate(images):
+            concept.type = "IMAGE"
+            if i < len(image_buckets):
+                concept.portfolio_bucket = image_buckets[i]
+        for i, concept in enumerate(videos):
+            concept.type = "VIDEO"
+            if i < len(video_buckets):
+                concept.portfolio_bucket = video_buckets[i]
+
+        strategy_row = AIAdStrategy(
+            store_id=self.store_id,
+            product_id=product.product_id,
+            summary=strategy_model.summary or "Improve winning Meta creative styles for this product.",
+            target_audience=strategy_model.target_audience or audience,
+            strategy_json=strategy_model.model_dump_json(),
+            intelligence_report_json=json.dumps(
+                {
+                    "winning_creatives": brief.get("winning_ids") or [],
+                    "losing_creatives": brief.get("losing_ids") or [],
+                    "insufficient": brief.get("insufficient"),
+                }
+            ),
+            confidence=strategy_model.confidence,
+            model_used=self.model,
+        )
+        db.add(strategy_row)
+        db.commit()
+        db.refresh(strategy_row)
+
+        paired: list[tuple[CreativeConcept, Any]] = []
+        for concept in images + videos:
+            row = CreativeConcept(
+                store_id=self.store_id,
+                product_id=product.product_id,
+                job_id=job_id,
+                type=concept.type or "IMAGE",
+                concept_name=concept.concept_name,
+                angle=concept.angle,
+                hook=concept.hook,
+                headline=concept.headline,
+                primary_text=concept.primary_text,
+                cta=concept.cta,
+                visual_direction=concept.visual_direction or concept.image_prompt,
+                audience=concept.audience or audience,
+                objective=concept.objective or objective,
+                rationale=concept.rationale,
+                source_strategy_id=strategy_row.id,
+                source_creative_ids_json=json.dumps(concept.source_creative_ids or []),
+                expected_strength=concept.expected_strength,
+                portfolio_bucket=concept.portfolio_bucket,
+                status="DRAFT",
+            )
+            db.add(row)
+            paired.append((row, concept))
+        db.commit()
+        for row, _ in paired:
+            db.refresh(row)
+        if total:
+            logger.info(
+                "ai_ads plan_complete store_id=%s images=%s videos=%s",
+                self.store_id,
+                image_count,
+                video_count,
+            )
+        return strategy_row, paired
+
+
+def _fallback_concept(
+    product: ProductContext,
+    media_type: str,
+    bucket: str,
+    audience: str,
+    objective: str,
+    brief: dict[str, Any],
+    index: int,
+) -> Any:
+    winners = brief.get("winning_ids") or []
+    return CreativeConceptModel(
+        type=media_type,
+        concept_name=f"{product.title} {bucket.replace('_', ' ')} {index + 1}",
+        angle=bucket,
+        hook=product.title,
+        headline=product.title,
+        primary_text=(product.description or product.title)[:200],
+        cta="SHOP_NOW",
+        visual_direction=f"Show the actual product clearly: {product.title}.",
+        image_prompt=f"Photorealistic advertising photo of {product.title}, product hero, clean background.",
+        audience=audience,
+        objective=objective,
+        rationale="Fallback complete concept after AI validation failure.",
+        source_creative_ids=winners[:2],
+        expected_strength="unknown",
+        portfolio_bucket=bucket,
+    )
 
 
 def _creative_ref(c: MetaCreative) -> dict[str, Any]:

@@ -119,8 +119,8 @@ class Settings(BaseSettings):
     ai_image_model: str = ""
     ai_ad_generation_enabled: bool = False
     ai_ad_generation_day: str = "monday"
-    ai_ad_image_count: int = 10
-    ai_ad_video_count: int = 10
+    ai_ad_image_count: int = 3
+    ai_ad_video_count: int = 2
     ai_ad_auto_publish: bool = False
     ai_ad_winner_pct: float = 0.4
     ai_ad_combination_pct: float = 0.3

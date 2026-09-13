@@ -27,7 +27,7 @@ from app.db.models import (
     User,
 )
 from app.integrations.shopify.client import ShopifyClient
-from app.services.ai_ads.job_runner import enqueue_generation_job
+from app.services.ai_ads.complete_creative import clamp_generation_counts
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.publisher import MetaCreativePublisher
@@ -88,8 +88,8 @@ class AIAdsService:
             "store_id": store_id,
             "weekly_generation_enabled": row.weekly_generation_enabled,
             "generation_day": row.generation_day,
-            "image_count": row.image_count,
-            "video_count": row.video_count,
+            "image_count": clamp_generation_counts(row.image_count, 0)[0],
+            "video_count": clamp_generation_counts(0, row.video_count)[1],
             "auto_publish": False if not settings.ai_ad_auto_publish else row.auto_publish,
             "env_auto_publish": settings.ai_ad_auto_publish,
             "winner_pct": row.winner_pct,
@@ -274,10 +274,14 @@ class AIAdsService:
         if not product_id:
             raise HTTPException(status_code=400, detail="product_id is required")
         settings_row = self.get_or_create_settings(db, store_id)
+        images, videos = clamp_generation_counts(
+            int(body.get("image_count") if body.get("image_count") is not None else settings_row.image_count or 3),
+            int(body.get("video_count") if body.get("video_count") is not None else settings_row.video_count or 2),
+        )
         payload = {
             "product_id": product_id,
-            "image_count": int(body.get("image_count") or settings_row.image_count or 10),
-            "video_count": int(body.get("video_count") or settings_row.video_count or 10),
+            "image_count": images,
+            "video_count": videos,
             "styles": list(body.get("styles") or json.loads(settings_row.creative_styles_json or "[]")),
             "audience": body.get("audience") or settings_row.default_audience,
             "objective": body.get("objective") or settings_row.default_objective,
@@ -538,6 +542,7 @@ def _storyboard_preview(a: CreativeAsset) -> dict | None:
                 "duration": scene.get("duration"),
                 "visual": scene.get("visual"),
                 "text_overlay": scene.get("text_overlay"),
+                "voiceover": scene.get("voiceover"),
             }
             for scene in scenes[:6]
             if isinstance(scene, dict)

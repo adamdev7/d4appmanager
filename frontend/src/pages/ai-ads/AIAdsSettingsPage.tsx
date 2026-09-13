@@ -84,7 +84,8 @@ export function AIAdsSettingsPage() {
         <CardHeader>
           <CardTitle>Weekly automation</CardTitle>
           <CardDescription>
-            Syncs Meta, updates Creative DNA, and queues a generation job. Ads are never auto-published.
+            Syncs Meta, then queues a small generation job from winning ad styles. Ads are never
+            auto-published. Keep counts low — each image still spends image-model credits.
           </CardDescription>
         </CardHeader>
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
@@ -101,14 +102,18 @@ export function AIAdsSettingsPage() {
           />
           <div className="grid gap-3 sm:grid-cols-2">
             <Input
-              label="Default image count"
+              label="Default image count (max 8)"
               type="number"
+              min={0}
+              max={8}
               value={settings.image_count}
               onChange={(e) => setSettings({ ...settings, image_count: Number(e.target.value) })}
             />
             <Input
-              label="Default video count"
+              label="Default video count (max 4)"
               type="number"
+              min={0}
+              max={4}
               value={settings.video_count}
               onChange={(e) => setSettings({ ...settings, video_count: Number(e.target.value) })}
             />

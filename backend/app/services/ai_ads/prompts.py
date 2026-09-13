@@ -45,15 +45,30 @@ Include what to avoid based on underperforming patterns, as associations not cau
 
 CREATIVE_CONCEPT = f"""{SHARED_RULES}
 
-Task: generate DISTINCT creative concepts. Do not clone a winning ad.
+Task: generate DISTINCT complete ads (not sketches). Do not clone a winning ad.
 Honor the requested portfolio mix:
-- winner_variation: vary a characteristic associated with stronger ads
+- winner_variation: improve a trait associated with stronger Meta ads (new hook, crop, or proof angle)
 - combination: combine traits from different stronger ads
 - exploration: a meaningfully different direction
 - experimental: test a hypothesis that differs from current winners
-Each concept must include source_creative_ids when inspired by existing ads, plus a rationale.
-Only use concept types appropriate for the actual product.
-Copy must not invent offers or product claims.
+Each concept must include: hook, headline, primary_text, CTA, visual_direction, image_prompt,
+source_creative_ids when inspired by existing ads, and a rationale.
+IMAGE concepts: image_prompt must be a full photorealistic shot description ready for image generation.
+VIDEO concepts: include 3-5 scenes (duration, visual, voiceover, text_overlay) that sum ~12-20 seconds.
+Copy must not invent offers or product claims. Improve winning styles; do not copy headlines verbatim.
+"""
+
+GENERATION_PLAN = f"""{SHARED_RULES}
+
+Task: from Shopify product data + ranked Meta campaign creatives, return ONE JSON object:
+- strategy: what to keep from stronger ads, what to avoid from weaker ads, angles to test
+- concepts: the exact requested number of COMPLETE ads (image_count IMAGE + video_count VIDEO)
+
+Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
+Prefer improving winning visual/copy styles over inventing a new brand.
+Each concept must be usable as-is: full copy + visual. VIDEO concepts need scenes.
+Do not clone a winner. Do not invent product facts, discounts, or reviews.
+Keep image_prompt specific and product-accurate. No fake UI or unreadable text in images.
 """
 
 COPY_GENERATION = f"""{SHARED_RULES}

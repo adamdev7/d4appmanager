@@ -53,11 +53,28 @@ class CreativeIntelligenceAnalyzer:
             extra = ranks.get(i) or {}
             item["performance_percentiles"] = extra or None
 
-    async def analyze_one(self, db: Session, creative: MetaCreative, snap: CreativePerformanceSnapshot | None) -> CreativeDNA:
+    async def analyze_one(
+        self,
+        db: Session,
+        creative: MetaCreative,
+        snap: CreativePerformanceSnapshot | None,
+        *,
+        force: bool = False,
+        allow_vision: bool = True,
+    ) -> CreativeDNA:
+        existing = db.scalar(
+            select(CreativeDNA).where(
+                CreativeDNA.store_id == self.store_id,
+                CreativeDNA.meta_creative_row_id == creative.id,
+            )
+        )
+        if existing and not force:
+            return existing
+
         images: list[dict[str, str]] = []
         basis = "copy_only"
         path = creative.local_asset_path or creative.local_thumbnail_path
-        if path:
+        if allow_vision and path:
             data_url = self.assets.file_to_data_url(path)
             if data_url:
                 images.append({"url": data_url})
@@ -212,6 +229,84 @@ class CreativeIntelligenceAnalyzer:
             "insufficient_split": bool(groups.get("insufficient")),
         }
         return report
+
+    def listed_creatives(self, db: Session, *, limit: int = 80) -> list[dict[str, Any]]:
+        creatives = db.scalars(
+            select(MetaCreative)
+            .where(MetaCreative.store_id == self.store_id)
+            .order_by(MetaCreative.updated_at.desc())
+            .limit(limit)
+        ).all()
+        perf_map = self.latest_performance_map(db)
+        items: list[dict[str, Any]] = []
+        for c in creatives:
+            snap = perf_map.get(c.id)
+            dna = db.scalar(
+                select(CreativeDNA).where(
+                    CreativeDNA.store_id == self.store_id,
+                    CreativeDNA.meta_creative_row_id == c.id,
+                )
+            )
+            items.append(
+                {
+                    "id": c.id,
+                    "row": c,
+                    "ad_name": c.ad_name,
+                    "campaign_name": c.campaign_name,
+                    "format": c.format,
+                    "headline": c.headline,
+                    "cta": c.cta,
+                    "copy": {
+                        "primary_text": c.primary_text,
+                        "headline": c.headline,
+                        "cta": c.cta,
+                    },
+                    "dna": {
+                        "visual": json.loads(dna.visual_dna_json) if dna else {},
+                        "copy": json.loads(dna.copy_dna_json) if dna else {},
+                        "format": json.loads(dna.format_dna_json) if dna else {},
+                    },
+                    "has_dna": dna is not None,
+                    "performance": _snap_dict(snap),
+                }
+            )
+        self.attach_percentiles(items)
+        return items
+
+    def campaign_brief(self, db: Session) -> dict[str, Any]:
+        """Rank Meta ads by performance. Reuses stored DNA; does not call OpenAI."""
+        from app.services.ai_ads.complete_creative import compact_meta_item
+
+        items = self.listed_creatives(db)
+        groups = split_performance_groups(items)
+        winning = [compact_meta_item(i) for i in groups["winning"][:6]]
+        losing = [compact_meta_item(i) for i in groups["losing"][:4]]
+        return {
+            "winning": winning,
+            "losing": losing,
+            "average_count": len(groups.get("average") or []),
+            "insufficient": bool(groups.get("insufficient")),
+            "winning_ids": [i["id"] for i in groups["winning"][:6]],
+            "losing_ids": [i["id"] for i in groups["losing"][:4]],
+        }
+
+    def creatives_missing_dna(self, items: list[dict[str, Any]], *, limit: int = 8) -> list[MetaCreative]:
+        groups = split_performance_groups(items)
+        ordered = (groups.get("winning") or []) + (groups.get("losing") or []) + (groups.get("average") or [])
+        if groups.get("insufficient"):
+            ordered = items
+        out: list[MetaCreative] = []
+        seen: set[str] = set()
+        for item in ordered:
+            row = item.get("row")
+            cid = item.get("id")
+            if not row or cid in seen or item.get("has_dna"):
+                continue
+            seen.add(cid)
+            out.append(row)
+            if len(out) >= limit:
+                break
+        return out
 
 
 def _snap_dict(snap: CreativePerformanceSnapshot | None) -> dict[str, Any]:

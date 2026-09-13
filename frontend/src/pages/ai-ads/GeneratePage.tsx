@@ -15,8 +15,8 @@ export function GeneratePage() {
   const [products, setProducts] = useState<AIAdsProduct[]>([]);
   const [avatars, setAvatars] = useState<AIAdsAvatar[]>([]);
   const [productId, setProductId] = useState("");
-  const [imageCount, setImageCount] = useState(10);
-  const [videoCount, setVideoCount] = useState(10);
+  const [imageCount, setImageCount] = useState(3);
+  const [videoCount, setVideoCount] = useState(2);
   const [styles, setStyles] = useState<string[]>(["UGC", "PRODUCT_DEMO", "LIFESTYLE"]);
   const [audience, setAudience] = useState("");
   const [objective, setObjective] = useState("conversions");
@@ -108,8 +108,8 @@ export function GeneratePage() {
         <CardHeader>
           <CardTitle>Generate creatives</CardTitle>
           <CardDescription>
-            Strategy and concepts are built from your Meta history first. Generation runs in the
-            background — you can leave this page.
+            Learns from your stronger Meta ads (ROAS/CTR), then generates a small batch of complete
+            image ads and video storyboards. Counts stay low to limit OpenAI usage.
           </CardDescription>
         </CardHeader>
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
@@ -133,20 +133,20 @@ export function GeneratePage() {
           )}
           <div className="grid gap-3 sm:grid-cols-2">
             <Input
-              label="Images"
+              label="Images (max 8)"
               type="number"
               min={0}
-              max={40}
+              max={8}
               value={imageCount}
-              onChange={(e) => setImageCount(Number(e.target.value))}
+              onChange={(e) => setImageCount(Math.min(8, Math.max(0, Number(e.target.value))))}
             />
             <Input
-              label="Video concepts"
+              label="Video concepts (max 4)"
               type="number"
               min={0}
-              max={40}
+              max={4}
               value={videoCount}
-              onChange={(e) => setVideoCount(Number(e.target.value))}
+              onChange={(e) => setVideoCount(Math.min(4, Math.max(0, Number(e.target.value))))}
             />
           </div>
           <div>

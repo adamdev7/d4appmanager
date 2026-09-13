@@ -6,6 +6,13 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { PageLoader } from "@/components/ui/Loading";
+import {
+  AdPlacementMockup,
+  CreativeViewer,
+  previewFromGenerated,
+  previewFromMeta,
+  type AdPreviewModel,
+} from "@/pages/ai-ads/CreativeViewer";
 
 type SourceFilter = "all" | "meta" | "generated";
 
@@ -18,6 +25,7 @@ export function CreativesPage() {
   const [source, setSource] = useState<SourceFilter>("all");
   const [status, setStatus] = useState("");
   const [busyId, setBusyId] = useState("");
+  const [viewer, setViewer] = useState<AdPreviewModel | null>(null);
 
   const load = useCallback(async () => {
     if (!storeId) return;
@@ -89,7 +97,7 @@ export function CreativesPage() {
           ) : (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {meta.map((c) => (
-                <MetaCard key={c.id} creative={c} />
+                <MetaCard key={c.id} creative={c} onOpen={() => setViewer(previewFromMeta(c))} />
               ))}
             </div>
           )}
@@ -107,6 +115,7 @@ export function CreativesPage() {
                   key={c.id}
                   creative={c}
                   busy={busyId === c.id}
+                  onOpen={() => setViewer(previewFromGenerated(c))}
                   onApprove={() => void act(c.id, "approve")}
                   onReject={() => void act(c.id, "reject")}
                   onRegen={() => void act(c.id, "regenerate")}
@@ -116,6 +125,7 @@ export function CreativesPage() {
           )}
         </section>
       )}
+      {viewer && <CreativeViewer ad={viewer} onClose={() => setViewer(null)} />}
     </div>
   );
 }
@@ -128,16 +138,20 @@ function Empty({ text }: { text: string }) {
   );
 }
 
-function MetaCard({ creative }: { creative: AIAdsMetaCreative }) {
+function MetaCard({
+  creative,
+  onOpen,
+}: {
+  creative: AIAdsMetaCreative;
+  onOpen: () => void;
+}) {
   const dna = creative.dna?.visual as Record<string, unknown> | undefined;
   const perf = creative.performance;
   return (
     <Card padding="sm" className="flex flex-col gap-3">
-      {creative.preview_url ? (
-        <img src={creative.preview_url} alt="" className="h-44 w-full rounded-lg object-cover border border-border" />
-      ) : (
-        <div className="h-44 rounded-lg bg-surface-muted" />
-      )}
+      <button type="button" onClick={onOpen} className="text-left">
+        <AdPlacementMockup ad={previewFromMeta(creative)} compact />
+      </button>
       <div>
         <div className="flex items-start justify-between gap-2">
           <CardTitle className="text-sm">{creative.ad_name || "Untitled ad"}</CardTitle>
@@ -160,6 +174,9 @@ function MetaCard({ creative }: { creative: AIAdsMetaCreative }) {
           <p>Analysis basis: {creative.dna.analysis_basis}</p>
         )}
       </div>
+      <Button size="sm" variant="outline" onClick={onOpen}>
+        View ad
+      </Button>
     </Card>
   );
 }
@@ -167,12 +184,14 @@ function MetaCard({ creative }: { creative: AIAdsMetaCreative }) {
 function GeneratedCard({
   creative,
   busy,
+  onOpen,
   onApprove,
   onReject,
   onRegen,
 }: {
   creative: AIAdsGeneratedCreative;
   busy: boolean;
+  onOpen: () => void;
   onApprove: () => void;
   onReject: () => void;
   onRegen: () => void;
@@ -182,7 +201,9 @@ function GeneratedCard({
   const canRegen = creative.status === "READY" || creative.status === "FAILED" || creative.status === "REJECTED";
   return (
     <Card padding="sm" className="flex flex-col gap-3">
-      <CreativePreview creative={creative} />
+      <button type="button" onClick={onOpen} className="text-left">
+        <AdPlacementMockup ad={previewFromGenerated(creative)} compact />
+      </button>
       <div className="flex items-start justify-between gap-2">
         <CardTitle className="text-sm">{creative.headline || creative.hook || "Untitled"}</CardTitle>
         <Badge variant={statusVariant(creative.status)}>{creative.status}</Badge>
@@ -197,65 +218,30 @@ function GeneratedCard({
       {sources.length > 0 && (
         <p className="text-xs text-content-subtle">Inspired by Meta creatives: {sources.join(", ")}</p>
       )}
-      {canRegen && (
-        <div className="flex flex-wrap gap-2 mt-auto">
-          {canApprove && (
-            <>
-              <Button size="sm" onClick={onApprove} isLoading={busy}>
-                Approve
-              </Button>
-              <Button size="sm" variant="outline" onClick={onReject} disabled={busy}>
-                Reject
-              </Button>
-            </>
-          )}
+      <div className="flex flex-wrap gap-2 mt-auto">
+        <Button size="sm" variant="outline" onClick={onOpen}>
+          View ad
+        </Button>
+        {canApprove && (
+          <>
+            <Button size="sm" onClick={onApprove} isLoading={busy}>
+              Approve
+            </Button>
+            <Button size="sm" variant="outline" onClick={onReject} disabled={busy}>
+              Reject
+            </Button>
+          </>
+        )}
+        {canRegen && (
           <Button size="sm" variant="ghost" onClick={onRegen} disabled={busy}>
             Regenerate
           </Button>
-        </div>
-      )}
+        )}
+      </div>
       {creative.failure_reason && (
         <p className="text-xs text-red-600">{creative.failure_reason}</p>
       )}
     </Card>
-  );
-}
-
-function CreativePreview({ creative }: { creative: AIAdsGeneratedCreative }) {
-  if (creative.preview_url) {
-    return (
-      <img
-        src={creative.preview_url}
-        alt=""
-        className="h-44 w-full rounded-lg object-cover border border-border"
-      />
-    );
-  }
-  const scenes = creative.storyboard?.scenes ?? [];
-  if (creative.type === "VIDEO" && scenes.length > 0) {
-    return (
-      <div className="h-44 rounded-lg bg-surface-muted border border-border overflow-hidden p-3 text-left">
-        <p className="text-[10px] uppercase tracking-wide text-content-subtle mb-2">
-          Storyboard · {creative.storyboard?.duration ?? "—"}s · {creative.storyboard?.format || "9:16"}
-        </p>
-        <ol className="space-y-1.5">
-          {scenes.slice(0, 3).map((scene, i) => (
-            <li key={i} className="text-[11px] text-content-muted line-clamp-2">
-              <span className="text-content-subtle">{i + 1}.</span> {scene.visual || scene.text_overlay}
-            </li>
-          ))}
-        </ol>
-      </div>
-    );
-  }
-  return (
-    <div className="h-44 rounded-lg bg-surface-muted flex items-center justify-center text-xs text-content-subtle px-4 text-center">
-      {creative.status === "FAILED"
-        ? "Image generation failed — regenerate to retry"
-        : creative.type === "VIDEO"
-          ? "Video storyboard (no still yet)"
-          : "No preview"}
-    </div>
   );
 }
 

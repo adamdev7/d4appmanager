@@ -14,7 +14,6 @@ from app.db.models import (
     AIAdStrategy,
     BrandAvatar,
     CreativeAsset,
-    CreativeConcept,
     CreativeGenerationJob,
     MetaCreative,
     Store,
@@ -24,11 +23,16 @@ from app.db.models import (
 )
 from app.integrations.meta.client import MetaAdsClient
 from app.integrations.shopify.client import ShopifyClient
-from app.services.ai_ads.copy_generator import CopyGenerator
+from app.services.ai_ads.complete_creative import (
+    build_image_prompt,
+    clamp_generation_counts,
+    heuristic_score,
+    video_spec_from_concept,
+    winning_style_notes,
+)
 from app.services.ai_ads.creative_intelligence import CreativeIntelligenceAnalyzer
 from app.services.ai_ads.creative_planner import CreativePlanner
 from app.services.ai_ads.exceptions import AIAdsError, ImageGenerationError
-from app.services.ai_ads.image_generator import ImageAdGenerator
 from app.services.ai_ads.meta_importer import MetaCreativeImporter
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.product_context import normalize_product
@@ -37,7 +41,6 @@ from app.services.ai_ads.providers.video_provider import UnconfiguredVideoProvid
 from app.services.ai_ads.recommendation_engine import RecommendationEngine
 from app.services.ai_ads.schemas import CreativeIntelligenceReport, ImageGenerationRequest, ProductContext, VideoSpec
 from app.services.ai_ads.strategy import CreativeStrategyEngine
-from app.services.ai_ads.video_planner import VideoCreativePlanner
 from app.services.ai_ads.asset_store import CreativeAssetStore
 
 logger = logging.getLogger(__name__)
@@ -101,21 +104,17 @@ class AdsAIOrchestrator:
             self.db.commit()
         return result
 
-    async def analyze_creatives(self, *, limit: int = 25) -> CreativeIntelligenceReport:
+    async def analyze_creatives(self, *, limit: int = 8) -> CreativeIntelligenceReport:
         analyzer = CreativeIntelligenceAnalyzer(self.client, self.store.id)
-        creatives = self.db.scalars(
-            select(MetaCreative)
-            .where(MetaCreative.store_id == self.store.id)
-            .order_by(MetaCreative.updated_at.desc())
-            .limit(limit)
-        ).all()
+        items = analyzer.listed_creatives(self.db, limit=80)
+        missing = analyzer.creatives_missing_dna(items, limit=min(limit, 8))
         perf = analyzer.latest_performance_map(self.db)
-        for c in creatives:
+        for c in missing:
             try:
                 await analyzer.analyze_one(self.db, c, perf.get(c.id))
             except Exception as exc:
                 logger.warning("ai_ads analyze one failed store_id=%s id=%s err=%s", self.store.id, c.id, exc)
-        report = await analyzer.build_report(self.db, limit=limit)
+        report = await analyzer.build_report(self.db, limit=40)
         recs = RecommendationEngine(self.client, self.store.id)
         await recs.generate(self.db, report=report)
         ads_settings = self.db.scalar(
@@ -156,8 +155,10 @@ class AdsAIOrchestrator:
         try:
             request = json.loads(job.request_json or "{}")
             product = await self.load_product(job.product_id or request.get("product_id"))
-            image_count = int(request.get("image_count") or settings.ai_ad_image_count)
-            video_count = int(request.get("video_count") or settings.ai_ad_video_count)
+            image_count, video_count = clamp_generation_counts(
+                int(request.get("image_count") or settings.ai_ad_image_count),
+                int(request.get("video_count") or settings.ai_ad_video_count),
+            )
             styles = list(request.get("styles") or ["UGC", "PRODUCT_DEMO", "LIFESTYLE"])
             audience = str(request.get("audience") or "")
             objective = str(request.get("objective") or "conversions")
@@ -168,7 +169,7 @@ class AdsAIOrchestrator:
             mix = request.get("portfolio_mix")
 
             job.total_items = image_count + video_count
-            job.progress_message = "Analyzing existing Meta creatives"
+            job.progress_message = "Learning from Meta campaign performance"
             self.db.commit()
 
             meta_count = (
@@ -185,18 +186,9 @@ class AdsAIOrchestrator:
                 except Exception as exc:
                     logger.warning("ai_ads job sync skipped store_id=%s err=%s", self.store.id, exc)
 
-            report = await self.analyze_creatives(limit=30)
-            job.progress_message = "Building creative strategy"
-            self.db.commit()
-            strategy = await self.create_strategy(
-                product=product,
-                report=report,
-                brand_style=brand_style,
-                audience=audience,
-                objective=objective,
-            )
-            job.strategy_id = strategy.id
-            self.db.commit()
+            analyzer = CreativeIntelligenceAnalyzer(self.client, self.store.id)
+            brief = analyzer.campaign_brief(self.db)
+            winning_notes = winning_style_notes(brief.get("winning") or [])
 
             avatar = None
             if avatar_id:
@@ -204,54 +196,34 @@ class AdsAIOrchestrator:
                 if avatar and avatar.store_id != self.store.id:
                     avatar = None
 
-            planner = CreativePlanner(self.client, self.store.id)
-            meta_rows = self.db.scalars(
-                select(MetaCreative).where(MetaCreative.store_id == self.store.id)
-            ).all()
-
-            job.progress_message = "Generating concepts"
+            job.progress_message = "Planning complete image and video ads"
             self.db.commit()
-            image_concepts = await planner.generate_concepts(
+            planner = CreativePlanner(self.client, self.store.id)
+            strategy, paired = await planner.plan_complete(
                 self.db,
                 product=product,
-                strategy=strategy,
-                report=report,
-                meta_creatives=meta_rows,
-                count=image_count,
-                media_type="IMAGE",
+                brief=brief,
+                image_count=image_count,
+                video_count=video_count,
                 styles=styles,
                 audience=audience,
                 objective=objective,
+                brand_style=brand_style,
                 mix=mix,
                 avatar=avatar,
                 job_id=job.id,
             )
-            video_concepts = await planner.generate_concepts(
-                self.db,
-                product=product,
-                strategy=strategy,
-                report=report,
-                meta_creatives=meta_rows,
-                count=video_count,
-                media_type="VIDEO",
-                styles=styles,
-                audience=audience,
-                objective=objective,
-                mix=mix,
-                avatar=avatar,
-                job_id=job.id,
-            )
+            job.strategy_id = strategy.id
+            self.db.commit()
 
-            copy = CopyGenerator(self.client)
-            images = ImageAdGenerator(OpenAIImageProvider(self.client, self.assets), copy)
-            videos = VideoCreativePlanner(self.client, UnconfiguredVideoProvider())
-            scorer = RecommendationEngine(self.client, self.store.id)
-            winning_notes = "; ".join(
-                p.statement for p in (report.visual_patterns + report.composition_patterns)[:6]
-            )
+            image_provider = OpenAIImageProvider(self.client, self.assets)
+            video_provider = UnconfiguredVideoProvider()
 
-            for concept in image_concepts:
-                job.progress_message = f"Generating image: {concept.concept_name}"
+            for concept, brief_model in paired:
+                kind = (concept.type or "IMAGE").upper()
+                job.progress_message = (
+                    f"Rendering {'video poster' if kind == 'VIDEO' else 'image'}: {concept.concept_name}"
+                )
                 self.db.commit()
                 asset = CreativeAsset(
                     store_id=self.store.id,
@@ -261,7 +233,7 @@ class AdsAIOrchestrator:
                     source_strategy_id=strategy.id,
                     source_creative_ids_json=concept.source_creative_ids_json,
                     source_product_id=product.product_id,
-                    type="IMAGE",
+                    type="VIDEO" if kind == "VIDEO" else "IMAGE",
                     status="GENERATING",
                     hook=concept.hook,
                     headline=concept.headline,
@@ -269,34 +241,58 @@ class AdsAIOrchestrator:
                     cta=concept.cta,
                     visual_direction=concept.visual_direction,
                     rationale=concept.rationale,
-                    aspect_ratio=aspect,
+                    aspect_ratio="9:16" if kind == "VIDEO" else aspect,
                     placement=placement,
                 )
                 self.db.add(asset)
                 self.db.commit()
                 try:
-                    result = await images.generate(
-                        product=product,
-                        concept=concept,
-                        aspect_ratio=aspect,
-                        placement=placement,
-                        brand_style=brand_style,
+                    if kind == "VIDEO":
+                        spec = video_spec_from_concept(brief_model, product, aspect_ratio="9:16")
+                        provider_result = await video_provider.generate_video(spec.model_dump())
+                        asset.video_spec_json = json.dumps(
+                            {"spec": spec.model_dump(), "provider": provider_result}
+                        )
+                        await self._attach_video_poster(asset, product, spec, image_provider)
+                        has_media = bool(asset.preview_url)
+                    else:
+                        prompt = build_image_prompt(
+                            product=product,
+                            visual_direction=concept.visual_direction,
+                            image_prompt=getattr(brief_model, "image_prompt", "") or "",
+                            brand_style=brand_style,
+                            winning_notes=winning_notes,
+                            aspect_ratio=aspect,
+                            placement=placement,
+                        )
+                        result = await image_provider.generate(
+                            ImageGenerationRequest(
+                                prompt=prompt,
+                                aspect_ratio=aspect,
+                                placement=placement,
+                            )
+                        )
+                        asset.local_path = result.local_path
+                        asset.preview_url = result.preview_url
+                        asset.width = result.width
+                        asset.height = result.height
+                        has_media = bool(result.preview_url)
+                        if not has_media:
+                            raise ImageGenerationError("Image generation returned no file")
+                    score = heuristic_score(
+                        has_media=has_media,
+                        hook=concept.hook or "",
+                        headline=concept.headline or "",
+                        primary_text=concept.primary_text or "",
+                        visual=concept.visual_direction or "",
                         winning_notes=winning_notes,
-                    )
-                    asset.local_path = result.local_path
-                    asset.preview_url = result.preview_url
-                    asset.width = result.width
-                    asset.height = result.height
-                    score = await scorer.score(
-                        concept_name=concept.concept_name,
-                        hook=concept.hook,
-                        visual=concept.visual_direction,
-                        strategy_summary=strategy.summary,
+                        portfolio_bucket=concept.portfolio_bucket or "",
                         product_title=product.title,
-                        portfolio_bucket=concept.portfolio_bucket,
                     )
                     asset.ai_score = float(score.total)
                     asset.score_breakdown_json = score.breakdown.model_dump_json()
+                    if kind == "IMAGE" and not has_media:
+                        raise ImageGenerationError("Complete image creative requires a generated file")
                     asset.status = "READY"
                     concept.status = "READY"
                     job.completed_items += 1
@@ -305,59 +301,6 @@ class AdsAIOrchestrator:
                     asset.failure_reason = exc.message
                     concept.status = "FAILED"
                     job.failed_items += 1
-                except Exception as exc:
-                    asset.status = "FAILED"
-                    asset.failure_reason = str(exc)[:500]
-                    concept.status = "FAILED"
-                    job.failed_items += 1
-                self.db.commit()
-
-            for concept in video_concepts:
-                job.progress_message = f"Planning video: {concept.concept_name}"
-                self.db.commit()
-                asset = CreativeAsset(
-                    store_id=self.store.id,
-                    product_id=product.product_id,
-                    concept_id=concept.id,
-                    job_id=job.id,
-                    source_strategy_id=strategy.id,
-                    source_creative_ids_json=concept.source_creative_ids_json,
-                    source_product_id=product.product_id,
-                    type="VIDEO",
-                    status="GENERATING",
-                    hook=concept.hook,
-                    headline=concept.headline,
-                    primary_text=concept.primary_text,
-                    cta=concept.cta,
-                    visual_direction=concept.visual_direction,
-                    rationale=concept.rationale,
-                    aspect_ratio="9:16",
-                    placement=placement,
-                )
-                self.db.add(asset)
-                self.db.commit()
-                try:
-                    spec = await videos.plan(
-                        product=product, concept=concept, aspect_ratio="9:16", avatar=avatar
-                    )
-                    provider_result = await videos.maybe_generate(spec)
-                    asset.video_spec_json = json.dumps(
-                        {"spec": spec.model_dump(), "provider": provider_result}
-                    )
-                    await self._attach_video_poster(asset, product, spec, images)
-                    score = await scorer.score(
-                        concept_name=concept.concept_name,
-                        hook=concept.hook,
-                        visual=concept.visual_direction,
-                        strategy_summary=strategy.summary,
-                        product_title=product.title,
-                        portfolio_bucket=concept.portfolio_bucket,
-                    )
-                    asset.ai_score = float(score.total)
-                    asset.score_breakdown_json = score.breakdown.model_dump_json()
-                    asset.status = "READY"
-                    concept.status = "READY"
-                    job.completed_items += 1
                 except Exception as exc:
                     asset.status = "FAILED"
                     asset.failure_reason = str(exc)[:500]
@@ -388,17 +331,20 @@ class AdsAIOrchestrator:
         asset: CreativeAsset,
         product: ProductContext,
         spec: VideoSpec,
-        images: ImageAdGenerator,
+        image_provider: OpenAIImageProvider,
     ) -> None:
         """Save a still frame so Library can preview video concepts (no rendered MP4)."""
         first = spec.scenes[0] if spec.scenes else None
         visual = (first.visual if first else "") or spec.hook or product.title
-        prompt = (
-            f"Photorealistic advertising still of {product.title}. {visual}. "
-            "Product-accurate, no invented logos, no unreadable text overlays."
+        prompt = build_image_prompt(
+            product=product,
+            visual_direction=visual,
+            image_prompt=visual,
+            aspect_ratio="9:16",
+            placement="stories",
         )
         try:
-            result = await images.provider.generate(
+            result = await image_provider.generate(
                 ImageGenerationRequest(prompt=prompt, aspect_ratio="9:16", placement="stories")
             )
             asset.local_path = result.local_path
