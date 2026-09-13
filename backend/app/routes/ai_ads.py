@@ -166,6 +166,16 @@ async def regenerate_creative(
     return _service.regenerate(db, user, store_id, creative_id)
 
 
+@router.delete("/stores/{store_id}/creatives/{creative_id}")
+async def delete_creative(
+    store_id: str,
+    creative_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.delete_creative(db, user, store_id, creative_id)
+
+
 @router.post("/stores/{store_id}/creatives/{creative_id}/publish")
 async def publish_creative(
     store_id: str,

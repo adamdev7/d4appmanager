@@ -780,6 +780,75 @@ def _migrate_ai_ads_job_progress_columns() -> None:
                 )
 
 
+def _migrate_ai_ads_owner_columns() -> None:
+    """Tie generated creatives (including video specs) to the account that created them."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    for table in ("ai_ads_creative_assets", "ai_ads_concepts"):
+        if table not in insp.get_table_names():
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if "user_id" in cols:
+            continue
+        with engine.begin() as conn:
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN user_id VARCHAR(36)"))
+            elif dialect == "postgresql":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS user_id VARCHAR(36)"))
+    names = set(inspect(engine).get_table_names())
+    with engine.begin() as conn:
+        if "ai_ads_creative_assets" in names:
+            conn.execute(
+                text(
+                    """
+                    UPDATE ai_ads_creative_assets
+                    SET user_id = (
+                        SELECT j.user_id FROM ai_ads_generation_jobs j
+                        WHERE j.id = ai_ads_creative_assets.job_id
+                    )
+                    WHERE user_id IS NULL AND job_id IS NOT NULL
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE ai_ads_creative_assets
+                    SET user_id = (
+                        SELECT s.owner_id FROM stores s
+                        WHERE s.id = ai_ads_creative_assets.store_id
+                    )
+                    WHERE user_id IS NULL
+                    """
+                )
+            )
+        if "ai_ads_concepts" in names:
+            conn.execute(
+                text(
+                    """
+                    UPDATE ai_ads_concepts
+                    SET user_id = (
+                        SELECT j.user_id FROM ai_ads_generation_jobs j
+                        WHERE j.id = ai_ads_concepts.job_id
+                    )
+                    WHERE user_id IS NULL AND job_id IS NOT NULL
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    UPDATE ai_ads_concepts
+                    SET user_id = (
+                        SELECT s.owner_id FROM stores s
+                        WHERE s.id = ai_ads_concepts.store_id
+                    )
+                    WHERE user_id IS NULL
+                    """
+                )
+            )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -796,3 +865,4 @@ def init_db() -> None:
     _migrate_ai_email_null_store_scope()
     _migrate_meta_capi_enrichment_columns()
     _migrate_ai_ads_job_progress_columns()
+    _migrate_ai_ads_owner_columns()

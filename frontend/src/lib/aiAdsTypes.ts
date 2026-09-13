@@ -86,6 +86,7 @@ export type AIAdsMetaCreative = {
 export type AIAdsGeneratedCreative = {
   id: string;
   source: "AI_GENERATED";
+  user_id?: string | null;
   type?: string;
   status?: CreativeStatus | string;
   product_id?: string | null;
@@ -146,6 +147,7 @@ export type AIAdsJob = {
   created_at?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
+  creatives?: AIAdsGeneratedCreative[];
 };
 
 export type AIAdsStrategy = {

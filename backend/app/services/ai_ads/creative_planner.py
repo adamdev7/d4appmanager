@@ -75,6 +75,7 @@ class CreativePlanner:
         mix: dict[str, float] | None = None,
         avatar: BrandAvatar | None = None,
         job_id: str | None = None,
+        user_id: str | None = None,
     ) -> list[CreativeConcept]:
         buckets = allocate_portfolio(count, mix)
         refs = [_creative_ref(c) for c in meta_creatives[:12]]
@@ -150,6 +151,7 @@ class CreativePlanner:
             bucket = buckets[i] if i < len(buckets) else concept.portfolio_bucket
             row = CreativeConcept(
                 store_id=self.store_id,
+                user_id=user_id,
                 product_id=product.product_id,
                 job_id=job_id,
                 type=concept.type or media_type,
@@ -191,6 +193,7 @@ class CreativePlanner:
         mix: dict[str, float] | None = None,
         avatar: BrandAvatar | None = None,
         job_id: str | None = None,
+        user_id: str | None = None,
     ) -> tuple[AIAdStrategy, list[tuple[CreativeConcept, Any]]]:
         """One model call: strategy + complete image and video ads."""
         from app.services.ai_ads.complete_creative import compact_product
@@ -294,6 +297,7 @@ class CreativePlanner:
         for concept in images + videos:
             row = CreativeConcept(
                 store_id=self.store_id,
+                user_id=user_id,
                 product_id=product.product_id,
                 job_id=job_id,
                 type=concept.type or "IMAGE",

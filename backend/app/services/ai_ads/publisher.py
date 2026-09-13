@@ -36,6 +36,7 @@ class MetaCreativePublisher:
         settings_row: StoreAIAdsSettings,
         page_id: str | None = None,
         activate: bool = False,
+        destination_url: str | None = None,
     ) -> dict[str, Any]:
         if asset.status != "APPROVED":
             raise MetaImportError("Creative must be APPROVED before publishing")
@@ -46,6 +47,9 @@ class MetaCreativePublisher:
             status = "PAUSED"
         else:
             status = "ACTIVE"
+        link = (destination_url or "").strip()
+        if not link:
+            raise MetaImportError("A product or store URL is required before publishing")
         payload = {
             "name": (asset.headline or "AI creative")[:256],
             "adset_id": adset_id,
@@ -56,7 +60,7 @@ class MetaCreativePublisher:
                     "link_data": {
                         "message": asset.primary_text or asset.hook or "",
                         "name": asset.headline or "",
-                        "link": asset.preview_url or "",
+                        "link": link,
                         "call_to_action": {"type": (asset.cta or "SHOP_NOW").upper()},
                     },
                 }

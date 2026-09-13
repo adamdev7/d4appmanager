@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import desc, func, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -31,6 +31,7 @@ from app.services.ai_ads.complete_creative import clamp_generation_counts
 from app.services.ai_ads.job_progress import append_job_progress, parse_job_log
 from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_running
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
+from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.publisher import MetaCreativePublisher
 
@@ -41,6 +42,15 @@ class AIAdsService:
         if not store or store.owner_id != user.id:
             raise HTTPException(status_code=404, detail="Store not found")
         return store
+
+    def _owned_asset(self, db: Session, user: User, store_id: str, creative_id: str) -> CreativeAsset:
+        self.ensure_store(db, user, store_id)
+        asset = db.get(CreativeAsset, creative_id)
+        if not asset or asset.store_id != store_id:
+            raise HTTPException(status_code=404, detail="Creative not found")
+        if asset.user_id and asset.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Creative not found")
+        return asset
 
     def get_or_create_settings(self, db: Session, store_id: str) -> StoreAIAdsSettings:
         row = db.scalar(select(StoreAIAdsSettings).where(StoreAIAdsSettings.store_id == store_id))
@@ -152,6 +162,7 @@ class AIAdsService:
         generated_week = db.scalars(
             select(CreativeAsset).where(
                 CreativeAsset.store_id == store_id,
+                _owned_assets(user.id),
                 CreativeAsset.created_at >= week_ago,
             )
         ).all()
@@ -165,7 +176,11 @@ class AIAdsService:
         ) or 0
         top = db.scalar(
             select(CreativeAsset)
-            .where(CreativeAsset.store_id == store_id, CreativeAsset.ai_score.is_not(None))
+            .where(
+                CreativeAsset.store_id == store_id,
+                _owned_assets(user.id),
+                CreativeAsset.ai_score.is_not(None),
+            )
             .order_by(desc(CreativeAsset.ai_score))
         )
         strategy = db.scalar(
@@ -332,7 +347,18 @@ class AIAdsService:
             raise HTTPException(status_code=404, detail="Job not found")
         self._kick_if_stuck(db, user, job)
         db.refresh(job)
-        return _job_card(job)
+        card = _job_card(job)
+        assets = db.scalars(
+            select(CreativeAsset)
+            .where(
+                CreativeAsset.store_id == store_id,
+                CreativeAsset.job_id == job.id,
+                _owned_assets(user.id),
+            )
+            .order_by(CreativeAsset.created_at.asc())
+        ).all()
+        card["creatives"] = [_asset_card(a) for a in assets]
+        return card
 
     def list_jobs(self, db: Session, user: User, store_id: str) -> list[dict]:
         self.ensure_store(db, user, store_id)
@@ -349,11 +375,15 @@ class AIAdsService:
         return [_job_card(j) for j in jobs]
 
     def _kick_if_stuck(self, db: Session, user: User, job: CreativeGenerationJob) -> None:
-        """Re-start a queued job if the worker never picked it up (e.g. after a 500 on Generate)."""
-        if job.status != "QUEUED":
+        """Re-start a queued or abandoned running job if the worker is not alive."""
+        if job.status not in ("QUEUED", "RUNNING"):
             return
         if is_job_running(job.id):
             return
+        if job.status == "RUNNING":
+            job.status = "QUEUED"
+            job.error_message = None
+            db.commit()
         enqueue_generation_job(job.id, resolve_openai_api_key(user) or "")
 
     def job_creatives(self, db: Session, user: User, store_id: str, job_id: str) -> list[dict]:
@@ -363,7 +393,11 @@ class AIAdsService:
             raise HTTPException(status_code=404, detail="Job not found")
         assets = db.scalars(
             select(CreativeAsset)
-            .where(CreativeAsset.store_id == store_id, CreativeAsset.job_id == job_id)
+            .where(
+                CreativeAsset.store_id == store_id,
+                CreativeAsset.job_id == job_id,
+                _owned_assets(user.id),
+            )
             .order_by(CreativeAsset.created_at.desc())
         ).all()
         return [_asset_card(a) for a in assets]
@@ -390,7 +424,10 @@ class AIAdsService:
             for m in metas:
                 meta_out.append(_meta_card(m, perf.get(m.id), dnas.get(m.id)))
         if source in (None, "generated", "all"):
-            q = select(CreativeAsset).where(CreativeAsset.store_id == store_id)
+            q = select(CreativeAsset).where(
+                CreativeAsset.store_id == store_id,
+                _owned_assets(user.id),
+            )
             if status:
                 q = q.where(CreativeAsset.status == status.upper())
             if type:
@@ -403,8 +440,11 @@ class AIAdsService:
 
     def get_creative(self, db: Session, user: User, store_id: str, creative_id: str) -> dict:
         self.ensure_store(db, user, store_id)
-        asset = db.get(CreativeAsset, creative_id)
-        if asset and asset.store_id == store_id:
+        try:
+            asset = self._owned_asset(db, user, store_id, creative_id)
+        except HTTPException:
+            asset = None
+        if asset:
             return {"kind": "generated", **_asset_card(asset, detail=True)}
         meta = db.get(MetaCreative, creative_id)
         if meta and meta.store_id == store_id:
@@ -416,29 +456,61 @@ class AIAdsService:
     def set_status(
         self, db: Session, user: User, store_id: str, creative_id: str, status: str
     ) -> dict:
-        self.ensure_store(db, user, store_id)
-        asset = db.get(CreativeAsset, creative_id)
-        if not asset or asset.store_id != store_id:
-            raise HTTPException(status_code=404, detail="Creative not found")
+        asset = self._owned_asset(db, user, store_id, creative_id)
         asset.status = status
         db.commit()
         db.refresh(asset)
         return _asset_card(asset)
 
     def regenerate(self, db: Session, user: User, store_id: str, creative_id: str) -> dict:
-        self.ensure_store(db, user, store_id)
-        asset = db.get(CreativeAsset, creative_id)
-        if not asset or asset.store_id != store_id:
-            raise HTTPException(status_code=404, detail="Creative not found")
+        asset = self._owned_asset(db, user, store_id, creative_id)
         if not asset.product_id:
             raise HTTPException(status_code=400, detail="Creative has no product to regenerate from")
+        settings_row = self.get_or_create_settings(db, store_id)
+        try:
+            styles = json.loads(settings_row.creative_styles_json or "[]")
+        except json.JSONDecodeError:
+            styles = []
+        if not isinstance(styles, list) or not styles:
+            styles = ["UGC", "PRODUCT_DEMO", "LIFESTYLE"]
+        kind = (asset.type or "IMAGE").upper()
         body = {
             "product_id": asset.product_id,
-            "image_count": 1 if asset.type == "IMAGE" else 0,
-            "video_count": 1 if asset.type == "VIDEO" else 0,
-            "styles": [asset.type],
+            "image_count": 1 if kind != "VIDEO" else 0,
+            "video_count": 1 if kind == "VIDEO" else 0,
+            "styles": [str(s) for s in styles if s],
+            "placement": asset.placement or settings_row.default_placement,
+            "aspect_ratio": asset.aspect_ratio or settings_row.default_aspect_ratio,
+            "brand_style": settings_row.brand_style or "",
         }
         return self.create_generation_job(db, user, store_id, body)
+
+    def delete_creative(self, db: Session, user: User, store_id: str, creative_id: str) -> dict:
+        asset = self._owned_asset(db, user, store_id, creative_id)
+        concept_id = asset.concept_id
+        CreativeAssetStore(store_id).delete_local(asset.local_path)
+        if asset.preview_url and asset.preview_url != asset.local_path:
+            CreativeAssetStore(store_id).delete_local(asset.preview_url)
+        db.execute(
+            delete(CreativePerformanceSnapshot).where(
+                CreativePerformanceSnapshot.generated_asset_id == asset.id
+            )
+        )
+        db.delete(asset)
+        db.flush()
+        if concept_id:
+            remaining = db.scalar(
+                select(func.count())
+                .select_from(CreativeAsset)
+                .where(CreativeAsset.concept_id == concept_id)
+            ) or 0
+            if remaining == 0:
+                concept = db.get(CreativeConcept, concept_id)
+                if concept and concept.store_id == store_id:
+                    if not concept.user_id or concept.user_id == user.id:
+                        db.delete(concept)
+        db.commit()
+        return {"ok": True, "deleted_id": creative_id}
 
     def performance(self, db: Session, user: User, store_id: str) -> dict:
         self.ensure_store(db, user, store_id)
@@ -494,9 +566,7 @@ class AIAdsService:
 
     async def publish(self, db: Session, user: User, store_id: str, creative_id: str, body: dict) -> dict:
         store = self.ensure_store(db, user, store_id)
-        asset = db.get(CreativeAsset, creative_id)
-        if not asset or asset.store_id != store_id:
-            raise HTTPException(status_code=404, detail="Creative not found")
+        asset = self._owned_asset(db, user, store_id, creative_id)
         if asset.status != "APPROVED":
             raise HTTPException(status_code=400, detail="Approve the creative before publishing")
         settings_row = self.get_or_create_settings(db, store_id)
@@ -509,6 +579,7 @@ class AIAdsService:
         if not adset_id:
             raise HTTPException(status_code=400, detail="adset_id is required")
         activate = bool(body.get("activate")) and bool(settings.ai_ad_auto_publish) and settings_row.auto_publish
+        destination = _store_destination_url(store)
         try:
             created = await publisher.publish_ad(
                 asset,
@@ -516,6 +587,7 @@ class AIAdsService:
                 settings_row=settings_row,
                 page_id=body.get("page_id"),
                 activate=activate,
+                destination_url=destination,
             )
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)[:400]) from exc
@@ -543,10 +615,33 @@ def _dna_by_meta(db: Session, store_id: str) -> dict[str, CreativeDNA]:
     return {r.meta_creative_row_id: r for r in rows if r.meta_creative_row_id}
 
 
+def _owned_assets(user_id: str):
+    return or_(CreativeAsset.user_id == user_id, CreativeAsset.user_id.is_(None))
+
+
+def _store_destination_url(store: Store) -> str | None:
+    domain = (getattr(store, "shop_domain", None) or "").strip()
+    if not domain:
+        return None
+    domain = domain.replace("https://", "").replace("http://", "").strip("/")
+    return f"https://{domain}" if domain else None
+
+
+def _normalize_preview(raw: str | None) -> str | None:
+    path = (raw or "").strip()
+    if not path:
+        return None
+    if path.startswith(("http://", "https://", "data:")):
+        return path
+    if path.startswith("/uploads/"):
+        return path
+    if path.startswith("uploads/"):
+        return f"/{path}"
+    return f"/uploads/{path.lstrip('/')}"
+
+
 def _preview(path: str | None, fallback: str | None = None) -> str | None:
-    if path:
-        return f"/uploads/{path.lstrip('/')}" if not path.startswith("/") and not path.startswith("http") else path
-    return fallback
+    return _normalize_preview(path) or _normalize_preview(fallback)
 
 
 def _storyboard_preview(a: CreativeAsset) -> dict | None:
@@ -621,6 +716,7 @@ def _asset_card(a: CreativeAsset | None, detail: bool = False) -> dict:
     card = {
         "id": a.id,
         "source": "AI_GENERATED",
+        "user_id": a.user_id,
         "type": a.type,
         "status": a.status,
         "product_id": a.product_id,

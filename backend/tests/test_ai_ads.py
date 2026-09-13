@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -218,6 +219,25 @@ def test_job_status_values():
     assert job.status == "RUNNING"
 
 
+def test_owned_asset_hides_other_account_creatives():
+    service = AIAdsService()
+    owner = SimpleNamespace(id="user-1")
+    other = SimpleNamespace(id="user-2")
+    store = SimpleNamespace(id="store-1", owner_id="user-1")
+    asset = SimpleNamespace(id="c1", store_id="store-1", user_id="user-2")
+    db = MagicMock()
+    db.get.side_effect = lambda model, key: store if key == "store-1" else asset
+    with pytest.raises(HTTPException) as exc:
+        service._owned_asset(db, owner, "store-1", "c1")
+    assert exc.value.status_code == 404
+    db.get.side_effect = lambda model, key: store if key == "store-1" else SimpleNamespace(
+        id="c1", store_id="store-1", user_id="user-1"
+    )
+    assert service._owned_asset(db, owner, "store-1", "c1").user_id == "user-1"
+    with pytest.raises(HTTPException):
+        service._owned_asset(db, other, "store-1", "c1")
+
+
 def test_authorization_rejects_foreign_store():
     service = AIAdsService()
     user = SimpleNamespace(id="user-1")
@@ -235,6 +255,21 @@ def test_authorization_accepts_owner():
     db = MagicMock()
     db.get.return_value = store
     assert service.ensure_store(db, user, "store-1") is store
+
+
+def test_asset_store_delete_only_own_folder(tmp_path, monkeypatch):
+    from app.services.ai_ads import asset_store as store_mod
+
+    monkeypatch.setattr(store_mod, "_UPLOADS", tmp_path)
+    store = store_mod.CreativeAssetStore("store-1")
+    saved = store.save_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 20, mime_type="image/png", prefix="gen")
+    assert Path(saved["path"]).is_file()
+    assert store.delete_local(saved["relative_path"]) is True
+    assert not Path(saved["path"]).is_file()
+    outsider = tmp_path.parent / "not-this.png"
+    outsider.write_bytes(b"nope")
+    assert store.delete_local(str(outsider)) is False
+    assert outsider.is_file()
 
 
 def test_image_provider_saves_bytes():
@@ -469,6 +504,48 @@ def test_append_job_progress_builds_log():
     assert job.progress_pct == 70
     assert len(log) == 2
     assert "hero still" in log[-1]["detail"]
+
+
+def test_image_size_maps_for_gpt_image_and_dalle():
+    from app.services.ai_ads.providers.openai_image import resolve_image_size
+
+    assert resolve_image_size("gpt-image-2", "4:5")[0] == "1024x1536"
+    assert resolve_image_size("gpt-image-2", "16:9")[0] == "1536x1024"
+    assert resolve_image_size("dall-e-3", "9:16")[0] == "1024x1792"
+
+
+def test_store_destination_url_uses_shop_domain():
+    from app.services.ai_ads.service import _store_destination_url
+
+    assert _store_destination_url(SimpleNamespace(shop_domain="luxory.myshopify.com")) == "https://luxory.myshopify.com"
+    assert _store_destination_url(SimpleNamespace(shop_domain="https://luxory.online/")) == "https://luxory.online"
+
+
+def test_generation_request_model_has_unique_fields():
+    from app.models.ai_ads import AIAdsGenerationJobRequest, AIAdsSettingsUpdate
+
+    assert list(AIAdsGenerationJobRequest.model_fields).count("styles") == 1
+    assert list(AIAdsSettingsUpdate.model_fields).count("brand_style") == 1
+
+
+def test_preview_url_normalizes_local_paths():
+    from app.services.ai_ads.service import _preview
+
+    assert _preview("ai-ads/s/gen.png") == "/uploads/ai-ads/s/gen.png"
+    assert _preview("/uploads/ai-ads/s/gen.png") == "/uploads/ai-ads/s/gen.png"
+    assert _preview(None, "https://cdn.example/p.jpg") == "https://cdn.example/p.jpg"
+
+
+def test_product_reference_urls_uses_first_photo():
+    from app.services.ai_ads.complete_creative import product_reference_urls
+    from app.services.ai_ads.schemas import ProductContext, ProductImage
+
+    product = ProductContext(
+        product_id="1",
+        title="Courage Bracelet",
+        images=[ProductImage(src="https://cdn.example/p.jpg")],
+    )
+    assert product_reference_urls(product) == ["https://cdn.example/p.jpg"]
 
 
 def test_job_card_exposes_progress_fields():

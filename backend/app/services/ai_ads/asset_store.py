@@ -58,6 +58,25 @@ class CreativeAssetStore:
             "ext": ext,
         }
 
+    def delete_local(self, relative_or_abs: str | None) -> bool:
+        """Permanently remove a generated file if it belongs to this store's upload folder."""
+        if not relative_or_abs:
+            return False
+        path = Path(relative_or_abs)
+        if not path.is_file():
+            uploads_root = _BACKEND_ROOT / "data" / "uploads"
+            candidate = uploads_root / relative_or_abs.lstrip("/").removeprefix("uploads/")
+            path = candidate if candidate.is_file() else self.dir / Path(relative_or_abs).name
+        try:
+            resolved = path.resolve()
+            root = self.dir.resolve()
+            if resolved.is_file() and resolved.is_relative_to(root):
+                resolved.unlink()
+                return True
+        except OSError:
+            return False
+        return False
+
     def file_to_data_url(self, relative_or_abs: str) -> str | None:
         path = Path(relative_or_abs)
         if not path.is_file():

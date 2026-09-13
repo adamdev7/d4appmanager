@@ -48,13 +48,23 @@ export function CreativesPage() {
       .finally(() => setLoading(false));
   }, [load, storeId]);
 
-  async function act(id: string, kind: "approve" | "reject" | "regenerate") {
+  async function act(id: string, kind: "approve" | "reject" | "regenerate" | "delete") {
     if (!storeId) return;
+    if (kind === "delete") {
+      const ok = window.confirm(
+        "Delete this creative permanently? The image or video still and its database row will be removed from your account."
+      );
+      if (!ok) return;
+    }
     setBusyId(id);
     try {
       if (kind === "approve") await api.aiAds.approveCreative(storeId, id);
       if (kind === "reject") await api.aiAds.rejectCreative(storeId, id);
       if (kind === "regenerate") await api.aiAds.regenerateCreative(storeId, id);
+      if (kind === "delete") {
+        await api.aiAds.deleteCreative(storeId, id);
+        setViewer(null);
+      }
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Action failed");
@@ -119,6 +129,7 @@ export function CreativesPage() {
                   onApprove={() => void act(c.id, "approve")}
                   onReject={() => void act(c.id, "reject")}
                   onRegen={() => void act(c.id, "regenerate")}
+                  onDelete={() => void act(c.id, "delete")}
                 />
               ))}
             </div>
@@ -188,6 +199,7 @@ function GeneratedCard({
   onApprove,
   onReject,
   onRegen,
+  onDelete,
 }: {
   creative: AIAdsGeneratedCreative;
   busy: boolean;
@@ -195,6 +207,7 @@ function GeneratedCard({
   onApprove: () => void;
   onReject: () => void;
   onRegen: () => void;
+  onDelete: () => void;
 }) {
   const sources = useMemo(() => creative.source_creative_ids ?? [], [creative.source_creative_ids]);
   const canApprove = creative.status === "READY";
@@ -237,6 +250,9 @@ function GeneratedCard({
             Regenerate
           </Button>
         )}
+        <Button size="sm" variant="danger" onClick={onDelete} disabled={busy}>
+          Delete permanently
+        </Button>
       </div>
       {creative.failure_reason && (
         <p className="text-xs text-red-600">{creative.failure_reason}</p>

@@ -27,6 +27,7 @@ from app.services.ai_ads.complete_creative import (
     build_image_prompt,
     clamp_generation_counts,
     heuristic_score,
+    product_reference_urls,
     video_spec_from_concept,
     winning_style_notes,
 )
@@ -254,6 +255,7 @@ class AdsAIOrchestrator:
                 mix=mix,
                 avatar=avatar,
                 job_id=job.id,
+                user_id=self.user.id,
             )
             job.strategy_id = strategy.id
             self._progress(
@@ -298,6 +300,7 @@ class AdsAIOrchestrator:
                     )
                 asset = CreativeAsset(
                     store_id=self.store.id,
+                    user_id=self.user.id,
                     product_id=product.product_id,
                     concept_id=concept.id,
                     job_id=job.id,
@@ -332,6 +335,8 @@ class AdsAIOrchestrator:
                             pct=min(94, pct + 4),
                         )
                         await self._attach_video_poster(asset, product, spec, image_provider)
+                        if not asset.preview_url:
+                            await self._attach_video_poster(asset, product, spec, image_provider)
                         has_media = bool(asset.preview_url)
                     else:
                         prompt = build_image_prompt(
@@ -348,6 +353,7 @@ class AdsAIOrchestrator:
                                 prompt=prompt,
                                 aspect_ratio=aspect,
                                 placement=placement,
+                                reference_image_urls=product_reference_urls(product),
                             )
                         )
                         asset.local_path = result.local_path
@@ -369,8 +375,10 @@ class AdsAIOrchestrator:
                     )
                     asset.ai_score = float(score.total)
                     asset.score_breakdown_json = score.breakdown.model_dump_json()
-                    if kind == "IMAGE" and not has_media:
-                        raise ImageGenerationError("Complete image creative requires a generated file")
+                    if not has_media:
+                        raise ImageGenerationError(
+                            "Complete creative requires a generated image or video still"
+                        )
                     asset.status = "READY"
                     concept.status = "READY"
                     job.completed_items += 1
@@ -471,11 +479,16 @@ class AdsAIOrchestrator:
         )
         try:
             result = await image_provider.generate(
-                ImageGenerationRequest(prompt=prompt, aspect_ratio="9:16", placement="stories")
+                ImageGenerationRequest(
+                    prompt=prompt,
+                    aspect_ratio="9:16",
+                    placement="stories",
+                    reference_image_urls=product_reference_urls(product),
+                )
             )
             asset.local_path = result.local_path
             asset.preview_url = result.preview_url
             asset.width = result.width
             asset.height = result.height
         except Exception as exc:
-            logger.info("ai_ads video poster skipped store_id=%s err=%s", self.store.id, exc)
+            logger.info("ai_ads video poster failed store_id=%s err=%s", self.store.id, exc)

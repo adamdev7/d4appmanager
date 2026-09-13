@@ -1,11 +1,16 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Check, Circle, Loader2, Sparkles, X } from "lucide-react";
-import type { AIAdsJob, AIAdsJobLogEntry } from "@/lib/aiAdsTypes";
+import type { AIAdsGeneratedCreative, AIAdsJob, AIAdsJobLogEntry } from "@/lib/aiAdsTypes";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { cn } from "@/lib/cn";
+import {
+  AdPlacementMockup,
+  CreativeViewer,
+  previewFromGenerated,
+} from "@/pages/ai-ads/CreativeViewer";
 
 const STAGES = [
   { id: "start", label: "Starting", match: ["queued", "start"] },
@@ -59,6 +64,8 @@ export function GenerationStudio({
   const thinking =
     job.thinking || job.progress_message || (active ? "The AI worker is starting…" : "");
   const log = (job.progress_log || []) as AIAdsJobLogEntry[];
+  const creatives = (job.creatives || []) as AIAdsGeneratedCreative[];
+  const [viewer, setViewer] = useState<AIAdsGeneratedCreative | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -187,6 +194,34 @@ export function GenerationStudio({
         </p>
       </div>
 
+      {creatives.length > 0 && (
+        <div className="mb-5">
+          <p className="text-xs uppercase tracking-wide text-content-subtle mb-2">
+            Live previews
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {creatives.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setViewer(c)}
+                className="text-left"
+              >
+                <AdPlacementMockup ad={previewFromGenerated(c)} compact />
+                <p className="mt-2 text-sm font-medium text-content line-clamp-1">
+                  {c.headline || c.hook || (c.type === "VIDEO" ? "Video concept" : "Image ad")}
+                </p>
+                <p className="text-xs text-content-subtle">
+                  {c.status}
+                  {c.type === "VIDEO" ? " · video still" : ""}
+                  {!c.preview_url && c.status === "GENERATING" ? " · rendering…" : ""}
+                </p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div>
         <p className="text-xs uppercase tracking-wide text-content-subtle mb-2">Activity log</p>
         <div className="max-h-72 overflow-y-auto rounded-xl border border-border bg-surface-muted/30 px-3 py-2 space-y-3">
@@ -233,6 +268,9 @@ export function GenerationStudio({
             <Button>Try again</Button>
           </Link>
         </div>
+      )}
+      {viewer && (
+        <CreativeViewer ad={previewFromGenerated(viewer)} onClose={() => setViewer(null)} />
       )}
     </Card>
   );

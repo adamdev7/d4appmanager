@@ -193,7 +193,7 @@ export function CreativeViewer({
         <AdPlacementMockup ad={ad} />
 
         {ad.type === "VIDEO" && ad.storyboard?.scenes?.length ? (
-          <StoryboardPlayer storyboard={ad.storyboard} />
+          <StoryboardPlayer storyboard={ad.storyboard} previewUrl={ad.previewUrl} />
         ) : null}
 
         <dl className="mt-4 space-y-2 text-sm">
@@ -223,8 +223,10 @@ export function CreativeViewer({
 
 function StoryboardPlayer({
   storyboard,
+  previewUrl,
 }: {
   storyboard: NonNullable<AIAdsGeneratedCreative["storyboard"]>;
+  previewUrl?: string | null;
 }) {
   const scenes = useMemo(() => storyboard.scenes ?? [], [storyboard.scenes]);
   const [index, setIndex] = useState(0);
@@ -284,15 +286,20 @@ function StoryboardPlayer({
           </Button>
         </div>
       </div>
-      <div className="rounded-md bg-zinc-950 text-white p-3 min-h-[7rem]">
-        {scene.text_overlay && (
-          <p className="text-[10px] uppercase tracking-wide text-white/50 mb-1">On-screen text</p>
-        )}
-        <p className="text-sm font-medium">{scene.text_overlay || `Scene ${index + 1}`}</p>
-        <p className="mt-2 text-sm text-white/80">{scene.visual}</p>
-        {scene.voiceover && (
-          <p className="mt-2 text-xs italic text-white/60">VO: {scene.voiceover}</p>
-        )}
+      <div className="rounded-md bg-zinc-950 text-white overflow-hidden">
+        {previewUrl ? (
+          <img src={previewUrl} alt="" className="h-48 w-full object-cover" />
+        ) : null}
+        <div className="p-3 min-h-[7rem]">
+          {scene.text_overlay && (
+            <p className="text-[10px] uppercase tracking-wide text-white/50 mb-1">On-screen text</p>
+          )}
+          <p className="text-sm font-medium">{scene.text_overlay || `Scene ${index + 1}`}</p>
+          <p className="mt-2 text-sm text-white/80">{scene.visual}</p>
+          {scene.voiceover && (
+            <p className="mt-2 text-xs italic text-white/60">VO: {scene.voiceover}</p>
+          )}
+        </div>
       </div>
     </div>
   );

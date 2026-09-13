@@ -1068,6 +1068,11 @@ export const api = {
       request<AIAdsJob>(`/ai-ads/stores/${storeId}/creatives/${creativeId}/regenerate`, {
         method: "POST",
       }),
+    deleteCreative: (storeId: string, creativeId: string) =>
+      request<{ ok: boolean; deleted_id: string }>(
+        `/ai-ads/stores/${storeId}/creatives/${creativeId}`,
+        { method: "DELETE" }
+      ),
     getPerformance: (storeId: string) =>
       request<{ snapshots: AIAdsPerformance[]; count: number }>(
         `/ai-ads/stores/${storeId}/performance`

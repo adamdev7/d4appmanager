@@ -254,23 +254,54 @@ class AdsOpenAIClient:
         model: str,
         size: str = "1024x1024",
         operation: str = "image_generate",
+        references: list[tuple[bytes, str]] | None = None,
+    ) -> tuple[bytes, str]:
+        if references:
+            try:
+                return await self._image_edits(
+                    prompt=prompt,
+                    model=model,
+                    size=size,
+                    references=references,
+                    operation=f"{operation}_edit",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "ai_ads image edit fallback to generate store_id=%s err=%s",
+                    self._store_id,
+                    str(exc)[:200],
+                )
+        return await self._image_generations(
+            prompt=prompt, model=model, size=size, operation=operation
+        )
+
+    async def _image_generations(
+        self, *, prompt: str, model: str, size: str, operation: str
     ) -> tuple[bytes, str]:
         request_id = str(uuid.uuid4())
         started = time.perf_counter()
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
             "prompt": prompt[:4000],
             "size": size,
             "n": 1,
         }
+        if _is_gpt_image(model):
+            payload["quality"] = "medium"
+        else:
+            payload["response_format"] = "b64_json"
         last_error: Exception | None = None
         for attempt in range(settings.openai_max_retries):
             try:
                 async with httpx.AsyncClient(timeout=180) as client:
                     resp = await client.post(OPENAI_IMAGES_URL, headers=self._headers(), json=payload)
                     latency = int((time.perf_counter() - started) * 1000)
-                    if resp.status_code == 400 and "b64" not in json.dumps(payload):
-                        payload["response_format"] = "b64_json"
+                    body = resp.text or ""
+                    if resp.status_code == 400 and _should_fallback_square(body) and payload.get("size") != "1024x1024":
+                        payload["size"] = "1024x1024"
+                        continue
+                    if resp.status_code == 400 and "quality" in body.lower() and "quality" in payload:
+                        payload.pop("quality", None)
                         continue
                     if resp.status_code == 429 and attempt < settings.openai_max_retries - 1:
                         self._log(
@@ -284,10 +315,7 @@ class AdsOpenAIClient:
                         continue
                     if resp.status_code >= 400:
                         raise openai_error_from_response(resp)
-                    data = resp.json()
-                    item = (data.get("data") or [{}])[0]
-                    b64 = item.get("b64_json")
-                    url = item.get("url")
+                    decoded = _decode_image_payload(resp.json())
                     self._log(
                         request_id=request_id,
                         operation=operation,
@@ -295,15 +323,8 @@ class AdsOpenAIClient:
                         status="ok",
                         latency_ms=latency,
                     )
-                    if b64:
-                        import base64
-
-                        return base64.b64decode(b64), "image/png"
-                    if url:
-                        async with httpx.AsyncClient(timeout=60) as dl:
-                            img = await dl.get(url)
-                            img.raise_for_status()
-                            return img.content, img.headers.get("content-type", "image/png")
+                    if decoded:
+                        return decoded
                     raise OpenAIServiceError(
                         user_message="Image generation returned no image data.",
                         stop_autopilot=False,
@@ -333,6 +354,88 @@ class AdsOpenAIClient:
             stop_autopilot=False,
             retryable=True,
         )
+
+    async def _image_edits(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        size: str,
+        references: list[tuple[bytes, str]],
+        operation: str,
+    ) -> tuple[bytes, str]:
+        request_id = str(uuid.uuid4())
+        started = time.perf_counter()
+        raw, mime = references[0]
+        ext = "png" if "png" in mime else "jpg"
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        form: dict[str, str] = {
+            "model": model,
+            "prompt": prompt[:4000],
+            "size": size,
+            "n": "1",
+        }
+        if _is_gpt_image(model):
+            form["quality"] = "medium"
+        files = {"image": (f"product.{ext}", raw, mime)}
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=files)
+        latency = int((time.perf_counter() - started) * 1000)
+        if resp.status_code >= 400:
+            self._log(
+                request_id=request_id,
+                operation=operation,
+                model=model,
+                status="error",
+                latency_ms=latency,
+                error=resp.text[:200],
+            )
+            raise openai_error_from_response(resp)
+        decoded = _decode_image_payload(resp.json())
+        self._log(
+            request_id=request_id,
+            operation=operation,
+            model=model,
+            status="ok",
+            latency_ms=latency,
+        )
+        if not decoded:
+            raise OpenAIServiceError(
+                user_message="Image edit returned no image data.",
+                stop_autopilot=False,
+            )
+        return decoded
+
+
+def _is_gpt_image(model: str) -> bool:
+    return "gpt-image" in (model or "").strip().lower()
+
+
+def _should_fallback_square(body: str) -> bool:
+    text = (body or "").lower()
+    return "size" in text or "resolution" in text or "aspect" in text
+
+
+def _decode_image_payload(data: Any) -> tuple[bytes, str] | None:
+    item = (data.get("data") or [{}])[0] if isinstance(data, dict) else {}
+    if not isinstance(item, dict):
+        return None
+    b64 = item.get("b64_json")
+    if b64:
+        import base64
+
+        return base64.b64decode(b64), "image/png"
+    url = item.get("url")
+    if not url:
+        return None
+    try:
+        with httpx.Client(timeout=60) as dl:
+            img = dl.get(url)
+            img.raise_for_status()
+        mime = img.headers.get("content-type", "image/png").split(";")[0].strip()
+        return img.content, mime or "image/png"
+    except Exception:
+        return None
 
 
 def _loads_json(raw: str) -> Any:

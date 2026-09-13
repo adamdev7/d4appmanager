@@ -57,6 +57,10 @@ def compact_meta_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def product_reference_urls(product: ProductContext) -> list[str]:
+    return [img.src for img in (product.images or []) if getattr(img, "src", None)][:1]
+
+
 def winning_style_notes(winners: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for item in winners[:6]:

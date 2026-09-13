@@ -778,6 +778,9 @@ class CreativeConcept(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     product_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     job_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("ai_ads_generation_jobs.id", ondelete="SET NULL"), nullable=True, index=True
@@ -812,6 +815,9 @@ class CreativeAsset(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     product_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     concept_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("ai_ads_concepts.id", ondelete="SET NULL"), nullable=True, index=True
