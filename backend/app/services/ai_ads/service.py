@@ -28,6 +28,7 @@ from app.db.models import (
 )
 from app.integrations.shopify.client import ShopifyClient
 from app.services.ai_ads.complete_creative import clamp_generation_counts
+from app.services.ai_ads.job_runner import enqueue_generation_job
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.publisher import MetaCreativePublisher

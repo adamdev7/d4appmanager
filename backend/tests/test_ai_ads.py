@@ -447,3 +447,9 @@ def test_heuristic_score_rewards_complete_media():
     )
     assert ready.total > empty.total
     assert ready.breakdown.visual_clarity > empty.breakdown.visual_clarity
+
+
+def test_generation_service_can_enqueue_jobs():
+    from app.services.ai_ads import service as ai_ads_service
+
+    assert callable(ai_ads_service.enqueue_generation_job)
