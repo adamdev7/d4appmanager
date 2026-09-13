@@ -101,6 +101,46 @@ async def get_job(
     return _service.get_job(db, user, store_id, job_id)
 
 
+@router.post("/stores/{store_id}/generation-jobs/{job_id}/stop")
+async def stop_job(
+    store_id: str,
+    job_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.stop_generation_job(db, user, store_id, job_id)
+
+
+@router.post("/stores/{store_id}/generation-jobs/{job_id}/restart")
+async def restart_job(
+    store_id: str,
+    job_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.restart_generation_job(db, user, store_id, job_id)
+
+
+@router.post("/stores/{store_id}/generation-jobs/{job_id}/nudge")
+async def nudge_job(
+    store_id: str,
+    job_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.nudge_generation_job(db, user, store_id, job_id)
+
+
+@router.post("/stores/{store_id}/generation-jobs/{job_id}/sweep")
+async def sweep_job(
+    store_id: str,
+    job_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.sweep_generation_job(db, user, store_id, job_id)
+
+
 @router.get("/stores/{store_id}/generation-jobs/{job_id}/creatives")
 async def job_creatives(
     store_id: str,

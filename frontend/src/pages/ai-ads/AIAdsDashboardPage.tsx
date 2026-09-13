@@ -7,7 +7,10 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { PageLoader, UpdatingBadge } from "@/components/ui/Loading";
-import { GenerationStudio } from "@/pages/ai-ads/GenerationStudio";
+import {
+  GenerationControlPanel,
+  shouldShowWorkplaceConsole,
+} from "@/pages/ai-ads/GenerationControlPanel";
 
 export function AIAdsDashboardPage() {
   const { activeStore, stores } = useStore();
@@ -38,9 +41,12 @@ export function AIAdsDashboardPage() {
   }, [load]);
 
   useEffect(() => {
-    const live = data?.active_job;
+    const watch = data?.workplace_job || data?.active_job;
     const liveId =
-      live && ["QUEUED", "RUNNING"].includes(String(live.status)) ? live.job_id || live.id : null;
+      watch &&
+      (["QUEUED", "RUNNING"].includes(String(watch.status)) || watch.worker_alive)
+        ? watch.job_id || watch.id
+        : null;
     if (!storeId || !liveId) return;
     const t = window.setInterval(() => {
       api.aiAds
@@ -49,7 +55,13 @@ export function AIAdsDashboardPage() {
         .catch(() => undefined);
     }, 1500);
     return () => window.clearInterval(t);
-  }, [data?.active_job?.id, data?.active_job?.status, storeId]);
+  }, [
+    data?.workplace_job?.id,
+    data?.workplace_job?.status,
+    data?.workplace_job?.worker_alive,
+    data?.active_job?.id,
+    storeId,
+  ]);
 
   async function sync() {
     if (!storeId) return;
@@ -128,9 +140,15 @@ export function AIAdsDashboardPage() {
           icon={Lightbulb}
         />
       </div>
-      {data?.active_job && ["QUEUED", "RUNNING"].includes(String(data.active_job.status)) && (
-        <GenerationStudio job={data.active_job} compact />
-      )}
+      {storeId &&
+        shouldShowWorkplaceConsole(data?.workplace_job || data?.active_job) &&
+        (data?.workplace_job || data?.active_job) && (
+          <GenerationControlPanel
+            storeId={storeId}
+            job={(data.workplace_job || data.active_job)!}
+            onChanged={() => void load()}
+          />
+        )}
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>

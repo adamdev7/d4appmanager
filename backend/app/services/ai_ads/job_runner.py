@@ -7,12 +7,14 @@ import threading
 from app.db.models import CreativeGenerationJob, Store, User
 from app.db.session import SessionLocal
 from app.services.ai_ads.job_progress import append_job_progress
+from app.services.ai_ads.exceptions import GenerationCancelled
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 
 logger = logging.getLogger(__name__)
 
 _thread_lock = threading.Lock()
 _running: set[str] = set()
+_cancelled: set[str] = set()
 
 
 def is_job_running(job_id: str) -> bool:
@@ -20,8 +22,24 @@ def is_job_running(job_id: str) -> bool:
         return job_id in _running
 
 
+def request_cancel(job_id: str) -> None:
+    with _thread_lock:
+        _cancelled.add(job_id)
+
+
+def is_cancel_requested(job_id: str) -> bool:
+    with _thread_lock:
+        return job_id in _cancelled
+
+
+def clear_cancel(job_id: str) -> None:
+    with _thread_lock:
+        _cancelled.discard(job_id)
+
+
 def enqueue_generation_job(job_id: str, api_key: str) -> None:
     """Start the job on the server event loop, or a background thread if none is running."""
+    clear_cancel(job_id)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -48,6 +66,18 @@ async def _run(job_id: str, api_key: str) -> None:
             return
         if job.status not in ("QUEUED", "RUNNING"):
             return
+        if is_cancel_requested(job_id):
+            job.status = "CANCELLED"
+            job.error_message = "Stopped from the workplace console."
+            append_job_progress(
+                job,
+                step="error",
+                title="Generation halted",
+                detail="Operator stopped this run before the worker started.",
+                pct=job.progress_pct or 0,
+            )
+            db.commit()
+            return
         append_job_progress(
             job,
             step="start",
@@ -73,6 +103,19 @@ async def _run(job_id: str, api_key: str) -> None:
             return
         orch = AdsAIOrchestrator(db, user, store, api_key)
         await orch.run_generation_job(job)
+    except GenerationCancelled:
+        job = db.get(CreativeGenerationJob, job_id)
+        if job and job.status in ("QUEUED", "RUNNING"):
+            job.status = "CANCELLED"
+            job.error_message = "Stopped from the workplace console."
+            append_job_progress(
+                job,
+                step="error",
+                title="Generation halted",
+                detail="Operator stopped this run. Ready creatives were kept.",
+                pct=job.progress_pct or 0,
+            )
+            db.commit()
     except Exception:
         logger.exception("ai_ads job runner crashed job_id=%s", job_id)
         try:

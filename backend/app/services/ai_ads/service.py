@@ -29,7 +29,7 @@ from app.db.models import (
 from app.integrations.shopify.client import ShopifyClient
 from app.services.ai_ads.complete_creative import clamp_generation_counts
 from app.services.ai_ads.job_progress import append_job_progress, parse_job_log
-from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_running
+from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_running, request_cancel
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.product_context import normalize_product
@@ -205,6 +205,14 @@ class AIAdsService:
         if running:
             self._kick_if_stuck(db, user, running)
             db.refresh(running)
+        workplace = db.scalar(
+            select(CreativeGenerationJob)
+            .where(CreativeGenerationJob.store_id == store_id)
+            .order_by(desc(CreativeGenerationJob.created_at))
+        )
+        if workplace and workplace.status in ("QUEUED", "RUNNING"):
+            self._kick_if_stuck(db, user, workplace)
+            db.refresh(workplace)
         settings_row = self.get_or_create_settings(db, store_id)
         return {
             "generated_this_week": {"images": images, "videos": videos},
@@ -214,6 +222,7 @@ class AIAdsService:
             "current_strategy": _strategy_card(strategy) if strategy else None,
             "recommendations": [_rec_card(r) for r in recs],
             "active_job": _job_card(running) if running else None,
+            "workplace_job": _job_card(workplace) if workplace else None,
             "last_sync_at": settings_row.last_sync_at.isoformat() if settings_row.last_sync_at else None,
             "last_analyze_at": settings_row.last_analyze_at.isoformat() if settings_row.last_analyze_at else None,
             "openai_configured": is_openai_configured(user),
@@ -385,6 +394,103 @@ class AIAdsService:
             job.error_message = None
             db.commit()
         enqueue_generation_job(job.id, resolve_openai_api_key(user) or "")
+
+    def _require_job(self, db: Session, user: User, store_id: str, job_id: str) -> CreativeGenerationJob:
+        self.ensure_store(db, user, store_id)
+        job = db.get(CreativeGenerationJob, job_id)
+        if not job or job.store_id != store_id:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return job
+
+    def stop_generation_job(self, db: Session, user: User, store_id: str, job_id: str) -> dict:
+        job = self._require_job(db, user, store_id, job_id)
+        request_cancel(job.id)
+        if job.status in ("QUEUED", "RUNNING"):
+            job.status = "CANCELLED"
+            job.finished_at = datetime.now(UTC)
+            job.error_message = "Stopped from the workplace console."
+            append_job_progress(
+                job,
+                step="error",
+                title="Generation halted",
+                detail="Operator stopped this run. Ready creatives were kept. Use Replay to start a fresh job.",
+                pct=job.progress_pct or 0,
+            )
+            db.commit()
+            db.refresh(job)
+        return _job_card(job)
+
+    def restart_generation_job(self, db: Session, user: User, store_id: str, job_id: str) -> dict:
+        job = self._require_job(db, user, store_id, job_id)
+        if job.status in ("QUEUED", "RUNNING"):
+            self.stop_generation_job(db, user, store_id, job_id)
+            db.refresh(job)
+        try:
+            body = json.loads(job.request_json or "{}")
+        except json.JSONDecodeError:
+            body = {}
+        if not isinstance(body, dict) or not body.get("product_id"):
+            raise HTTPException(status_code=400, detail="This job has no saved brief to replay.")
+        return self.create_generation_job(db, user, store_id, body)
+
+    def nudge_generation_job(self, db: Session, user: User, store_id: str, job_id: str) -> dict:
+        job = self._require_job(db, user, store_id, job_id)
+        if job.status not in ("QUEUED", "RUNNING"):
+            raise HTTPException(
+                status_code=400,
+                detail="Nudge only wakes a queued or running job. Use Replay to start a new run.",
+            )
+        if is_job_running(job.id):
+            card = _job_card(job)
+            card["nudge"] = "already_alive"
+            return card
+        if job.status == "RUNNING":
+            job.status = "QUEUED"
+            job.error_message = None
+            append_job_progress(
+                job,
+                step="queued",
+                title="Worker nudged",
+                detail="Signal lost — re-queuing this job so a new worker can pick it up.",
+                pct=max(job.progress_pct or 0, 4),
+            )
+            db.commit()
+            db.refresh(job)
+        else:
+            append_job_progress(
+                job,
+                step="queued",
+                title="Worker nudged",
+                detail="Re-sent this job to the generation worker.",
+                pct=max(job.progress_pct or 0, 4),
+            )
+            db.commit()
+        enqueue_generation_job(job.id, resolve_openai_api_key(user) or "")
+        card = _job_card(job)
+        card["nudge"] = "enqueued"
+        return card
+
+    def sweep_generation_job(self, db: Session, user: User, store_id: str, job_id: str) -> dict:
+        job = self._require_job(db, user, store_id, job_id)
+        leftovers = db.scalars(
+            select(CreativeAsset)
+            .where(
+                CreativeAsset.store_id == store_id,
+                CreativeAsset.job_id == job.id,
+                _owned_assets(user.id),
+                CreativeAsset.status.in_(("GENERATING", "FAILED", "QUEUED", "DRAFT")),
+            )
+        ).all()
+        swept = 0
+        for asset in list(leftovers):
+            try:
+                self.delete_creative(db, user, store_id, asset.id)
+                swept += 1
+            except HTTPException:
+                continue
+        card = self.get_job(db, user, store_id, job.id)
+        card["swept_count"] = swept
+        return card
 
     def job_creatives(self, db: Session, user: User, store_id: str, job_id: str) -> list[dict]:
         self.ensure_store(db, user, store_id)
@@ -803,6 +909,7 @@ def _job_card(j: CreativeGenerationJob) -> dict:
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "started_at": j.started_at.isoformat() if j.started_at else None,
         "finished_at": j.finished_at.isoformat() if j.finished_at else None,
+        "worker_alive": is_job_running(j.id),
     }
 
 

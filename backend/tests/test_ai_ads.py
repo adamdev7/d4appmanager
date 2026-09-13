@@ -574,3 +574,156 @@ def test_job_card_exposes_progress_fields():
     assert card["progress_step"] == "image"
     assert card["thinking"] == "Rendering"
     assert card["progress_log"][0]["title"].startswith("Generating")
+    assert "worker_alive" in card
+
+
+def _console_job(**kwargs):
+    from app.db.models import CreativeGenerationJob
+
+    job = CreativeGenerationJob(
+        store_id=kwargs.pop("store_id", "s1"),
+        user_id=kwargs.pop("user_id", "u1"),
+        status=kwargs.pop("status", "RUNNING"),
+        product_id=kwargs.pop("product_id", "11"),
+        request_json=kwargs.pop(
+            "request_json", json.dumps({"product_id": "11", "image_count": 1, "video_count": 1})
+        ),
+        total_items=kwargs.pop("total_items", 2),
+        completed_items=kwargs.pop("completed_items", 0),
+    )
+    job.progress_pct = kwargs.pop("progress_pct", 42)
+    for key, value in kwargs.items():
+        setattr(job, key, value)
+    return job
+
+
+def test_cancel_flag_roundtrip():
+    from app.services.ai_ads.job_runner import clear_cancel, is_cancel_requested, request_cancel
+
+    request_cancel("job-x")
+    assert is_cancel_requested("job-x") is True
+    clear_cancel("job-x")
+    assert is_cancel_requested("job-x") is False
+
+
+def test_stop_generation_job_marks_cancelled():
+    from app.services.ai_ads.service import AIAdsService
+
+    svc = AIAdsService()
+    job = _console_job()
+    db = MagicMock()
+    user = SimpleNamespace(id="u1")
+    with (
+        patch.object(svc, "ensure_store", return_value=SimpleNamespace(id="s1", owner_id="u1")),
+        patch("app.services.ai_ads.service.request_cancel") as cancel,
+    ):
+        db.get.return_value = job
+        card = svc.stop_generation_job(db, user, "s1", job.id)
+    cancel.assert_called_once_with(job.id)
+    assert job.status == "CANCELLED"
+    assert card["status"] == "CANCELLED"
+    assert "Stopped" in (job.error_message or "")
+
+
+def test_stop_generation_job_is_idempotent_when_already_halted():
+    from app.services.ai_ads.service import AIAdsService
+
+    svc = AIAdsService()
+    job = _console_job(status="CANCELLED", error_message="already")
+    db = MagicMock()
+    with (
+        patch.object(svc, "ensure_store", return_value=SimpleNamespace(id="s1", owner_id="u1")),
+        patch("app.services.ai_ads.service.request_cancel"),
+    ):
+        db.get.return_value = job
+        card = svc.stop_generation_job(db, SimpleNamespace(id="u1"), "s1", job.id)
+    assert job.status == "CANCELLED"
+    assert card["status"] == "CANCELLED"
+
+
+def test_restart_generation_job_clones_brief():
+    from app.services.ai_ads.service import AIAdsService
+
+    svc = AIAdsService()
+    job = _console_job(status="CANCELLED")
+    db = MagicMock()
+    with (
+        patch.object(svc, "ensure_store", return_value=SimpleNamespace(id="s1", owner_id="u1")),
+        patch.object(svc, "create_generation_job", return_value={"id": "new-job", "status": "QUEUED"}) as create,
+        patch.object(svc, "stop_generation_job"),
+    ):
+        db.get.return_value = job
+        card = svc.restart_generation_job(db, SimpleNamespace(id="u1"), "s1", job.id)
+    create.assert_called_once()
+    body = create.call_args.args[3]
+    assert body["product_id"] == "11"
+    assert card["id"] == "new-job"
+
+
+def test_nudge_generation_job_reenqueues_dead_worker():
+    from app.services.ai_ads.service import AIAdsService
+
+    svc = AIAdsService()
+    job = _console_job(status="RUNNING")
+    db = MagicMock()
+    with (
+        patch.object(svc, "ensure_store", return_value=SimpleNamespace(id="s1", owner_id="u1")),
+        patch("app.services.ai_ads.service.is_job_running", return_value=False),
+        patch("app.services.ai_ads.service.enqueue_generation_job") as enqueue,
+        patch("app.services.ai_ads.service.resolve_openai_api_key", return_value="sk-test"),
+    ):
+        db.get.return_value = job
+        card = svc.nudge_generation_job(db, SimpleNamespace(id="u1"), "s1", job.id)
+    assert job.status == "QUEUED"
+    enqueue.assert_called_once()
+    assert card["nudge"] == "enqueued"
+
+
+def test_nudge_generation_job_rejects_cancelled():
+    from app.services.ai_ads.service import AIAdsService
+
+    svc = AIAdsService()
+    job = _console_job(status="CANCELLED")
+    db = MagicMock()
+    with patch.object(svc, "ensure_store", return_value=SimpleNamespace(id="s1", owner_id="u1")):
+        db.get.return_value = job
+        with pytest.raises(HTTPException) as exc:
+            svc.nudge_generation_job(db, SimpleNamespace(id="u1"), "s1", job.id)
+    assert exc.value.status_code == 400
+
+
+def test_kick_if_stuck_skips_cancelled():
+    from app.services.ai_ads.service import AIAdsService
+
+    svc = AIAdsService()
+    job = SimpleNamespace(id="j1", status="CANCELLED")
+    with patch("app.services.ai_ads.service.enqueue_generation_job") as enqueue:
+        svc._kick_if_stuck(MagicMock(), SimpleNamespace(id="u1"), job)
+    enqueue.assert_not_called()
+
+
+def test_sweep_generation_job_deletes_leftovers_only():
+    from app.services.ai_ads.service import AIAdsService
+
+    svc = AIAdsService()
+    job = _console_job()
+    leftover = SimpleNamespace(id="asset-fail", status="FAILED")
+    db = MagicMock()
+    db.scalars.return_value.all.return_value = [leftover]
+    with (
+        patch.object(svc, "ensure_store", return_value=SimpleNamespace(id="s1", owner_id="u1")),
+        patch.object(svc, "delete_creative", return_value={"ok": True, "deleted_id": leftover.id}) as delete,
+        patch.object(svc, "get_job", return_value={"id": job.id, "creatives": []}),
+    ):
+        db.get.return_value = job
+        card = svc.sweep_generation_job(db, SimpleNamespace(id="u1"), "s1", job.id)
+    delete.assert_called_once()
+    assert card["swept_count"] == 1
+
+
+def test_generation_cancelled_is_not_retryable():
+    from app.services.ai_ads.exceptions import GenerationCancelled
+
+    err = GenerationCancelled()
+    assert err.retryable is False
+    assert err.code == "CANCELLED"

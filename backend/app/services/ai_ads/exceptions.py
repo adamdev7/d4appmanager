@@ -24,6 +24,13 @@ class ImageGenerationError(AIAdsError):
     pass
 
 
+class GenerationCancelled(AIAdsError):
+    """Operator stopped the job from the workplace console."""
+
+    def __init__(self, message: str = "Generation stopped.") -> None:
+        super().__init__(message, retryable=False, code="CANCELLED")
+
+
 class VideoProviderError(AIAdsError):
     pass
 

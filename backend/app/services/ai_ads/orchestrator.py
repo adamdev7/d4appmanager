@@ -31,7 +31,7 @@ from app.services.ai_ads.complete_creative import (
     video_spec_from_concept,
     winning_style_notes,
 )
-from app.services.ai_ads.exceptions import AIAdsError, ImageGenerationError
+from app.services.ai_ads.exceptions import AIAdsError, GenerationCancelled, ImageGenerationError
 from app.services.ai_ads.creative_intelligence import CreativeIntelligenceAnalyzer
 from app.services.ai_ads.creative_planner import CreativePlanner
 from app.services.ai_ads.job_progress import append_job_progress
@@ -150,6 +150,7 @@ class AdsAIOrchestrator:
         )
 
     async def run_generation_job(self, job: CreativeGenerationJob) -> None:
+        self._raise_if_cancelled(job)
         job.status = "RUNNING"
         job.started_at = datetime.now(UTC)
         self._progress(
@@ -271,6 +272,7 @@ class AdsAIOrchestrator:
             total = max(len(paired), 1)
 
             for index, (concept, brief_model) in enumerate(paired):
+                self._raise_if_cancelled(job)
                 kind = (concept.type or "IMAGE").upper()
                 base = 55
                 span = 40
@@ -390,6 +392,8 @@ class AdsAIOrchestrator:
                         detail=f"{job.completed_items} of {job.total_items} creatives ready.",
                         pct=done_pct,
                     )
+                except GenerationCancelled:
+                    raise
                 except ImageGenerationError as exc:
                     asset.status = "FAILED"
                     asset.failure_reason = exc.message
@@ -416,6 +420,7 @@ class AdsAIOrchestrator:
                     )
                 self.db.commit()
 
+            self._raise_if_cancelled(job)
             if job.failed_items and job.completed_items:
                 job.status = "PARTIAL"
             elif job.failed_items and not job.completed_items:
@@ -435,6 +440,8 @@ class AdsAIOrchestrator:
                 ),
                 pct=100 if job.status != "FAILED" else max(job.progress_pct or 0, 90),
             )
+        except GenerationCancelled:
+            return
         except Exception as exc:
             logger.exception("ai_ads generation job failed store_id=%s job=%s", self.store.id, job.id)
             job.status = "FAILED"
@@ -448,6 +455,24 @@ class AdsAIOrchestrator:
                 pct=max(job.progress_pct or 0, 8),
             )
 
+    def _raise_if_cancelled(self, job: CreativeGenerationJob) -> None:
+        from app.services.ai_ads.job_runner import is_cancel_requested
+
+        if not is_cancel_requested(job.id):
+            return
+        job.status = "CANCELLED"
+        job.finished_at = datetime.now(UTC)
+        job.error_message = "Stopped from the workplace console."
+        append_job_progress(
+            job,
+            step="error",
+            title="Generation halted",
+            detail="Operator stopped this run. Ready creatives were kept.",
+            pct=job.progress_pct or 0,
+        )
+        self.db.commit()
+        raise GenerationCancelled(job.error_message)
+
     def _progress(
         self,
         job: CreativeGenerationJob,
@@ -457,6 +482,7 @@ class AdsAIOrchestrator:
         detail: str = "",
         pct: int | None = None,
     ) -> None:
+        self._raise_if_cancelled(job)
         append_job_progress(job, step=step, title=title, detail=detail, pct=pct)
         self.db.commit()
 

@@ -78,10 +78,16 @@ export function GenerationStudio({
         <CardHeader className="mb-3">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <CardTitle>Generation in progress</CardTitle>
-              <CardDescription>
-                {job.progress_message || status} · {job.completed_items ?? 0}/{job.total_items ?? 0}{" "}
-                creatives
+              <CardTitle className="flex flex-wrap items-center gap-x-1.5">
+                <span>Generation</span>
+                <span>in progress</span>
+              </CardTitle>
+              <CardDescription className="flex flex-wrap items-center gap-x-1.5">
+                <span>{job.progress_message || status}</span>
+                <span aria-hidden>·</span>
+                <span>
+                  {job.completed_items ?? 0}/{job.total_items ?? 0} creatives
+                </span>
               </CardDescription>
             </div>
             <Badge variant={failed ? "warning" : "brand"}>{status}</Badge>

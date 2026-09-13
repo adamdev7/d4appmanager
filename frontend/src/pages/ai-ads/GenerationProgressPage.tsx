@@ -5,6 +5,7 @@ import { api, type AIAdsJob } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { PageLoader } from "@/components/ui/Loading";
+import { GenerationControlPanel } from "@/pages/ai-ads/GenerationControlPanel";
 import { GenerationStudio } from "@/pages/ai-ads/GenerationStudio";
 
 function isLive(job: AIAdsJob | null) {
@@ -41,7 +42,10 @@ export function GenerationProgressPage() {
       .finally(() => setLoading(false));
   }, [load, storeId]);
 
-  const liveId = job && ["QUEUED", "RUNNING"].includes(String(job.status)) ? job.job_id || job.id : null;
+  const liveId =
+    job && (["QUEUED", "RUNNING"].includes(String(job.status)) || job.worker_alive)
+      ? job.job_id || job.id
+      : null;
 
   useEffect(() => {
     if (!storeId || !liveId) return;
@@ -86,6 +90,7 @@ export function GenerationProgressPage() {
 
   return (
     <div className="space-y-4">
+      <GenerationControlPanel storeId={storeId} job={job} onChanged={setJob} />
       <GenerationStudio job={job} />
     </div>
   );

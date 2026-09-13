@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { PageLoader } from "@/components/ui/Loading";
+import {
+  GenerationControlPanel,
+  shouldShowWorkplaceConsole,
+} from "@/pages/ai-ads/GenerationControlPanel";
 import { GenerationStudio } from "@/pages/ai-ads/GenerationStudio";
 
 const STYLES = ["UGC", "PRODUCT_DEMO", "LIFESTYLE", "PROBLEM_SOLUTION", "PROMOTIONAL"];
@@ -42,7 +46,7 @@ export function GeneratePage() {
     setAvatars(avs);
     if (!productId && prods[0]) setProductId(prods[0].id);
     const active = jobs.find((j) => j.status === "QUEUED" || j.status === "RUNNING");
-    if (active) setJob(active);
+    setJob(active || jobs[0] || null);
   }, [storeId, productId]);
 
   useEffect(() => {
@@ -56,7 +60,10 @@ export function GeneratePage() {
   }, [load, storeId]);
 
   const running = job && ["QUEUED", "RUNNING"].includes(String(job.status));
-  const liveId = running ? job.job_id || job.id : null;
+  const liveId =
+    job && (["QUEUED", "RUNNING"].includes(String(job.status)) || job.worker_alive)
+      ? job.job_id || job.id
+      : null;
 
   useEffect(() => {
     if (!storeId || !liveId) return;
@@ -104,6 +111,9 @@ export function GeneratePage() {
 
   return (
     <div className="space-y-6">
+      {job && shouldShowWorkplaceConsole(job) && (
+        <GenerationControlPanel storeId={storeId} job={job} onChanged={setJob} />
+      )}
       {job && running && <GenerationStudio job={job} />}
       <Card>
         <CardHeader>

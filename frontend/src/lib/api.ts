@@ -1036,6 +1036,22 @@ export const api = {
       }),
     getGenerationJob: (storeId: string, jobId: string) =>
       request<AIAdsJob>(`/ai-ads/stores/${storeId}/generation-jobs/${jobId}`),
+    stopGenerationJob: (storeId: string, jobId: string) =>
+      request<AIAdsJob>(`/ai-ads/stores/${storeId}/generation-jobs/${jobId}/stop`, {
+        method: "POST",
+      }),
+    restartGenerationJob: (storeId: string, jobId: string) =>
+      request<AIAdsJob>(`/ai-ads/stores/${storeId}/generation-jobs/${jobId}/restart`, {
+        method: "POST",
+      }),
+    nudgeGenerationJob: (storeId: string, jobId: string) =>
+      request<AIAdsJob>(`/ai-ads/stores/${storeId}/generation-jobs/${jobId}/nudge`, {
+        method: "POST",
+      }),
+    sweepGenerationJob: (storeId: string, jobId: string) =>
+      request<AIAdsJob>(`/ai-ads/stores/${storeId}/generation-jobs/${jobId}/sweep`, {
+        method: "POST",
+      }),
     listGenerationJobs: (storeId: string) =>
       request<AIAdsJob[]>(`/ai-ads/stores/${storeId}/generation-jobs`),
     getJobCreatives: (storeId: string, jobId: string) =>
