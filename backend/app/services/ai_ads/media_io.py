@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import logging
+import re
 from io import BytesIO
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -13,7 +15,9 @@ _FETCH_HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
-    "Accept": "image/jpeg,image/png,image/webp,image/avif,image/*,*/*;q=0.8",
+    # Prefer JPEG/PNG. Advertising AVIF makes Shopify CDN return HEIF that stock
+    # Pillow cannot decode even when format=jpg is on the URL.
+    "Accept": "image/jpeg,image/jpg,image/png,image/webp;q=0.8,*/*;q=0.4",
 }
 
 
@@ -86,6 +90,20 @@ def prefer_jpeg_url(url: str) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
+def _shopify_sized_path(url: str, suffix: str) -> str | None:
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    name = path.rsplit("/", 1)[-1]
+    if "." not in name:
+        return None
+    stem, ext = name.rsplit(".", 1)
+    if re.search(r"_\d+x(\d+)?$", stem):
+        return None
+    new_name = f"{stem}_{suffix}.{ext}"
+    new_path = path[: -len(name)] + new_name
+    return urlunparse(parsed._replace(path=new_path))
+
+
 def shopify_still_candidates(url: str) -> list[str]:
     src = normalize_image_url(url)
     if not src:
@@ -104,6 +122,14 @@ def shopify_still_candidates(url: str) -> list[str]:
     q = {k: v for k, v in query.items() if k != "format"}
     q["width"] = "1400"
     out.append(urlunparse(parsed._replace(query=urlencode(q))))
+    for suffix in ("1024x1024", "1400x"):
+        sized = _shopify_sized_path(src, suffix)
+        if sized:
+            out.append(sized)
+            parsed_s = urlparse(sized)
+            qs = dict(parse_qsl(parsed_s.query, keep_blank_values=True))
+            qs["format"] = "jpg"
+            out.append(urlunparse(parsed_s._replace(query=urlencode(qs))))
     seen: set[str] = set()
     uniq: list[str] = []
     for item in out:
@@ -113,36 +139,88 @@ def shopify_still_candidates(url: str) -> list[str]:
     return uniq
 
 
-async def fetch_image_bytes(url: str, *, timeout: float = 30) -> tuple[bytes, str] | None:
+def archive_image_bytes(data: bytes, *, max_side: int = 1400) -> tuple[bytes, str]:
+    """Normalize a catalog still to a Pillow-safe JPEG suitable for reuse."""
+    from PIL import Image, ImageOps
+
+    image = Image.open(BytesIO(data))
+    image.load()
+    image = ImageOps.exif_transpose(image) or image
+    if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+        rgba = image.convert("RGBA")
+        background = Image.new("RGB", rgba.size, (255, 255, 255))
+        background.paste(rgba, mask=rgba.split()[-1])
+        image = background
+    else:
+        image = image.convert("RGB")
+    width, height = image.size
+    longest = max(width, height)
+    if longest > max_side > 0:
+        scale = max_side / float(longest)
+        image = image.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    buf = BytesIO()
+    try:
+        image.save(buf, format="JPEG", quality=90, subsampling=0, optimize=True)
+    except Exception:
+        buf = BytesIO()
+        image.save(buf, format="JPEG", quality=88)
+    return buf.getvalue(), "image/jpeg"
+
+
+def bytes_to_data_url(data: bytes, mime: str | None = None, *, max_side: int = 768) -> str:
+    raw, out_mime = archive_image_bytes(data, max_side=max_side)
+    kind = out_mime or mime or "image/jpeg"
+    return f"data:{kind};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+async def fetch_image_bytes(
+    url: str,
+    *,
+    timeout: float = 30,
+    referer: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> tuple[bytes, str] | None:
     src = normalize_image_url(url)
     if not src.startswith("http"):
         return None
     parsed = urlparse(src)
     headers = dict(_FETCH_HEADERS)
-    if parsed.netloc:
+    if referer:
+        headers["Referer"] = referer
+    elif parsed.netloc:
         headers["Referer"] = f"https://{parsed.netloc}/"
+
+    async def _try(http: httpx.AsyncClient) -> tuple[bytes, str] | None:
+        for candidate in shopify_still_candidates(src):
+            try:
+                resp = await http.get(candidate, headers=headers)
+                resp.raise_for_status()
+            except Exception as exc:
+                logger.info("ai_ads image fetch failed url=%s err=%s", candidate[:160], exc)
+                continue
+            data = resp.content or b""
+            if len(data) < 32:
+                continue
+            if not _can_open_image(data):
+                logger.info(
+                    "ai_ads image undecodable url=%s ctype=%s magic=%s",
+                    candidate[:160],
+                    resp.headers.get("content-type"),
+                    data[:16],
+                )
+                continue
+            mime = sniff_image_mime(data, resp.headers.get("content-type"))
+            return data, mime
+        return None
+
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
-            for candidate in shopify_still_candidates(src):
-                try:
-                    resp = await client.get(candidate)
-                    resp.raise_for_status()
-                except Exception as exc:
-                    logger.info("ai_ads image fetch failed url=%s err=%s", candidate[:160], exc)
-                    continue
-                data = resp.content or b""
-                if len(data) < 32:
-                    continue
-                if not _can_open_image(data):
-                    logger.info(
-                        "ai_ads image undecodable url=%s ctype=%s magic=%s",
-                        candidate[:160],
-                        resp.headers.get("content-type"),
-                        data[:16],
-                    )
-                    continue
-                mime = sniff_image_mime(data, resp.headers.get("content-type"))
-                return data, mime
+        if client is not None:
+            return await _try(client)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as owned:
+            return await _try(owned)
     except Exception as exc:
         logger.info("ai_ads image fetch failed url=%s err=%s", src[:160], exc)
     return None

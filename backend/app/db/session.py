@@ -780,6 +780,25 @@ def _migrate_ai_ads_job_progress_columns() -> None:
                 )
 
 
+def _migrate_ai_ads_catalog_columns() -> None:
+    """Product photo cache timestamps on AI Ads settings."""
+    insp = inspect(engine)
+    table = "store_ai_ads_settings"
+    if table not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns(table)}
+    if "last_product_catalog_at" in cols:
+        return
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN last_product_catalog_at DATETIME"))
+        elif dialect == "postgresql":
+            conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS last_product_catalog_at TIMESTAMPTZ")
+            )
+
+
 def _migrate_ai_ads_owner_columns() -> None:
     """Tie generated creatives (including video specs) to the account that created them."""
     insp = inspect(engine)
@@ -866,3 +885,4 @@ def init_db() -> None:
     _migrate_meta_capi_enrichment_columns()
     _migrate_ai_ads_job_progress_columns()
     _migrate_ai_ads_owner_columns()
+    _migrate_ai_ads_catalog_columns()

@@ -32,6 +32,7 @@ from app.services.ai_ads.job_progress import append_job_progress, parse_job_log
 from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_running, request_cancel
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 from app.services.ai_ads.asset_store import CreativeAssetStore
+from app.services.ai_ads.product_catalog import ShopifyProductCatalog, enqueue_catalog_sync
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.publisher import MetaCreativePublisher
 
@@ -246,9 +247,12 @@ class AIAdsService:
             raise HTTPException(status_code=400, detail="Could not read Shopify credentials") from exc
         client = ShopifyClient(store.shop_domain, token)
         products = await client.list_products(limit=100)
+        catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
         out = []
         for p in products:
+            catalog.upsert_product_row(p)
             ctx = normalize_product(p, shop_domain=store.shop_domain, currency=store.currency)
+            cached_photos = catalog.cached_identity_bytes(ctx.product_id, limit=1)
             out.append(
                 {
                     "id": ctx.product_id,
@@ -257,8 +261,11 @@ class AIAdsService:
                     "currency": ctx.currency,
                     "image": ctx.images[0].src if ctx.images else None,
                     "product_url": ctx.product_url,
+                    "photos_cached": bool(cached_photos),
                 }
             )
+        db.commit()
+        enqueue_catalog_sync(store.id)
         return out
 
     async def sync_meta(self, db: Session, user: User, store_id: str) -> dict:

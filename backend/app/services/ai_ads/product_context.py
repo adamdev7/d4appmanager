@@ -38,12 +38,22 @@ def normalize_product(
                 alt=str(img.get("alt") or title) or None,
                 width=_int(img.get("width")),
                 height=_int(img.get("height")),
+                shopify_id=str(img.get("id") or "").strip() or None,
+                position=_int(img.get("position")),
+                updated_at=str(img.get("updated_at") or "") or None,
             )
         )
     if not images and isinstance(product.get("image"), dict):
         src = str(product["image"].get("src") or "").strip() or None
         if src:
-            images.append(ProductImage(src=src, alt=title or None))
+            feat = product["image"]
+            images.append(
+                ProductImage(
+                    src=src,
+                    alt=title or None,
+                    shopify_id=str(feat.get("id") or "").strip() or None,
+                )
+            )
 
     variants: list[ProductVariant] = []
     prices: list[float] = []

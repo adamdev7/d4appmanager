@@ -745,6 +745,8 @@ def test_product_reference_urls_uses_catalog_photos():
         "https://cdn.example/p2.jpg",
         "https://cdn.example/p3.jpg",
     ]
+    product.brand_context = {"identity_data_urls": ["data:image/jpeg;base64,abc"]}
+    assert product_reference_urls(product) == ["data:image/jpeg;base64,abc"]
 
 
 def test_job_card_exposes_progress_fields():
@@ -1013,6 +1015,15 @@ def test_fit_image_bytes_matches_requested_size():
     variants = shopify_still_candidates("//cdn.shopify.com/s/files/1/x/courage.png?v=9")
     assert variants[0].startswith("https://")
     assert any("format=jpg" in item for item in variants)
+    assert any("_1024x1024" in item for item in variants)
+
+    from app.services.ai_ads.media_io import archive_image_bytes, bytes_to_data_url
+
+    archived, archived_mime = archive_image_bytes(src.getvalue(), max_side=200)
+    assert archived_mime == "image/jpeg"
+    assert Image.open(BytesIO(archived)).size[0] <= 200
+    data_url = bytes_to_data_url(src.getvalue(), max_side=120)
+    assert data_url.startswith("data:image/jpeg;base64,")
     still, still_mime = prepare_video_still([(src.getvalue(), "image/jpeg")], 720, 1280)
     assert still_mime == "image/jpeg"
     assert Image.open(BytesIO(still)).size == (720, 1280)
@@ -1179,3 +1190,125 @@ def test_asset_card_exposes_rendered_video_url():
     assert card["video_url"] == "/uploads/ai-ads/s/vid.mp4"
     assert card["preview_url"] == "/uploads/ai-ads/s/poster.png"
     assert card["has_rendered_media"] is True
+
+
+def test_catalog_fingerprint_changes_when_photos_change():
+    from app.services.ai_ads.product_catalog import image_fingerprint, image_key, images_needing_download
+
+    first = [{"id": 11, "src": "https://cdn.shopify.com/p.jpg?v=1", "updated_at": "2026-01-01"}]
+    second = [{"id": 11, "src": "https://cdn.shopify.com/p.jpg?v=2", "updated_at": "2026-01-02"}]
+    added = first + [{"id": 12, "src": "https://cdn.shopify.com/p2.jpg?v=1"}]
+    assert image_fingerprint(first) != image_fingerprint(second)
+    assert image_fingerprint(first) != image_fingerprint(added)
+    assert image_key(first[0]) == "11"
+
+    wanted = [("11", "https://cdn.shopify.com/p.jpg?v=2"), ("12", "https://cdn.shopify.com/p2.jpg?v=1")]
+    cached = {"11": ("https://cdn.shopify.com/p.jpg?v=1", True)}
+    assert images_needing_download(wanted, cached) == ["11", "12"]
+    unchanged = {"11": ("https://cdn.shopify.com/p.jpg?v=2", True), "12": ("https://cdn.shopify.com/p2.jpg?v=1", True)}
+    assert images_needing_download(wanted, unchanged) == []
+    missing_file = {"11": ("https://cdn.shopify.com/p.jpg?v=2", False)}
+    assert "11" in images_needing_download(wanted[:1], missing_file)
+
+
+def test_catalog_ensure_skips_unchanged_photos(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    from app.services.ai_ads.asset_store import CreativeAssetStore
+    from app.services.ai_ads.product_catalog import ShopifyProductCatalog
+
+    jpeg = tmp_path / "seed.jpg"
+    Image.new("RGB", (80, 80), (12, 80, 40)).save(jpeg, format="JPEG")
+    raw_bytes = jpeg.read_bytes()
+
+    fetches: list[str] = []
+
+    async def fake_fetch(url, **kwargs):
+        fetches.append(url)
+        return raw_bytes, "image/jpeg"
+
+    monkeypatch.setattr("app.services.ai_ads.product_catalog.fetch_image_bytes", fake_fetch)
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def where(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class FakeDB:
+        def __init__(self):
+            self.products = {}
+            self.images = {}
+            self.added = []
+
+        def scalar(self, query):
+            return None
+
+        def scalars(self, query):
+            return FakeQuery(list(self.images.values()))
+
+        def add(self, row):
+            self.added.append(row)
+            image_key = getattr(row, "image_key", None)
+            if image_key:
+                self.images[image_key] = row
+            pid = getattr(row, "shopify_product_id", None)
+            if pid and hasattr(row, "image_fingerprint"):
+                self.products[pid] = row
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def delete(self, row):
+            key = getattr(row, "image_key", None)
+            if key:
+                self.images.pop(key, None)
+
+    store = SimpleNamespace(id="store-1", shop_domain="d4.myshopify.com", currency="USD", name="D4")
+    assets = CreativeAssetStore("store-1")
+    assets.dir = tmp_path / "uploads"
+    assets.dir.mkdir(parents=True, exist_ok=True)
+    catalog = ShopifyProductCatalog(FakeDB(), store, assets)
+
+    original_get = catalog.get_product_row
+    original_listed = catalog.listed_images
+
+    def get_row(product_id):
+        return catalog.db.products.get(str(product_id))
+
+    def listed(product_id):
+        return [img for img in catalog.db.images.values() if img.shopify_product_id == str(product_id)]
+
+    catalog.get_product_row = get_row
+    catalog.listed_images = listed
+
+    product = {
+        "id": 99,
+        "title": "Courage",
+        "handle": "courage",
+        "images": [{"id": 11, "src": "https://cdn.shopify.com/p.jpg?v=1", "position": 1, "width": 800, "height": 800}],
+    }
+    first = asyncio.run(catalog.ensure_product_images(product))
+    assert len(first) == 1
+    assert len(fetches) == 1
+    second = asyncio.run(catalog.ensure_product_images(product))
+    assert len(second) == 1
+    assert len(fetches) == 1
+    product["images"][0]["src"] = "https://cdn.shopify.com/p.jpg?v=2"
+    third = asyncio.run(catalog.ensure_product_images(product))
+    assert len(third) == 1
+    assert len(fetches) == 2
+    _ = original_get, original_listed

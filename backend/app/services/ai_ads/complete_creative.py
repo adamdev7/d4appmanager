@@ -282,7 +282,13 @@ def compact_meta_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def product_reference_urls(product: ProductContext) -> list[str]:
-    """Shopify catalog photos used as identity references for generation."""
+    """Shopify catalog photos used as identity references for generation.
+
+    Prefer locally cached data URLs so OpenAI does not have to fetch the CDN.
+    """
+    cached = list((product.brand_context or {}).get("identity_data_urls") or [])
+    if cached:
+        return [str(url) for url in cached if url][:3]
     return [img.src for img in (product.images or []) if getattr(img, "src", None)][:3]
 
 

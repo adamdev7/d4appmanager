@@ -45,8 +45,9 @@ from app.services.ai_ads.creative_intelligence import CreativeIntelligenceAnalyz
 from app.services.ai_ads.creative_planner import CreativePlanner
 from app.services.ai_ads.job_progress import append_job_progress
 from app.services.ai_ads.meta_importer import MetaCreativeImporter
-from app.services.ai_ads.media_io import fetch_product_images, prepare_video_still
+from app.services.ai_ads.media_io import bytes_to_data_url, prepare_video_still
 from app.services.ai_ads.openai_client import AdsOpenAIClient
+from app.services.ai_ads.product_catalog import ShopifyProductCatalog, image_fingerprint, product_image_payloads
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.prompts import PRODUCT_APPEARANCE
 from app.services.ai_ads.providers.openai_image import OpenAIImageProvider
@@ -97,16 +98,78 @@ class AdsAIOrchestrator:
         return ShopifyClient(self.store.shop_domain, token)
 
     async def load_product(self, product_id: str) -> ProductContext:
+        catalog = ShopifyProductCatalog(self.db, self.store, self.assets)
         client = self.shopify_client()
         if not client:
+            cached = catalog.load_context(product_id)
+            if cached:
+                return cached
             raise AIAdsError("Connect a Shopify store first")
-        raw = await client.get_product(product_id)
+        try:
+            raw = await client.get_product(product_id)
+        except Exception as exc:
+            cached = catalog.load_context(product_id)
+            if cached:
+                logger.warning(
+                    "ai_ads using cached product store_id=%s product=%s err=%s",
+                    self.store.id,
+                    product_id,
+                    exc,
+                )
+                return cached
+            raise AIAdsError("Could not load this Shopify product") from exc
+        catalog.upsert_product_row(raw)
+        self.db.commit()
         return normalize_product(
             raw,
             shop_domain=self.store.shop_domain,
             currency=self.store.currency,
             brand_name=self.store.name,
         )
+
+    async def _prepare_product_identity(
+        self,
+        product: ProductContext,
+        *,
+        refresh: bool = True,
+    ) -> tuple[ProductContext, list[tuple[bytes, str]], str, bool]:
+        """Return identity stills from the local catalog, fetching only if photos changed."""
+        catalog = ShopifyProductCatalog(self.db, self.store, self.assets)
+        client = self.shopify_client()
+        raw: dict[str, Any] | None = None
+        if refresh and client:
+            try:
+                raw = await client.get_product(product.product_id)
+            except Exception as exc:
+                logger.warning(
+                    "ai_ads product refresh skipped store_id=%s err=%s", self.store.id, exc
+                )
+        if raw is not None:
+            catalog.upsert_product_row(raw)
+            self.db.commit()
+            product = normalize_product(
+                raw,
+                shop_domain=self.store.shop_domain,
+                currency=self.store.currency,
+                brand_name=self.store.name,
+            )
+        else:
+            raw = _raw_from_product(product)
+        fingerprint = image_fingerprint(product_image_payloads(raw))
+        used_cache = catalog.cached_ready(product.product_id, fingerprint)
+        jpeg_map: dict[str, str] = {}
+        if not used_cache and client:
+            try:
+                jpeg_map = await client.get_product_jpeg_urls(product.product_id)
+            except Exception:
+                jpeg_map = {}
+        refs = await catalog.ensure_product_images(raw, jpeg_by_id=jpeg_map)
+        catalog.attach_identity(product, refs)
+        cached_lock = catalog.appearance_lock_if_current(product.product_id, fingerprint)
+        if cached_lock:
+            product.brand_context = dict(product.brand_context or {})
+            product.brand_context["appearance_lock"] = cached_lock
+        return product, refs, fingerprint, used_cache
 
     async def sync_meta(self, *, since: str | None = None, until: str | None = None) -> dict[str, Any]:
         meta = self.meta_client()
@@ -201,27 +264,30 @@ class AdsAIOrchestrator:
                 job,
                 step="product",
                 title="Locking the real product look",
-                detail=f"Studying Shopify photos of {product.title} so generated ads show this SKU, not a stand-in.",
+                detail=f"Using stored Shopify photos of {product.title} so generated ads show this SKU, not a stand-in.",
                 pct=12,
             )
-            appearance_lock = await self._lock_product_appearance(product)
-            catalog_urls = product_reference_urls(product)
-            product_refs = await fetch_product_images(catalog_urls, limit=4)
-            if catalog_urls and not product_refs:
-                raise AIAdsError(
-                    f"Could not download Shopify photos for {product.title}. "
-                    "Stopped so Astra does not invent a different product."
-                )
+            product, product_refs, photo_fp, used_photo_cache = await self._prepare_product_identity(
+                product, refresh=False
+            )
             if not product_refs:
                 raise AIAdsError(
                     f"{product.title} has no Shopify photos. Add product images, then generate again."
+                    if not product.images
+                    else (
+                        f"Could not download Shopify photos for {product.title}. "
+                        "Stopped so Astra does not invent a different product."
+                    )
                 )
+            appearance_lock = await self._lock_product_appearance(
+                product, identity_images=product_refs, fingerprint=photo_fp
+            )
             self._progress(
                 job,
                 step="product",
                 title="Product look locked",
                 detail=(
-                    f"Loaded {len(product_refs)} real photo(s) of {product.title}. "
+                    f"{'Reused stored' if used_photo_cache else 'Saved'} {len(product_refs)} real photo(s) of {product.title}. "
                     f"Ads must show this exact item: {appearance_lock[:180] or product.title}."
                 ),
                 pct=14,
@@ -609,12 +675,29 @@ class AdsAIOrchestrator:
         append_job_progress(job, step=step, title=title, detail=detail, pct=pct)
         self.db.commit()
 
-    async def _lock_product_appearance(self, product: ProductContext) -> str:
+    async def _lock_product_appearance(
+        self,
+        product: ProductContext,
+        *,
+        identity_images: list[tuple[bytes, str]] | None = None,
+        fingerprint: str | None = None,
+    ) -> str:
         """Vision-lock the Shopify catalog photos so later renders cannot invent a different SKU."""
+        existing = str((product.brand_context or {}).get("appearance_lock") or "").strip()
+        if existing and fingerprint:
+            return existing
         fallback = product_appearance_notes(product)
-        urls = product_reference_urls(product)
+        images: list[dict[str, str]] = []
+        if identity_images:
+            for raw, mime in identity_images[:3]:
+                if not raw:
+                    continue
+                images.append({"url": bytes_to_data_url(raw, mime)})
+        if not images:
+            images = [{"url": src} for src in product_reference_urls(product)[:3]]
         text = fallback
-        if urls:
+        persisted = False
+        if images:
             try:
                 lock = await self.client.complete_json(
                     system=PRODUCT_APPEARANCE,
@@ -625,14 +708,46 @@ class AdsAIOrchestrator:
                     ),
                     schema=ProductAppearanceLock,
                     model=settings.resolved_ai_analysis_model,
-                    images=[{"url": src} for src in urls[:3]],
+                    images=images,
                     operation="product_appearance",
                 )
-                text = format_appearance_lock(lock) or fallback
+                locked = format_appearance_lock(lock)
+                if locked:
+                    text = locked
+                    persisted = True
             except Exception as exc:
                 logger.warning("ai_ads product appearance lock failed store_id=%s err=%s", self.store.id, exc)
                 text = fallback
         product.brand_context = dict(product.brand_context or {})
         product.brand_context["appearance_lock"] = text
+        if fingerprint and persisted:
+            ShopifyProductCatalog(self.db, self.store, self.assets).save_appearance_lock(
+                product.product_id, fingerprint, text
+            )
         return text
+
+
+def _raw_from_product(product: ProductContext) -> dict[str, Any]:
+    handle = ""
+    if product.product_url:
+        handle = str(product.product_url).rstrip("/").rsplit("/", 1)[-1]
+    return {
+        "id": product.product_id,
+        "title": product.title,
+        "body_html": product.description,
+        "handle": handle,
+        "images": [
+            {
+                "id": img.shopify_id,
+                "src": img.src,
+                "alt": img.alt,
+                "width": img.width,
+                "height": img.height,
+                "position": img.position if img.position is not None else index,
+                "updated_at": img.updated_at,
+            }
+            for index, img in enumerate(product.images or [])
+            if img.src
+        ],
+    }
 

@@ -698,6 +698,65 @@ class StoreAIAdsSettings(Base):
     last_analyze_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_weekly_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_weekly_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_product_catalog_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ShopifyCatalogProduct(Base):
+    """Cached Shopify product used by AI Ads. Photos live on disk; this row tracks freshness."""
+
+    __tablename__ = "ai_ads_shopify_products"
+    __table_args__ = (
+        UniqueConstraint("store_id", "shopify_product_id", name="uq_ai_ads_shopify_product"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    shopify_product_id: Mapped[str] = mapped_column(String(64), index=True)
+    title: Mapped[str] = mapped_column(String(512), default="")
+    handle: Mapped[str] = mapped_column(String(255), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    product_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    images_json: Mapped[str] = mapped_column(Text, default="[]")
+    image_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    appearance_lock: Mapped[str] = mapped_column(Text, default="")
+    appearance_lock_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_images_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ShopifyCatalogImage(Base):
+    """One Shopify catalog photo stored locally for AI Ads identity locking."""
+
+    __tablename__ = "ai_ads_shopify_product_images"
+    __table_args__ = (
+        UniqueConstraint("store_id", "shopify_product_id", "image_key", name="uq_ai_ads_shopify_product_image"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    shopify_product_id: Mapped[str] = mapped_column(String(64), index=True)
+    image_key: Mapped[str] = mapped_column(String(64))
+    shopify_image_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    alt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    local_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    mime_type: Mapped[str] = mapped_column(String(64), default="image/jpeg")
+    content_hash: Mapped[str] = mapped_column(String(64), default="")
+    byte_size: Mapped[int] = mapped_column(Integer, default=0)
+    last_fetched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

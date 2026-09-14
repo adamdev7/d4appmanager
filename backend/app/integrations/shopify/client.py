@@ -462,6 +462,60 @@ class ShopifyClient:
             resp.raise_for_status()
             return resp.json()["product"]
 
+    async def get_product_jpeg_urls(self, product_id: str | int) -> dict[str, str]:
+        """Map numeric Shopify image ids to JPEG CDN URLs via Admin GraphQL transforms."""
+        if not self.access_token:
+            return {}
+        pid = str(product_id).strip()
+        if pid.startswith("gid://"):
+            pid = pid.rsplit("/", 1)[-1]
+        query = """
+        query ProductJpeg($id: ID!) {
+          product(id: $id) {
+            images(first: 12) {
+              nodes {
+                id
+                url(transform: { maxWidth: 1400, preferredContentType: JPG })
+              }
+            }
+          }
+        }
+        """
+        headers = {
+            "X-Shopify-Access-Token": self.access_token,
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=45) as client:
+                resp = await client.post(
+                    f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
+                    headers=headers,
+                    json={
+                        "query": query,
+                        "variables": {"id": f"gid://shopify/Product/{pid}"},
+                    },
+                )
+                resp.raise_for_status()
+                nodes = (
+                    (((resp.json().get("data") or {}).get("product") or {}).get("images") or {}).get("nodes")
+                    or []
+                )
+        except Exception as exc:
+            logger.info("shopify jpeg transform failed product=%s err=%s", pid, exc)
+            return {}
+        out: dict[str, str] = {}
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            gid = str(node.get("id") or "")
+            url = str(node.get("url") or "").strip()
+            if not url:
+                continue
+            numeric = gid.rsplit("/", 1)[-1] if gid else ""
+            if numeric:
+                out[numeric] = url
+        return out
+
     async def list_products(self, *, limit: int = 250) -> list[dict]:
         """Fetch products with variants from Shopify."""
         if not self.access_token:

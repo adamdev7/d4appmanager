@@ -5,7 +5,6 @@ import logging
 from app.config import settings
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.exceptions import ImageGenerationError
-from app.services.ai_ads.media_io import fetch_product_images
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.providers.image_provider import ImageGenerationProvider
 from app.services.ai_ads.schemas import ImageGenerationRequest, ImageGenerationResult
@@ -62,8 +61,6 @@ class OpenAIImageProvider(ImageGenerationProvider):
             except ValueError:
                 pass
         references = list(identity_images or [])
-        if not references:
-            references = await fetch_product_images(request.reference_image_urls)
         if not references:
             raise ImageGenerationError(
                 "Shopify product photos could not be loaded. Stopped so we do not invent a different product."

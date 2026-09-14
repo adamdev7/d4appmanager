@@ -10,6 +10,9 @@ class ProductImage(BaseModel):
     alt: str | None = None
     width: int | None = None
     height: int | None = None
+    shopify_id: str | None = None
+    position: int | None = None
+    updated_at: str | None = None
 
 
 class ProductVariant(BaseModel):

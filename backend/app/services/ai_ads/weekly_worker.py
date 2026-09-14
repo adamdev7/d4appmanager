@@ -14,8 +14,10 @@ from app.core.openai_credentials import resolve_openai_api_key
 from app.db.models import CreativeGenerationJob, Store, StoreAIAdsSettings, User
 from app.db.session import SessionLocal
 from app.services.ai_ads.complete_creative import resolve_generation_counts
+from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.job_runner import enqueue_generation_job
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
+from app.services.ai_ads.product_catalog import ShopifyProductCatalog
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +94,8 @@ async def _tick() -> None:
             client = orch.shopify_client()
             if client:
                 try:
-                    products = await client.list_products(limit=1)
+                    catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
+                    products = await catalog.sync_store(client)
                     if products:
                         product_id = str(products[0].get("id"))
                 except Exception:
