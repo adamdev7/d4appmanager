@@ -450,7 +450,7 @@ class AdsOpenAIClient:
             "size": size,
             "seconds": str(seconds),
         }
-        files = None
+        extra_files = None
         if input_reference and input_reference[0]:
             raw, mime = input_reference
             fitted = fit_references([(raw, mime)], size, fmt="JPEG")
@@ -458,23 +458,30 @@ class AdsOpenAIClient:
                 raw, mime = fitted[0]
                 mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
                 ext = "png" if "png" in mime else "jpg"
-                files = {"input_reference": (f"product.{ext}", raw, mime)}
+                extra_files = {"input_reference": (f"product.{ext}", raw, mime)}
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form, files=files)
+            resp = await client.post(
+                OPENAI_VIDEOS_URL,
+                headers=headers,
+                files=_multipart_form(form, extra_files),
+            )
             body = (resp.text or "").lower()
             size_mismatch = (
                 "inpaint" in body
                 or "must match" in body
                 or "width and height" in body
-                or "input_reference" in body
             )
-            if resp.status_code >= 400 and files and size_mismatch:
+            if resp.status_code >= 400 and extra_files and size_mismatch:
                 logger.warning(
                     "ai_ads video input_reference rejected store_id=%s err=%s",
                     self._store_id,
                     (resp.text or "")[:200],
                 )
-                resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form)
+                resp = await client.post(
+                    OPENAI_VIDEOS_URL,
+                    headers=headers,
+                    files=_multipart_form(form),
+                )
         latency = int((time.perf_counter() - started) * 1000)
         if resp.status_code >= 400:
             self._log(
@@ -537,6 +544,19 @@ def _identity_files(references: list[tuple[bytes, str]], field: str) -> list[tup
         ext = "png" if "png" in mime else "jpg"
         files.append((field, (f"product-{i}.{ext}", raw, mime)))
     return files
+
+
+def _multipart_form(
+    form: dict[str, str],
+    files: dict[str, tuple[str, bytes, str]] | list[tuple[str, Any]] | None = None,
+) -> list[tuple[str, Any]]:
+    """Always multipart/form-data. `data=` alone is urlencoded, which OpenAI rejects."""
+    parts: list[tuple[str, Any]] = [(key, (None, str(value))) for key, value in form.items()]
+    if isinstance(files, dict):
+        parts.extend((key, value) for key, value in files.items())
+    elif files:
+        parts.extend(files)
+    return parts
 
 
 def _should_fallback_square(body: str) -> bool:

@@ -1017,6 +1017,50 @@ def test_video_provider_rejects_non_mp4_download():
         asyncio.run(provider.generate_video({"prompt": "product hero", "format": "9:16", "duration": 8}))
 
 
+def test_create_video_sends_multipart_even_without_reference():
+    import asyncio
+
+    from app.services.ai_ads.openai_client import AdsOpenAIClient
+
+    captured: dict = {}
+
+    class FakeResp:
+        status_code = 200
+        text = '{"id":"v1","status":"queued"}'
+        content = b'{"id":"v1","status":"queued"}'
+
+        def json(self):
+            return {"id": "v1", "status": "queued"}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, headers=None, data=None, files=None, json=None):
+            captured["url"] = url
+            captured["data"] = data
+            captured["files"] = files
+            captured["json"] = json
+            return FakeResp()
+
+    with patch("app.services.ai_ads.openai_client.httpx.AsyncClient", FakeClient):
+        client = AdsOpenAIClient("sk-test", store_id="s")
+        out = asyncio.run(client.create_video(prompt="Courage Bracelet on a wrist", model="sora-2"))
+    assert out["id"] == "v1"
+    assert captured["data"] is None
+    assert captured["json"] is None
+    assert captured["files"]
+    fields = {name: value for name, value in captured["files"]}
+    assert fields["model"] == (None, "sora-2")
+    assert fields["size"] == (None, "720x1280")
+
+
 def test_openai_video_provider_saves_mp4():
     import asyncio
 
