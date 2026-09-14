@@ -704,6 +704,9 @@ def test_compact_meta_item_includes_offer_look():
     assert "silver clasp" in item["product_in_ad"]
     notes = winning_style_notes([item])
     assert "lifestyle wrist close-up" in notes
+    motion = winning_style_notes([item], sku_safe=True)
+    assert "silver clasp" not in motion
+    assert "window light indoor" in motion
 
 
 def test_appearance_lock_formats_vision_output():
@@ -950,7 +953,9 @@ def test_build_video_prompt_is_product_faithful():
     )
     prompt = build_video_prompt(product=product, spec=spec)
     assert "Courage Bracelet" in prompt
-    assert "Meta" in prompt
+    assert "first frame" in prompt.lower()
+    assert "do not replace" in prompt.lower()
+    assert "identity only" not in prompt.lower()
 
 
 def test_image_provider_refuses_to_invent_without_product_photos():
@@ -989,9 +994,10 @@ def test_fit_image_bytes_matches_requested_size():
     fitted = Image.open(BytesIO(out))
     assert fitted.size == (1024, 1536)
 
-    video, video_mime = fit_image_bytes(src.getvalue(), 720, 1280)
+    video, video_mime = fit_image_bytes(src.getvalue(), 720, 1280, mode="contain")
     assert video_mime == "image/jpeg"
-    assert Image.open(BytesIO(video)).size == (720, 1280)
+    letterboxed = Image.open(BytesIO(video))
+    assert letterboxed.size == (720, 1280)
 
     refs = fit_references([(src.getvalue(), "image/jpeg")], "1024x1536", fmt="PNG")
     assert len(refs) == 1
@@ -1013,8 +1019,14 @@ def test_video_provider_rejects_non_mp4_download():
         download_video_bytes=AsyncMock(return_value=b'{"status":"ok"}'),
     )
     provider = OpenAIVideoProvider(client, MagicMock(), model="sora-2")
+    spec = {
+        "prompt": "product hero",
+        "format": "9:16",
+        "duration": 8,
+        "input_reference": (b"sku-bytes", "image/jpeg"),
+    }
     with pytest.raises(VideoProviderError, match="playable MP4"):
-        asyncio.run(provider.generate_video({"prompt": "product hero", "format": "9:16", "duration": 8}))
+        asyncio.run(provider.generate_video(spec))
 
 
 def test_create_video_sends_multipart_even_without_reference():
@@ -1060,6 +1072,37 @@ def test_create_video_sends_multipart_even_without_reference():
     assert fields["model"] == (None, "sora-2")
     assert fields["size"] == (None, "720x1280")
 
+    from io import BytesIO
+
+    from PIL import Image
+
+    img = Image.new("RGB", (400, 400), (180, 40, 40))
+    buf = BytesIO()
+    img.save(buf, format="JPEG")
+    captured.clear()
+    with patch("app.services.ai_ads.openai_client.httpx.AsyncClient", FakeClient):
+        out = asyncio.run(
+            client.create_video(
+                prompt="Keep this Courage Bracelet on screen",
+                model="sora-2",
+                input_reference=(buf.getvalue(), "image/jpeg"),
+            )
+        )
+    assert out["id"] == "v1"
+    names = [name for name, _ in captured["files"]]
+    assert "input_reference" in names
+
+
+def test_video_provider_requires_product_photo():
+    import asyncio
+
+    from app.services.ai_ads.exceptions import VideoProviderError
+    from app.services.ai_ads.providers.openai_video import OpenAIVideoProvider
+
+    provider = OpenAIVideoProvider(SimpleNamespace(), MagicMock(), model="sora-2")
+    with pytest.raises(VideoProviderError, match="product photo"):
+        asyncio.run(provider.generate_video({"prompt": "product hero", "format": "9:16", "duration": 8}))
+
 
 def test_openai_video_provider_saves_mp4():
     import asyncio
@@ -1077,7 +1120,16 @@ def test_openai_video_provider_saves_mp4():
         "public_url": "/uploads/ai-ads/s/vid.mp4",
     }
     provider = OpenAIVideoProvider(client, store, model="sora-2")
-    result = asyncio.run(provider.generate_video({"prompt": "product hero", "format": "9:16", "duration": 8}))
+    result = asyncio.run(
+        provider.generate_video(
+            {
+                "prompt": "product hero",
+                "format": "9:16",
+                "duration": 8,
+                "input_reference": (b"sku-bytes", "image/jpeg"),
+            }
+        )
+    )
     assert result["status"] == "completed"
     assert result["local_path"].endswith(".mp4")
     client.create_video.assert_awaited()

@@ -76,26 +76,46 @@ def parse_wxh(size: str | None) -> tuple[int, int] | None:
     return width, height
 
 
+def _pad_to_size(image, width: int, height: int):
+    from PIL import Image, ImageOps
+
+    rgb = image.convert("RGB")
+    contained = ImageOps.contain(rgb, (width, height), method=Image.Resampling.LANCZOS)
+    fill = rgb.getpixel((0, 0))
+    if not isinstance(fill, tuple) or len(fill) < 3:
+        fill = (255, 255, 255)
+    canvas = Image.new("RGB", (width, height), fill[:3])
+    canvas.paste(contained, ((width - contained.width) // 2, (height - contained.height) // 2))
+    return canvas
+
+
 def fit_image_bytes(
     data: bytes,
     width: int,
     height: int,
     *,
     fmt: str = "JPEG",
+    mode: str = "cover",
 ) -> tuple[bytes, str]:
-    """Center-crop and resize so a still matches an API size exactly."""
+    """Resize so a still matches an API size exactly.
+
+    cover: crop to fill (image edits). contain: letterbox so the whole SKU stays visible (video).
+    """
     from PIL import Image, ImageOps
 
     image = Image.open(BytesIO(data))
     image = ImageOps.exif_transpose(image) or image
-    image = ImageOps.fit(
-        image.convert("RGB"),
-        (width, height),
-        method=Image.Resampling.LANCZOS,
-        centering=(0.5, 0.5),
-    )
+    if (mode or "cover").lower() == "contain":
+        image = _pad_to_size(image, width, height)
+    else:
+        image = ImageOps.fit(
+            image.convert("RGB"),
+            (width, height),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
     if image.size != (width, height):
-        canvas = Image.new("RGB", (width, height), (0, 0, 0))
+        canvas = Image.new("RGB", (width, height), (255, 255, 255))
         canvas.paste(image, (0, 0))
         image = canvas
     buf = BytesIO()
@@ -116,6 +136,7 @@ def fit_references(
     size: str | None,
     *,
     fmt: str = "PNG",
+    mode: str = "cover",
 ) -> list[tuple[bytes, str]]:
     dims = parse_wxh(size)
     out: list[tuple[bytes, str]] = []
@@ -125,7 +146,7 @@ def fit_references(
         if not dims:
             continue
         try:
-            out.append(fit_image_bytes(raw, dims[0], dims[1], fmt=fmt))
+            out.append(fit_image_bytes(raw, dims[0], dims[1], fmt=fmt, mode=mode))
         except Exception as exc:
             logger.info("ai_ads identity fit skipped err=%s", exc)
     return out

@@ -61,7 +61,7 @@ class OpenAIVideoProvider(VideoGenerationProvider):
         seconds = clamp_video_seconds(spec.get("duration") or spec.get("seconds"))
         reference = spec.get("input_reference")
         if not (isinstance(reference, tuple) and reference and reference[0]):
-            reference = None
+            raise VideoProviderError("Video generation needs a product photo as the first frame")
         try:
             created = await self._client.create_video(
                 prompt=prompt,

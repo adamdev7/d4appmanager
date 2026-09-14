@@ -316,10 +316,11 @@ def format_appearance_lock(lock: Any) -> str:
     return " ".join(p for p in parts if p).strip()[:700]
 
 
-def winning_style_notes(winners: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for item in winners[:6]:
-        for key in (
+def winning_style_notes(winners: list[dict[str, Any]], *, sku_safe: bool = False) -> str:
+    keys = (
+        ("setting", "visual_hook", "style", "composition", "hook_type")
+        if sku_safe
+        else (
             "offer_look",
             "product_in_ad",
             "setting",
@@ -328,7 +329,11 @@ def winning_style_notes(winners: list[dict[str, Any]]) -> str:
             "composition",
             "hook_type",
             "headline",
-        ):
+        )
+    )
+    parts: list[str] = []
+    for item in winners[:6]:
+        for key in keys:
             value = item.get(key)
             if value and str(value) not in parts:
                 parts.append(str(value)[:140])
@@ -420,16 +425,19 @@ def build_video_prompt(
     recipe = video_story_recipe(variation_index, styles)
     appearance = (product.brand_context or {}).get("appearance_lock") or product_appearance_notes(product)
     parts = [
-        f"Brand-new vertical Meta Reels / Stories advertisement. Product is {product.title}.",
+        f"Image-to-video ad. The attached input_reference is the FIRST FRAME and the EXACT {product.title}.",
+        f"Keep this same physical product in every frame: {appearance}.",
+        "Do not replace, restyle, or invent a different ring, bracelet, necklace, or generic jewelry. "
+        "Colors, materials, clasp, beads, leather, metal, and geometry must match the reference image.",
         f"Assigned style: {style}. {play['promise']} Forbidden: {play['forbid']}",
-        f"IDENTITY LOCK: show this exact SKU, not a different piece of jewelry: {appearance}.",
-        f"This is unique video {variation_index + 1} of {max(variation_count, 1)}. Required storyboard: {recipe}",
-        "The input reference image is the real product identity only. New shots, new setting, new camera.",
-        "Do not recreate an existing Meta ad or catalog clip.",
+        f"This is unique video {variation_index + 1} of {max(variation_count, 1)}. Motion recipe: {recipe}",
+        "Camera may move around THIS item and the setting may change after the opening beat, "
+        "but the SKU on screen must stay the one in the reference.",
+        "Do not recreate an existing Meta ad. Do not invent a different product to match a winning ad's look.",
         f"Hook: {spec.hook or product.title}.",
-        f"Shot list: {shot_list}.",
-        f"Keep {product.title} recognizable. Smooth camera, no fake UI, no watermarks.",
-        f"End on a clear product shot and the call to action {(spec.cta or 'SHOP NOW').replace('_', ' ')}.",
+        f"Shot list featuring {product.title} only: {shot_list}.",
+        "Keep the product clearly visible most of the time. Smooth camera, no fake UI, no watermarks.",
+        f"End on a clear shot of this same {product.title} and the call to action {(spec.cta or 'SHOP NOW').replace('_', ' ')}.",
     ]
     desc = (product.description or "").strip()
     if desc:

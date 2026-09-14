@@ -287,6 +287,7 @@ class AdsAIOrchestrator:
             brief = analyzer.campaign_brief(self.db)
             brief["winning_images"] = analyzer.winning_preview_images(self.db, limit=2)
             winning_notes = winning_style_notes(brief.get("winning") or [])
+            winning_motion = winning_style_notes(brief.get("winning") or [], sku_safe=True)
             winners = brief.get("winning") or []
             losers = brief.get("losing") or []
             learn_detail = (
@@ -413,35 +414,35 @@ class AdsAIOrchestrator:
                             product=product,
                             spec=spec,
                             brand_style=brand_style,
-                            winning_notes=winning_notes,
+                            winning_notes=winning_motion,
                             variation_index=video_slot,
                             variation_count=max(video_total, 1),
                             styles=styles,
                         )
                         payload = spec.model_dump()
                         payload["prompt"] = prompt
-                        # Do not run /images/edits for a first frame. That call is what
-                        # OpenAI rejects with "Inpaint image must match the requested
-                        # width and height". Sora only needs one still at the video size.
+                        # Sora uses input_reference as the first frame. Letterbox the real
+                        # Shopify photo so the whole SKU stays visible at 720x1280.
                         _, video_w, video_h = resolve_video_size("9:16")
-                        identity_still: tuple[bytes, str] | None = None
-                        if product_refs:
-                            try:
-                                identity_still = fit_image_bytes(product_refs[0][0], video_w, video_h)
-                            except Exception as exc:
-                                logger.warning(
-                                    "ai_ads video identity fit failed store_id=%s err=%s",
-                                    self.store.id,
-                                    str(exc)[:220],
-                                )
-                        if identity_still:
-                            payload["input_reference"] = identity_still
-                            poster = self.assets.save_bytes(
-                                identity_still[0],
-                                mime_type=identity_still[1],
-                                prefix="poster",
+                        if not product_refs:
+                            raise VideoProviderError(
+                                f"No Shopify photo of {product.title} to lock into the video."
                             )
-                            asset.preview_url = poster["public_url"]
+                        try:
+                            identity_still = fit_image_bytes(
+                                product_refs[0][0], video_w, video_h, mode="contain"
+                            )
+                        except Exception as exc:
+                            raise VideoProviderError(
+                                f"Could not prepare the {product.title} photo for video."
+                            ) from exc
+                        payload["input_reference"] = identity_still
+                        poster = self.assets.save_bytes(
+                            identity_still[0],
+                            mime_type=identity_still[1],
+                            prefix="poster",
+                        )
+                        asset.preview_url = poster["public_url"]
                         rendered = await video_provider.generate_video(
                             payload,
                             cancel_check=lambda: self._raise_if_cancelled(job),

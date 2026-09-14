@@ -453,12 +453,17 @@ class AdsOpenAIClient:
         extra_files = None
         if input_reference and input_reference[0]:
             raw, mime = input_reference
-            fitted = fit_references([(raw, mime)], size, fmt="JPEG")
+            fitted = fit_references([(raw, mime)], size, fmt="JPEG", mode="contain")
             if fitted:
                 raw, mime = fitted[0]
                 mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
                 ext = "png" if "png" in mime else "jpg"
                 extra_files = {"input_reference": (f"product.{ext}", raw, mime)}
+        if input_reference and input_reference[0] and not extra_files:
+            raise OpenAIServiceError(
+                user_message="Could not attach the product photo to the video request.",
+                stop_autopilot=False,
+            )
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 OPENAI_VIDEOS_URL,
@@ -471,17 +476,21 @@ class AdsOpenAIClient:
                 or "must match" in body
                 or "width and height" in body
             )
-            if resp.status_code >= 400 and extra_files and size_mismatch:
-                logger.warning(
-                    "ai_ads video input_reference rejected store_id=%s err=%s",
-                    self._store_id,
-                    (resp.text or "")[:200],
-                )
-                resp = await client.post(
-                    OPENAI_VIDEOS_URL,
-                    headers=headers,
-                    files=_multipart_form(form),
-                )
+            if resp.status_code >= 400 and extra_files and size_mismatch and input_reference:
+                png = fit_references([input_reference], size, fmt="PNG", mode="contain")
+                if png:
+                    raw, mime = png[0]
+                    extra_files = {"input_reference": ("product.png", raw, "image/png")}
+                    logger.warning(
+                        "ai_ads video input_reference retry png store_id=%s err=%s",
+                        self._store_id,
+                        (resp.text or "")[:200],
+                    )
+                    resp = await client.post(
+                        OPENAI_VIDEOS_URL,
+                        headers=headers,
+                        files=_multipart_form(form, extra_files),
+                    )
         latency = int((time.perf_counter() - started) * 1000)
         if resp.status_code >= 400:
             self._log(
