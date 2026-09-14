@@ -256,8 +256,11 @@ class AdsOpenAIClient:
         size: str = "1024x1024",
         operation: str = "image_generate",
         references: list[tuple[bytes, str]] | None = None,
+        edit: bool = False,
     ) -> tuple[bytes, str]:
-        if references:
+        # Ad creatives must be generated from scratch. Passing a catalog/Meta photo
+        # into /images/edits returns that same picture with tiny changes.
+        if edit and references:
             try:
                 return await self._image_edits(
                     prompt=prompt,

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.models import AIAdStrategy, BrandAvatar, CreativeConcept, MetaCreative
+from app.services.ai_ads.complete_creative import compact_product, diversify_concepts, product_reference_urls
 from app.services.ai_ads.exceptions import InvalidAIOutput
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.prompts import CREATIVE_CONCEPT, GENERATION_PLAN
@@ -121,30 +122,9 @@ class CreativePlanner:
         while len(models) < count:
             i = len(models)
             bucket = buckets[i] if i < len(buckets) else "exploration"
-            models.append(
-                ConceptBatch.model_validate(
-                    {
-                        "concepts": [
-                            {
-                                "type": media_type,
-                                "concept_name": f"{product.title} {bucket.replace('_', ' ')} {i + 1}",
-                                "angle": bucket,
-                                "hook": product.title,
-                                "headline": product.title,
-                                "primary_text": (product.description or product.title)[:200],
-                                "cta": "SHOP_NOW",
-                                "visual_direction": "Show the actual product clearly.",
-                                "audience": audience,
-                                "objective": objective,
-                                "rationale": "Fallback concept after AI validation failure.",
-                                "source_creative_ids": report.winning_creatives[:2],
-                                "expected_strength": "unknown",
-                                "portfolio_bucket": bucket,
-                            }
-                        ]
-                    }
-                ).concepts[0]
-            )
+            models.append(_fallback_concept(product, media_type, bucket, audience, objective, {"winning_ids": report.winning_creatives}, i))
+
+        models = diversify_concepts(models[:count], product, media_type=media_type)
 
         rows: list[CreativeConcept] = []
         for i, concept in enumerate(models[:count]):
@@ -196,8 +176,6 @@ class CreativePlanner:
         user_id: str | None = None,
     ) -> tuple[AIAdStrategy, list[tuple[CreativeConcept, Any]]]:
         """One model call: strategy + complete image and video ads."""
-        from app.services.ai_ads.complete_creative import compact_product
-
         total = image_count + video_count
         image_buckets = allocate_portfolio(image_count, mix)
         video_buckets = allocate_portfolio(video_count, mix)
@@ -222,10 +200,13 @@ class CreativePlanner:
                 "description": avatar.description,
                 "usage_rules": avatar.usage_rules,
             }
+        catalog = [{"url": src} for src in product_reference_urls(product)[:2]]
         user = (
-            f"Return {image_count} IMAGE and {video_count} VIDEO complete ads. "
-            "Improve styles associated with stronger Meta ads. "
-            f"Assign IMAGE portfolio_bucket from image_portfolio_buckets in order, VIDEO from video_portfolio_buckets.\n\n"
+            f"Return {image_count} IMAGE and {video_count} VIDEO brand-new ads. "
+            "Copy is not enough — each IMAGE needs a unique full-frame scene, each VIDEO a unique storyboard. "
+            "Catalog photos (if attached) are only for product appearance. "
+            "Do NOT recreate those photos or existing Meta ads. "
+            "Assign IMAGE portfolio_bucket from image_portfolio_buckets in order, VIDEO from video_portfolio_buckets.\n\n"
             f"{json.dumps(payload, default=str)[:12000]}"
         )
         try:
@@ -234,6 +215,7 @@ class CreativePlanner:
                 user=user,
                 schema=GenerationPlan,
                 model=self.model,
+                images=catalog or None,
                 operation="generation_plan",
             )
             assert isinstance(plan, GenerationPlan)
@@ -272,6 +254,8 @@ class CreativePlanner:
             concept.type = "VIDEO"
             if i < len(video_buckets):
                 concept.portfolio_bucket = video_buckets[i]
+        images = diversify_concepts(images, product, media_type="IMAGE")
+        videos = diversify_concepts(videos, product, media_type="VIDEO")
 
         strategy_row = AIAdStrategy(
             store_id=self.store_id,
@@ -341,7 +325,17 @@ def _fallback_concept(
     brief: dict[str, Any],
     index: int,
 ) -> Any:
+    from app.services.ai_ads.complete_creative import image_shot_recipe, video_story_recipe
+
     winners = brief.get("winning_ids") or []
+    if (media_type or "").upper() == "VIDEO":
+        recipe = video_story_recipe(index)
+        visual = f"{recipe} Product is {product.title}."
+        image_prompt = ""
+    else:
+        recipe = image_shot_recipe(index)
+        visual = recipe
+        image_prompt = f"{recipe} Photorealistic new advertisement featuring {product.title}."
     return CreativeConceptModel(
         type=media_type,
         concept_name=f"{product.title} {bucket.replace('_', ' ')} {index + 1}",
@@ -350,8 +344,8 @@ def _fallback_concept(
         headline=product.title,
         primary_text=(product.description or product.title)[:200],
         cta="SHOP_NOW",
-        visual_direction=f"Show the actual product clearly: {product.title}.",
-        image_prompt=f"Photorealistic advertising photo of {product.title}, product hero, clean background.",
+        visual_direction=visual,
+        image_prompt=image_prompt,
         audience=audience,
         objective=objective,
         rationale="Fallback complete concept after AI validation failure.",

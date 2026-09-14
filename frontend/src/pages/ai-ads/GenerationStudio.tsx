@@ -16,7 +16,7 @@ const STAGES = [
   { id: "start", label: "Starting", match: ["queued", "start"] },
   { id: "product", label: "Loading product", match: ["product"] },
   { id: "learn", label: "Analyzing Meta ads", match: ["sync", "learn"] },
-  { id: "plan", label: "Writing ads & scenes", match: ["plan"] },
+  { id: "plan", label: "Planning new creatives", match: ["plan"] },
   { id: "render", label: "Generating images & video", match: ["image", "video"] },
   { id: "done", label: "Finishing", match: ["done", "error"] },
 ] as const;

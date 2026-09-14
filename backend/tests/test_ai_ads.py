@@ -438,10 +438,113 @@ def test_complete_image_prompt_includes_product_and_winners():
         visual_direction="Close-up on clasp",
         winning_notes="ugc close-up",
         aspect_ratio="4:5",
+        variation_index=0,
+        variation_count=5,
     )
     assert "Courage Bracelet" in prompt
     assert "ugc close-up" in prompt
     assert "4:5" in prompt
+    assert "brand-new advertisement" in prompt.lower() or "new advertisement" in prompt.lower()
+    assert "do not retouch" in prompt.lower()
+    assert "unique still 1 of 5" in prompt.lower()
+
+
+def test_diversify_concepts_makes_five_distinct_image_prompts():
+    from app.services.ai_ads.complete_creative import diversify_concepts, image_shot_recipe
+    from app.services.ai_ads.schemas import CreativeConceptModel, ProductContext
+
+    product = ProductContext(product_id="1", title="Courage Bracelet")
+    clones = [
+        CreativeConceptModel(
+            concept_name=f"Clone {i}",
+            type="IMAGE",
+            visual_direction="Show the actual product clearly.",
+            image_prompt="Photorealistic advertising photo of Courage Bracelet, product hero, clean background.",
+        )
+        for i in range(5)
+    ]
+    out = diversify_concepts(clones, product, media_type="IMAGE")
+    prompts = [c.image_prompt for c in out]
+    assert len(prompts) == 5
+    assert len(set(prompts)) == 5
+    assert image_shot_recipe(0) in prompts[0]
+    assert image_shot_recipe(1) in prompts[1]
+    assert "ORIGINAL STILL 1 of 5" in prompts[0]
+    assert "ORIGINAL STILL 5 of 5" in prompts[4]
+
+
+def test_diversify_concepts_makes_distinct_video_storyboards():
+    from app.services.ai_ads.complete_creative import diversify_concepts, video_story_recipe
+    from app.services.ai_ads.schemas import CreativeConceptModel, ProductContext
+
+    product = ProductContext(product_id="1", title="Courage Bracelet")
+    clones = [
+        CreativeConceptModel(concept_name=f"Vid {i}", type="VIDEO", visual_direction="Show the product.")
+        for i in range(3)
+    ]
+    out = diversify_concepts(clones, product, media_type="VIDEO")
+    visuals = [c.visual_direction for c in out]
+    assert len(set(visuals)) == 3
+    assert video_story_recipe(0).split(":")[0] in visuals[0] or "ORIGINAL VIDEO 1" in (out[0].scenes[0].visual if out[0].scenes else "")
+
+
+def test_video_prompt_demands_original_storyboard():
+    from app.services.ai_ads.complete_creative import build_video_prompt, video_spec_from_concept
+    from app.services.ai_ads.schemas import CreativeConceptModel, ProductContext
+
+    spec = video_spec_from_concept(
+        CreativeConceptModel(concept_name="UGC", hook="Feel the courage", headline="Courage Bracelet"),
+        ProductContext(product_id="1", title="Courage Bracelet"),
+    )
+    prompt = build_video_prompt(
+        product=ProductContext(product_id="1", title="Courage Bracelet"),
+        spec=spec,
+        variation_index=1,
+        variation_count=2,
+    )
+    assert "unique video 2 of 2" in prompt.lower()
+    assert "do not recreate" in prompt.lower()
+
+
+def test_generate_image_b64_does_not_edit_catalog_photos():
+    import asyncio
+
+    from app.services.ai_ads.openai_client import AdsOpenAIClient
+
+    client = AdsOpenAIClient("sk-test", store_id="s")
+    with patch.object(client, "_image_edits", new=AsyncMock()) as edits:
+        with patch.object(client, "_image_generations", new=AsyncMock(return_value=(b"x", "image/png"))) as gen:
+            out = asyncio.run(
+                client.generate_image_b64(
+                    prompt="new ad",
+                    model="gpt-image-2",
+                    references=[(b"abc", "image/jpeg")],
+                )
+            )
+    assert out == (b"x", "image/png")
+    edits.assert_not_awaited()
+    gen.assert_awaited()
+
+
+def test_generate_image_b64_edits_only_when_explicit():
+    import asyncio
+
+    from app.services.ai_ads.openai_client import AdsOpenAIClient
+
+    client = AdsOpenAIClient("sk-test", store_id="s")
+    with patch.object(client, "_image_edits", new=AsyncMock(return_value=(b"e", "image/png"))) as edits:
+        with patch.object(client, "_image_generations", new=AsyncMock()) as gen:
+            out = asyncio.run(
+                client.generate_image_b64(
+                    prompt="retouch",
+                    model="gpt-image-2",
+                    references=[(b"abc", "image/jpeg")],
+                    edit=True,
+                )
+            )
+    assert out == (b"e", "image/png")
+    edits.assert_awaited()
+    gen.assert_not_awaited()
 
 
 def test_video_spec_built_without_openai():
@@ -536,16 +639,25 @@ def test_preview_url_normalizes_local_paths():
     assert _preview(None, "https://cdn.example/p.jpg") == "https://cdn.example/p.jpg"
 
 
-def test_product_reference_urls_uses_first_photo():
+def test_product_reference_urls_uses_catalog_photos_for_planner_only():
     from app.services.ai_ads.complete_creative import product_reference_urls
     from app.services.ai_ads.schemas import ProductContext, ProductImage
 
     product = ProductContext(
         product_id="1",
         title="Courage Bracelet",
-        images=[ProductImage(src="https://cdn.example/p.jpg")],
+        images=[
+            ProductImage(src="https://cdn.example/p.jpg"),
+            ProductImage(src="https://cdn.example/p2.jpg"),
+            ProductImage(src="https://cdn.example/p3.jpg"),
+            ProductImage(src="https://cdn.example/p4.jpg"),
+        ],
     )
-    assert product_reference_urls(product) == ["https://cdn.example/p.jpg"]
+    assert product_reference_urls(product) == [
+        "https://cdn.example/p.jpg",
+        "https://cdn.example/p2.jpg",
+        "https://cdn.example/p3.jpg",
+    ]
 
 
 def test_job_card_exposes_progress_fields():

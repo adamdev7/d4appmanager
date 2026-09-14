@@ -45,29 +45,37 @@ Include what to avoid based on underperforming patterns, as associations not cau
 
 CREATIVE_CONCEPT = f"""{SHARED_RULES}
 
-Task: generate DISTINCT complete ads (not sketches). Do not clone a winning ad.
+Task: generate DISTINCT complete advertisement creatives (not sketches, not copy-only).
+Do not clone a winning ad, Shopify listing photo, or catalog shot.
 Honor the requested portfolio mix:
-- winner_variation: improve a trait associated with stronger Meta ads (new hook, crop, or proof angle)
-- combination: combine traits from different stronger ads
-- exploration: a meaningfully different direction
+- winner_variation: keep a TRAIT associated with stronger Meta ads (hook type, proof, energy) but invent a NEW visual
+- combination: combine traits from different stronger ads into a NEW scene
+- exploration: a meaningfully different direction (new setting, camera, lighting)
 - experimental: test a hypothesis that differs from current winners
 Each concept must include: hook, headline, primary_text, CTA, visual_direction, image_prompt,
 source_creative_ids when inspired by existing ads, and a rationale.
-IMAGE concepts: image_prompt must be a full photorealistic shot description ready for image generation.
+IMAGE concepts: image_prompt must be a full photorealistic NEW advertisement shot, ready for text-to-image generation.
+Every IMAGE in the batch must differ in setting, camera angle, lighting, and composition.
 VIDEO concepts: include 3-5 scenes (duration, visual, voiceover, text_overlay) that sum ~12-20 seconds.
-Copy must not invent offers or product claims. Improve winning styles; do not copy headlines verbatim.
+Every VIDEO in the batch must have a different storyboard.
+Copy must not invent offers or product claims. Do not copy headlines verbatim.
+Existing ads are references for style traits only — never pixels to reproduce.
 """
 
 GENERATION_PLAN = f"""{SHARED_RULES}
 
 Task: from Shopify product data + ranked Meta campaign creatives, return ONE JSON object:
 - strategy: what to keep from stronger ads, what to avoid from weaker ads, angles to test
-- concepts: the exact requested number of COMPLETE ads (image_count IMAGE + video_count VIDEO)
+- concepts: the exact requested number of COMPLETE NEW ads (image_count IMAGE + video_count VIDEO)
+
+You are briefing brand-new advertisement files. Copy alone is not enough.
+Each IMAGE needs a unique full-frame image_prompt. Each VIDEO needs a unique scene list.
+If the user asked for 5 images, return 5 different scenes. If they asked for N videos, N different storyboards.
 
 Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
-Prefer improving winning visual/copy styles over inventing a new brand.
-Each concept must be usable as-is: full copy + visual. VIDEO concepts need scenes.
-Do not clone a winner. Do not invent product facts, discounts, or reviews.
+Borrow winning traits (hook type, proof, energy) — do NOT recreate winning compositions or catalog photos.
+Product photos (if attached) are only so you know what the product looks like.
+Do not invent product facts, discounts, or reviews.
 Keep image_prompt specific and product-accurate. No fake UI or unreadable text in images.
 """
 
@@ -79,9 +87,10 @@ Stay faithful to product data. No invented discounts, reviews, or medical claims
 
 IMAGE_GENERATION = f"""{SHARED_RULES}
 
-Task: write a single image-generation prompt for an advertisement.
-Preserve important product appearance from reference images when provided.
+Task: write a single image-generation prompt for a brand-new advertisement still.
+Describe a new scene, camera, lighting, and composition. Do not retouch or reproduce catalog photos or existing ads.
 Specify composition, lighting, background, aspect ratio, and placement.
+Keep the product recognizable from the provided product facts.
 Do not add logos, fake UI, fake reviews, unreadable dense text, or extra products.
 Do not invent packaging details.
 The prompt itself should be a detailed visual description, not JSON.

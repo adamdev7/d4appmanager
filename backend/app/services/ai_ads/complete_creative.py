@@ -14,21 +14,130 @@ from app.services.ai_ads.schemas import (
 MAX_IMAGE_ADS = 8
 MAX_VIDEO_ADS = 4
 
+# Forced unique treatments so a batch of N ads cannot collapse into one catalog retouch.
+IMAGE_SHOT_RECIPES = [
+    "Studio product hero: 3/4 camera, softbox lighting, premium surface, empty top third for overlay.",
+    "Lifestyle in-use: real environment, natural window light, product being worn or used, shallow depth of field.",
+    "Macro craftsmanship: extreme close-up on texture, clasp, or key detail, dramatic but clean light.",
+    "Overhead editorial flat lay: magazine styling, complementary props, generous negative space.",
+    "Handheld UGC: slightly imperfect phone framing, authentic room, product clearly in frame.",
+    "Daylight outdoor: natural setting that fits the product, sun-lit, no studio backdrop.",
+    "Reveal / unboxing: hands presenting the product as it first appears, warm practical light.",
+    "Cinematic luxury: dark background, rim light, single hero object, quiet premium mood.",
+]
+
+VIDEO_STORY_RECIPES = [
+    "Open on a 1-second product close-up hook, pull back to lifestyle in-use, end on a packshot and CTA.",
+    "Problem-to-solution: a relatable friction beat, product appears, after-moment, end card.",
+    "UGC handheld: talking-to-camera energy without a readable face, quick demo, product hold-up CTA.",
+    "Editorial montage: four distinct camera angles of the same product, music-led, no talking head.",
+]
+
 
 def clamp_generation_counts(images: int, videos: int) -> tuple[int, int]:
     return max(0, min(int(images or 0), MAX_IMAGE_ADS)), max(0, min(int(videos or 0), MAX_VIDEO_ADS))
 
 
+def image_shot_recipe(index: int) -> str:
+    return IMAGE_SHOT_RECIPES[int(index) % len(IMAGE_SHOT_RECIPES)]
+
+
+def video_story_recipe(index: int) -> str:
+    return VIDEO_STORY_RECIPES[int(index) % len(VIDEO_STORY_RECIPES)]
+
+
+def _token_overlap(a: str, b: str) -> float:
+    ta = {t for t in (a or "").lower().split() if len(t) > 3}
+    tb = {t for t in (b or "").lower().split() if len(t) > 3}
+    if not ta or not tb:
+        return 1.0
+    return len(ta & tb) / max(len(ta | tb), 1)
+
+
+def diversify_concepts(
+    concepts: list[CreativeConceptModel],
+    product: ProductContext,
+    *,
+    media_type: str,
+) -> list[CreativeConceptModel]:
+    """Guarantee each concept in a batch has a unique visual, even if Astra repeated itself."""
+    used: list[str] = []
+    kind = (media_type or "IMAGE").upper()
+    for i, concept in enumerate(concepts):
+        if kind == "VIDEO":
+            recipe = video_story_recipe(i)
+            lock = (
+                f"ORIGINAL VIDEO {i + 1} of {len(concepts)}. Unique storyboard: {recipe} "
+                "Do not recreate an existing Meta ad or catalog clip."
+            )
+            visuals = " ".join((s.visual or "") for s in (concept.scenes or []))
+            base = (concept.visual_direction or visuals or "").strip()
+            if not base or any(_token_overlap(base, prev) > 0.7 for prev in used):
+                concept.visual_direction = f"{recipe} Product is {product.title}."
+                if not concept.scenes:
+                    concept.scenes = [
+                        VideoScene(
+                            duration=3,
+                            visual=f"Hook: {recipe} Show {product.title}.",
+                            voiceover=concept.hook or product.title,
+                            text_overlay=concept.hook or product.title,
+                        ),
+                        VideoScene(
+                            duration=6,
+                            visual=f"Middle: {recipe} Keep {product.title} recognizable in a new setting.",
+                            voiceover=(concept.primary_text or product.description or product.title)[:180],
+                            text_overlay=concept.headline or product.title,
+                        ),
+                        VideoScene(
+                            duration=3,
+                            visual=f"End on a new packshot of {product.title} and CTA. {lock}",
+                            voiceover=(concept.cta or "Shop now").replace("_", " "),
+                            text_overlay=(concept.cta or "SHOP NOW").replace("_", " "),
+                        ),
+                    ]
+                else:
+                    concept.scenes[0].visual = f"{lock} {concept.scenes[0].visual}".strip()
+            else:
+                concept.visual_direction = f"{base} {lock}".strip()
+                if concept.scenes:
+                    concept.scenes[0].visual = f"{lock} {concept.scenes[0].visual}".strip()
+            used.append(concept.visual_direction)
+            continue
+
+        recipe = image_shot_recipe(i)
+        lock = (
+            f"ORIGINAL STILL {i + 1} of {len(concepts)}. Required unique treatment: {recipe} "
+            "Invent a brand-new advertisement. Do not reproduce Shopify listing photos, "
+            "catalog photography, or any existing Meta ad."
+        )
+        base = (concept.image_prompt or concept.visual_direction or "").strip()
+        similar = any(_token_overlap(base, prev) > 0.7 for prev in used)
+        if not base or similar:
+            concept.image_prompt = (
+                f"{recipe} Photorealistic new advertisement featuring {product.title}. {lock}"
+            )
+            concept.visual_direction = recipe
+        else:
+            concept.image_prompt = f"{base}\n{lock}"
+            if not (concept.visual_direction or "").strip():
+                concept.visual_direction = recipe
+        used.append(concept.image_prompt)
+    return concepts
+
+
 def compact_product(product: ProductContext) -> dict[str, Any]:
-    image = product.images[0].src if product.images else None
+    images = [img.src for img in (product.images or []) if getattr(img, "src", None)][:3]
     return {
         "title": product.title,
         "description": (product.description or "")[:500],
         "price": product.price,
         "currency": product.currency,
         "url": product.product_url,
-        "image": image,
+        "image": images[0] if images else None,
+        "catalog_photos": images,
+        "appearance": product_appearance_notes(product),
         "restrictions": (product.restrictions or [])[:6],
+        "note": "Catalog photos show product appearance only. Do not recreate those photos as ads.",
     }
 
 
@@ -58,7 +167,19 @@ def compact_meta_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def product_reference_urls(product: ProductContext) -> list[str]:
-    return [img.src for img in (product.images or []) if getattr(img, "src", None)][:1]
+    """Catalog photo URLs for planner context only — never as image-edit sources."""
+    return [img.src for img in (product.images or []) if getattr(img, "src", None)][:3]
+
+
+def product_appearance_notes(product: ProductContext) -> str:
+    bits: list[str] = [product.title]
+    desc = (product.description or "").strip()
+    if desc:
+        bits.append(desc[:180])
+    alts = [img.alt for img in (product.images or []) if getattr(img, "alt", None)]
+    if alts:
+        bits.append(str(alts[0])[:80])
+    return " ".join(bits)[:280]
 
 
 def winning_style_notes(winners: list[dict[str, Any]]) -> str:
@@ -80,24 +201,34 @@ def build_image_prompt(
     winning_notes: str = "",
     aspect_ratio: str = "4:5",
     placement: str = "feed",
+    variation_index: int = 0,
+    variation_count: int = 1,
 ) -> str:
     prompt = (image_prompt or visual_direction or "").strip()
+    recipe = image_shot_recipe(variation_index)
     if not prompt:
-        prompt = f"Photorealistic advertising photo of {product.title}, product clearly visible."
+        prompt = f"{recipe} Photorealistic new advertisement of {product.title}."
     extras = [
         f"Product: {product.title}.",
-        f"Keep product appearance faithful to '{product.title}'. Do not invent materials or logos.",
+        f"Product appearance to keep recognizable: {product_appearance_notes(product)}.",
+        "This is a brand-new advertisement still. Do not retouch, crop, or reproduce a catalog photo "
+        "or any existing ad. New scene, new camera, new lighting, new composition.",
+        f"This is unique still {variation_index + 1} of {max(variation_count, 1)}. Required treatment: {recipe}",
+        "Do not invent materials, logos, or packaging details that are not in the product facts.",
     ]
     desc = (product.description or "").strip()
     if desc:
         extras.append(f"Known product facts only: {desc[:240]}")
     if winning_notes:
-        extras.append(f"Improve styles associated with stronger Meta ads: {winning_notes[:400]}")
+        extras.append(
+            f"Borrow only style traits associated with stronger Meta ads (not their exact shots): "
+            f"{winning_notes[:400]}"
+        )
     if brand_style:
         extras.append(f"Brand look: {brand_style[:160]}")
     extras.append(
         f"Finished Meta {placement} advertisement still, aspect {aspect_ratio}. "
-        "Photorealistic product hero, generous safe margins for headline overlay, "
+        "Photorealistic, generous safe margins for headline overlay, "
         "single product, no fake UI, no fake reviews, no watermarks, no extra logos, "
         "no unreadable text baked into the image."
     )
@@ -110,6 +241,8 @@ def build_video_prompt(
     spec: VideoSpec,
     brand_style: str = "",
     winning_notes: str = "",
+    variation_index: int = 0,
+    variation_count: int = 1,
 ) -> str:
     scenes = []
     for scene in spec.scenes[:6]:
@@ -117,18 +250,24 @@ def build_video_prompt(
         if bit:
             scenes.append(bit[:180])
     shot_list = " Then ".join(scenes) if scenes else (spec.hook or product.title)
+    recipe = video_story_recipe(variation_index)
     parts = [
-        f"Vertical Meta Reels / Stories advertisement, photorealistic, product is {product.title}.",
+        f"Brand-new vertical Meta Reels / Stories advertisement. Product is {product.title}.",
+        f"This is unique video {variation_index + 1} of {max(variation_count, 1)}. Required storyboard: {recipe}",
+        "Do not recreate an existing Meta ad, catalog clip, or listing photo. New shots and setting.",
         f"Hook: {spec.hook or product.title}.",
         f"Shot list: {shot_list}.",
-        "Keep the real product recognizable. Smooth camera, natural light, no fake UI, no watermarks.",
+        f"Keep {product.title} recognizable. Smooth camera, no fake UI, no watermarks.",
         f"End on a clear product shot and the call to action {(spec.cta or 'SHOP NOW').replace('_', ' ')}.",
     ]
     desc = (product.description or "").strip()
     if desc:
         parts.append(f"Known product facts only: {desc[:220]}")
     if winning_notes:
-        parts.append(f"Match stronger Meta ad styles: {winning_notes[:240]}")
+        parts.append(
+            f"Borrow only style traits associated with stronger Meta ads (not their exact shots): "
+            f"{winning_notes[:240]}"
+        )
     if brand_style:
         parts.append(f"Brand look: {brand_style[:140]}")
     if spec.voice_direction:

@@ -119,9 +119,10 @@ export function GeneratePage() {
         <CardHeader>
           <CardTitle>Generate creatives</CardTitle>
           <CardDescription>
-            Astra writes the copy and brief from your stronger Meta ads, then the image and video
-            models render real files you can approve and publish. Counts stay low because each
-            render spends OpenAI credits.
+            Astra briefs brand-new ads from your product and stronger Meta patterns. Image and video
+            models then render original files — not retouches of ads or catalog photos you already
+            have. Ask for 5 images and you get 5 different scenes. Same for video. Counts stay low
+            because each unique render spends OpenAI credits.
           </CardDescription>
         </CardHeader>
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}

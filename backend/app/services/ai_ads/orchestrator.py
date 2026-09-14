@@ -28,7 +28,6 @@ from app.services.ai_ads.complete_creative import (
     build_video_prompt,
     clamp_generation_counts,
     heuristic_score,
-    product_reference_urls,
     video_spec_from_concept,
     winning_style_notes,
 )
@@ -241,10 +240,10 @@ class AdsAIOrchestrator:
             self._progress(
                 job,
                 step="plan",
-                title="Writing complete ads",
+                title="Planning brand-new creatives",
                 detail=(
-                    f"Planning {image_count} image ad(s) and {video_count} video concept(s): "
-                    "hooks, headlines, primary text, CTAs, image shots, and video scenes."
+                    f"Drafting {image_count} distinct image scene(s) and {video_count} distinct video storyboard(s). "
+                    "Astra briefs original ads — not copy-only and not retouches of ads you already ran."
                 ),
                 pct=42,
             )
@@ -276,6 +275,10 @@ class AdsAIOrchestrator:
             image_provider = OpenAIImageProvider(self.client, self.assets)
             video_provider = OpenAIVideoProvider(self.client, self.assets)
             total = max(len(paired), 1)
+            image_total = sum(1 for c, _ in paired if (c.type or "IMAGE").upper() != "VIDEO")
+            video_total = sum(1 for c, _ in paired if (c.type or "").upper() == "VIDEO")
+            image_n = 0
+            video_n = 0
 
             for index, (concept, brief_model) in enumerate(paired):
                 self._raise_if_cancelled(job)
@@ -284,24 +287,28 @@ class AdsAIOrchestrator:
                 span = 40
                 pct = base + int((index / total) * span)
                 if kind == "VIDEO":
+                    video_slot = video_n
+                    video_n += 1
                     self._progress(
                         job,
                         step="video",
-                        title=f"Rendering video {index + 1} of {total}",
+                        title=f"Rendering original video {video_slot + 1} of {max(video_total, 1)}",
                         detail=(
-                            f"Astra wrote the brief. Sora is now rendering an MP4 for "
-                            f"“{concept.concept_name or concept.hook}”."
+                            f"Sora is generating a brand-new MP4 for "
+                            f"“{concept.concept_name or concept.hook}” — not a remix of an existing ad."
                         ),
                         pct=pct,
                     )
                 else:
+                    image_slot = image_n
+                    image_n += 1
                     self._progress(
                         job,
                         step="image",
-                        title=f"Rendering image ad {index + 1} of {total}",
+                        title=f"Rendering original image {image_slot + 1} of {max(image_total, 1)}",
                         detail=(
-                            f"Astra wrote the copy. Now generating a Meta-ready still for "
-                            f"“{concept.concept_name or concept.hook}”."
+                            f"Generating a new Meta still for "
+                            f"“{concept.concept_name or concept.hook}” — new scene, not your catalog photo."
                         ),
                         pct=pct,
                     )
@@ -335,6 +342,8 @@ class AdsAIOrchestrator:
                             spec=spec,
                             brand_style=brand_style,
                             winning_notes=winning_notes,
+                            variation_index=video_slot,
+                            variation_count=max(video_total, 1),
                         )
                         payload = spec.model_dump()
                         payload["prompt"] = prompt
@@ -346,7 +355,14 @@ class AdsAIOrchestrator:
                             asset.local_path = rendered.get("local_path")
                             asset.width = rendered.get("width")
                             asset.height = rendered.get("height")
-                            await self._attach_video_poster(asset, product, spec, image_provider)
+                            await self._attach_video_poster(
+                                asset,
+                                product,
+                                spec,
+                                image_provider,
+                                variation_index=video_slot,
+                                variation_count=max(video_total, 1),
+                            )
                             asset.video_spec_json = json.dumps(
                                 {"spec": spec.model_dump(), "provider": rendered, "rendered": True}
                             )
@@ -355,9 +371,9 @@ class AdsAIOrchestrator:
                             self._progress(
                                 job,
                                 step="video",
-                                title=f"Video render unavailable — making an image ad {index + 1} of {total}",
+                                title=f"Video render unavailable — making a new still {video_slot + 1} of {max(video_total, 1)}",
                                 detail=(
-                                    "Sora did not return an MP4. Rendering a Meta-ready still from the same brief "
+                                    "Sora did not return an MP4. Generating an original still from the same brief "
                                     f"so you still have something to publish. ({exc.message[:160]})"
                                 ),
                                 pct=min(94, pct + 4),
@@ -381,10 +397,11 @@ class AdsAIOrchestrator:
                                         winning_notes=winning_notes,
                                         aspect_ratio=asset.aspect_ratio or "4:5",
                                         placement=placement,
+                                        variation_index=video_slot,
+                                        variation_count=max(video_total, 1),
                                     ),
                                     aspect_ratio=asset.aspect_ratio or "4:5",
                                     placement=placement,
-                                    reference_image_urls=product_reference_urls(product),
                                 )
                             )
                             asset.local_path = image_result.local_path
@@ -401,13 +418,14 @@ class AdsAIOrchestrator:
                             winning_notes=winning_notes,
                             aspect_ratio=aspect,
                             placement=placement,
+                            variation_index=image_slot,
+                            variation_count=max(image_total, 1),
                         )
                         result = await image_provider.generate(
                             ImageGenerationRequest(
                                 prompt=prompt,
                                 aspect_ratio=aspect,
                                 placement=placement,
-                                reference_image_urls=product_reference_urls(product),
                             )
                         )
                         asset.local_path = result.local_path
@@ -544,6 +562,9 @@ class AdsAIOrchestrator:
         product: ProductContext,
         spec: VideoSpec,
         image_provider: OpenAIImageProvider,
+        *,
+        variation_index: int = 0,
+        variation_count: int = 1,
     ) -> None:
         """Save a thumbnail still so Library and Meta have a poster frame."""
         first = spec.scenes[0] if spec.scenes else None
@@ -554,6 +575,8 @@ class AdsAIOrchestrator:
             image_prompt=visual,
             aspect_ratio="9:16",
             placement="stories",
+            variation_index=variation_index,
+            variation_count=variation_count,
         )
         try:
             result = await image_provider.generate(
@@ -561,7 +584,6 @@ class AdsAIOrchestrator:
                     prompt=prompt,
                     aspect_ratio="9:16",
                     placement="stories",
-                    reference_image_urls=product_reference_urls(product),
                 )
             )
             asset.preview_url = result.preview_url or result.local_path
