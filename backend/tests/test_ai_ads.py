@@ -1006,6 +1006,20 @@ def test_fit_image_bytes_matches_requested_size():
     skipped = fit_references([(b"not-an-image", "image/jpeg")], "720x1280")
     assert skipped == []
 
+    from app.services.ai_ads.media_io import prefer_jpeg_url, prepare_video_still
+
+    shopify = prefer_jpeg_url("https://cdn.shopify.com/s/files/1/x/courage.png?v=9")
+    assert "format=jpg" in shopify
+    still, still_mime = prepare_video_still([(src.getvalue(), "image/jpeg")], 720, 1280)
+    assert still_mime == "image/jpeg"
+    assert Image.open(BytesIO(still)).size == (720, 1280)
+
+    rgba = Image.new("RGBA", (640, 480), (12, 80, 40, 255))
+    png = BytesIO()
+    rgba.save(png, format="PNG")
+    prepared, _ = prepare_video_still([(png.getvalue(), "image/png")], 720, 1280)
+    assert Image.open(BytesIO(prepared)).size == (720, 1280)
+
 
 def test_video_provider_rejects_non_mp4_download():
     import asyncio

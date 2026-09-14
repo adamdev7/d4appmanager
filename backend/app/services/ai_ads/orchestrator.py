@@ -45,7 +45,7 @@ from app.services.ai_ads.creative_intelligence import CreativeIntelligenceAnalyz
 from app.services.ai_ads.creative_planner import CreativePlanner
 from app.services.ai_ads.job_progress import append_job_progress
 from app.services.ai_ads.meta_importer import MetaCreativeImporter
-from app.services.ai_ads.media_io import fetch_product_images, fit_image_bytes
+from app.services.ai_ads.media_io import fetch_product_images, prepare_video_still
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.prompts import PRODUCT_APPEARANCE
@@ -429,10 +429,13 @@ class AdsAIOrchestrator:
                                 f"No Shopify photo of {product.title} to lock into the video."
                             )
                         try:
-                            identity_still = fit_image_bytes(
-                                product_refs[0][0], video_w, video_h, mode="contain"
-                            )
+                            identity_still = prepare_video_still(product_refs, video_w, video_h)
                         except Exception as exc:
+                            logger.warning(
+                                "ai_ads video still failed store_id=%s err=%s",
+                                self.store.id,
+                                str(exc)[:300],
+                            )
                             raise VideoProviderError(
                                 f"Could not prepare the {product.title} photo for video."
                             ) from exc
