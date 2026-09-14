@@ -35,6 +35,7 @@ import type {
   AIAdsSettings,
   AIAdsStrategy,
 } from "@/lib/aiAdsTypes";
+import { compressProductPhoto } from "@/lib/compressImage";
 
 export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
 export type { ManualInvestment, ManualInvestmentsResponse };
@@ -67,6 +68,9 @@ export class ApiError extends Error {
 }
 
 async function parseError(res: Response): Promise<string> {
+  if (res.status === 413) {
+    return "That picture was too large for the server. Refresh the page and try again — PNG is compressed before upload.";
+  }
   if (res.status === 504 || res.status === 502) {
     const err = await res.json().catch(() => ({}));
     const detail = (err as { detail?: unknown }).detail;
@@ -75,7 +79,12 @@ async function parseError(res: Response): Promise<string> {
   }
   const err = await res.json().catch(() => ({}));
   const detail = (err as { detail?: unknown }).detail;
-  if (typeof detail === "string") return detail;
+  if (typeof detail === "string") {
+    if (/maximum size|too large/i.test(detail)) {
+      return "That picture was too large for the server. Refresh the page and try again — PNG is compressed before upload.";
+    }
+    return detail;
+  }
   if (Array.isArray(detail) && detail[0]?.msg) return detail[0].msg;
   return res.statusText || "Request failed";
 }
@@ -1012,7 +1021,8 @@ export const api = {
     uploadProductPhotos: async (storeId: string, productId: string, files: File[]) => {
       const token = localStorage.getItem("access_token");
       const form = new FormData();
-      for (const file of files) {
+      const prepared = await Promise.all(files.map((file) => compressProductPhoto(file)));
+      for (const file of prepared) {
         form.append("files", file);
       }
       const res = await fetch(`${API_BASE}/ai-ads/stores/${storeId}/products/${productId}/photos`, {

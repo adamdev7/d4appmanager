@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.ai_email_assistant.automation_worker import start_automation_worker, stop_automation_worker
 from app.config import settings
+from app.core.upload_limits import install as install_upload_limits
 from app.db.session import init_db
 from app.routes import api_router
 from app.routes import track_order as track_order_routes
@@ -19,6 +20,7 @@ _PROJECT_ROOT = _BACKEND_ROOT.parent
 _FRONTEND_DIST = _PROJECT_ROOT / "frontend" / "dist"
 _UPLOADS_DIR = _BACKEND_ROOT / "data" / "uploads"
 _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+install_upload_limits()
 
 
 @asynccontextmanager

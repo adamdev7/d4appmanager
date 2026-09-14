@@ -1461,3 +1461,17 @@ def test_catalog_stores_manual_photos_once(tmp_path):
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
+
+
+def test_upload_limits_raise_starlette_part_size():
+    import inspect
+
+    from starlette.formparsers import MultiPartParser
+    from starlette.requests import Request
+
+    from app.core.upload_limits import MAX_UPLOAD_PART_BYTES, install
+
+    install()
+    assert MultiPartParser.max_part_size == MAX_UPLOAD_PART_BYTES
+    default = inspect.signature(Request.form).parameters["max_part_size"].default
+    assert default == MAX_UPLOAD_PART_BYTES
