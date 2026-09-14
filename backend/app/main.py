@@ -26,6 +26,15 @@ install_upload_limits()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    from app.services.ai_ads.media_io import imaging_available
+
+    if not imaging_available():
+        import logging
+
+        logging.getLogger("app.main").error(
+            "Pillow is not installed in this environment. AI Ads generation will fail until "
+            "you run: .venv/bin/pip install -r requirements.txt && restart the API."
+        )
     start_automation_worker()
     start_meta_capi_worker()
     start_ai_ads_worker()
@@ -62,7 +71,9 @@ app.mount("/uploads", StaticFiles(directory=_UPLOADS_DIR), name="uploads")
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "app": settings.app_name}
+    from app.services.ai_ads.media_io import imaging_available
+
+    return {"status": "ok", "app": settings.app_name, "imaging": imaging_available()}
 
 
 def _ui_help_page() -> HTMLResponse:

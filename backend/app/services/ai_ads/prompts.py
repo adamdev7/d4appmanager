@@ -79,6 +79,7 @@ Borrow winning offer-look traits (wrist lifestyle, macro clasp, UGC energy) — 
 Do not invent product facts, discounts, or reviews.
 Keep image_prompt specific and product-accurate. No fake UI or unreadable text in images.
 Do not brief a retouch, crop, or color-grade of the attached catalog still.
+VIDEO concepts must be Meta-spend-ready: 9:16, 4–12 seconds, spoken voiceover on every scene, original music_direction, SHOP_NOW CTA. Never a silent clip.
 """
 
 CREATIVE_STRATEGY = f"""{SHARED_RULES}
@@ -104,7 +105,8 @@ source_creative_ids when inspired by existing ads, and a rationale.
 IMAGE concepts: image_prompt must describe THIS locked product in a full photorealistic NEW advertisement shot.
 Every IMAGE in the batch must differ in setting, camera angle, lighting, and composition.
 Never retouch the catalog photo. The attached still is identity only.
-VIDEO concepts: include 3-5 scenes (duration, visual, voiceover, text_overlay) that sum ~12-20 seconds.
+VIDEO concepts: include 3-5 scenes (duration, visual, voiceover, text_overlay) that sum 8-12 seconds.
+Every scene needs a spoken voiceover line the renderer will say out loud, plus music_direction and voice_direction.
 Every VIDEO in the batch must have a different storyboard.
 Copy must not invent offers or product claims. Do not copy headlines verbatim.
 PROMOTIONAL copy may use the real price; never invent a % off.
@@ -130,10 +132,12 @@ The prompt itself should be a detailed visual description, not JSON.
 
 VIDEO_SCRIPT = f"""{SHARED_RULES}
 
-Task: produce a complete video specification (duration, format, hook, scenes, voice, music, CTA)
-even if no video generation provider is configured.
-Scenes must add up to the total duration.
-Do not invent product facts.
+Task: produce a complete Meta Reels/Stories video specification.
+Required fields: duration (4, 8, or 12 seconds), format 9:16, hook, scenes, voice_direction, music_direction, CTA.
+Every scene needs visual, spoken voiceover (the line that is heard), and a short text_overlay.
+Audio is mandatory: native spoken VO plus an original instrumental bed. Never silent. Never copyrighted songs.
+Scenes must add up to the total duration. Do not invent product facts.
+CTA must be a Meta enum (SHOP_NOW, LEARN_MORE, ...).
 """
 
 RECOMMENDATIONS = f"""{SHARED_RULES}

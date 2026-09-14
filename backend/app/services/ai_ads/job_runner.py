@@ -7,7 +7,7 @@ import threading
 from app.db.models import CreativeGenerationJob, Store, User
 from app.db.session import SessionLocal
 from app.services.ai_ads.job_progress import append_job_progress
-from app.services.ai_ads.exceptions import GenerationCancelled
+from app.services.ai_ads.exceptions import GenerationCancelled, operator_error_message
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -116,13 +116,13 @@ async def _run(job_id: str, api_key: str) -> None:
                 pct=job.progress_pct or 0,
             )
             db.commit()
-    except Exception:
+    except Exception as exc:
         logger.exception("ai_ads job runner crashed job_id=%s", job_id)
         try:
             job = db.get(CreativeGenerationJob, job_id)
             if job and job.status in ("QUEUED", "RUNNING"):
                 job.status = "FAILED"
-                job.error_message = "Generation worker crashed. Try Generate again."
+                job.error_message = operator_error_message(exc)
                 append_job_progress(
                     job,
                     step="error",

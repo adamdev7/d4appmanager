@@ -266,11 +266,25 @@ class AdsOpenAIClient:
             # Identity edits must use stills that already match `size`. OpenAI
             # rejects product photos at the catalog aspect ("Inpaint image must
             # match the requested width and height").
+            fitted = fit_references(references, size, fmt="PNG")
+            if not fitted:
+                from app.services.ai_ads.exceptions import ImageGenerationError, PILLOW_INSTALL_HINT
+                from app.services.ai_ads.media_io import imaging_available
+
+                if not imaging_available():
+                    raise ImageGenerationError(PILLOW_INSTALL_HINT, retryable=False, code="MISSING_PILLOW")
+                logger.warning("ai_ads identity fit produced no stills; sending original product photos")
+                fitted = [(raw, mime) for raw, mime in references if raw]
+            if not fitted:
+                raise ImageGenerationError(
+                    "Could not resize product photos to the ad size.",
+                    retryable=False,
+                )
             return await self._image_edits(
                 prompt=prompt,
                 model=model,
                 size=size,
-                references=fit_references(references, size, fmt="PNG"),
+                references=fitted,
                 operation=f"{operation}_identity",
             )
         return await self._image_generations(

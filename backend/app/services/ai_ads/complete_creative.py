@@ -26,8 +26,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Getting-ready still: anonymous hands fastening or sliding the piece on, phone-angle, real bedroom.",
         ],
         "video": [
-            "Handheld UGC: talking-to-camera energy without a readable face, quick try-on, product hold-up CTA.",
-            "Mirror get-ready clip, then a step-outside beat, end on the product in natural light.",
+            "Handheld UGC: spoken first-person VO, original music bed, no readable face, quick try-on, product hold-up CTA.",
+            "Mirror get-ready clip with spoken hook, then a step-outside beat, music swell, end on the product in natural light.",
         ],
     },
     "PRODUCT_DEMO": {
@@ -41,8 +41,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Detail proof: extreme close-up of the unique hardware while it is being used, not on a void background.",
         ],
         "video": [
-            "Open on the problem of putting it on, demonstrate the mechanism, end on a clean wear shot and CTA.",
-            "Three tight angles of the same action, then pull back to the worn product.",
+            "Spoken demo VO: open on the problem of putting it on, demonstrate the mechanism, music under, end on a clean wear shot and CTA.",
+            "Three tight angles of the same action with a voice explaining the feature, then pull back to the worn product.",
         ],
     },
     "LIFESTYLE": {
@@ -56,8 +56,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Editorial lifestyle: magazine styling, complementary props only, product fully recognizable.",
         ],
         "video": [
-            "Open on a 1-second product close-up, pull back into a new lifestyle in-use, end on packshot and CTA.",
-            "Editorial montage: four distinct camera angles of the same product in one new environment, music-led.",
+            "Spoken lifestyle VO over original music: 1-second product close-up, pull back into a new in-use world, end on packshot and CTA.",
+            "Editorial montage: four distinct camera angles of the same product, music-led with a whispered VO and on-screen CTA.",
         ],
     },
     "PROBLEM_SOLUTION": {
@@ -71,8 +71,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Close-up of the solving feature (adjustable fit, clasp, construction) in a new setting.",
         ],
         "video": [
-            "Problem-to-solution: a relatable friction beat, product appears, after-moment, end card.",
-            "Show the painful alternative, cut to this product on the body, hold, CTA.",
+            "Spoken problem-to-solution: friction beat, product appears, after-moment, original music, end card CTA.",
+            "Voice names the painful alternative, cut to this product on the body, hold, spoken CTA.",
         ],
     },
     "PROMOTIONAL": {
@@ -86,14 +86,80 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Unboxing / treat-yourself: hands lifting the exact SKU from tissue, warm practical light, not the website photo.",
         ],
         "video": [
-            "Gift-reveal hook, product identity close-up, offer-safe end card with CTA. No fake discounts.",
-            "Drop energy: quick cuts of the product in a new world, freeze on a shoppable packshot.",
+            "Spoken gift-reveal hook over music, product identity close-up, offer-safe end card with CTA. No fake discounts.",
+            "Drop energy: quick cuts, energetic original music, freeze on a shoppable packshot with spoken CTA.",
         ],
     },
 }
 
 KNOWN_STYLES = tuple(STYLE_PLAYBOOKS.keys())
 DEFAULT_STYLES = ["UGC", "PRODUCT_DEMO", "LIFESTYLE"]
+
+# Meta Ads CTA enum. Unknown values become SHOP_NOW so publish does not 400.
+META_CTAS = {
+    "SHOP_NOW",
+    "LEARN_MORE",
+    "SIGN_UP",
+    "SUBSCRIBE",
+    "DOWNLOAD",
+    "GET_OFFER",
+    "CONTACT_US",
+    "APPLY_NOW",
+    "BUY_NOW",
+    "ORDER_NOW",
+    "BOOK_TRAVEL",
+    "GET_QUOTE",
+}
+
+DEFAULT_VOICE = (
+    "Native spoken English, warm confident woman, 1–2 feet from the mic, not a radio announcer. "
+    "Every scene voiceover line must be heard clearly in the MP4."
+)
+DEFAULT_MUSIC = (
+    "Original instrumental bed only — soft luxury pop, no lyrics, no named artists, no copyrighted songs. "
+    "Sit under the voice at about -12 dB, swell into the CTA."
+)
+
+
+def meta_cta(raw: str | None) -> str:
+    token = (raw or "SHOP_NOW").strip().upper().replace(" ", "_").replace("-", "_")
+    aliases = {"SHOP": "SHOP_NOW", "BUY": "BUY_NOW", "LEARN": "LEARN_MORE"}
+    token = aliases.get(token, token)
+    return token if token in META_CTAS else "SHOP_NOW"
+
+
+def meta_ready_copy(
+    *,
+    hook: str = "",
+    headline: str = "",
+    primary_text: str = "",
+    cta: str = "",
+    product_title: str = "",
+) -> dict[str, str]:
+    """Clamp copy to Meta Ads field limits so a READY creative can be published without a 400."""
+    fallback = (product_title or "Shop now").strip() or "Shop now"
+    hook_text = (hook or headline or fallback).strip()
+    headline_text = (headline or hook_text or fallback).strip()
+    primary = (primary_text or hook_text or headline_text).strip()
+    return {
+        "hook": hook_text[:125],
+        "headline": headline_text[:255],
+        "primary_text": primary[:2200],
+        "cta": meta_cta(cta),
+    }
+
+
+def spoken_script(spec: VideoSpec) -> str:
+    """Timed VO the video model must speak, not just paint as on-screen text."""
+    parts: list[str] = []
+    t = 0.0
+    for scene in spec.scenes[:6]:
+        line = (scene.voiceover or scene.text_overlay or spec.hook or "").strip()
+        dur = max(0.5, float(scene.duration or 2))
+        if line:
+            parts.append(f"{t:.0f}-{t + dur:.0f}s: {line[:160]}")
+        t += dur
+    return " ".join(parts) if parts else (spec.hook or "")
 
 
 def _as_count(value: Any, default: int = 0) -> int:
@@ -456,9 +522,24 @@ def build_video_prompt(
     if brand_style:
         parts.append(f"Brand look: {brand_style[:140]}")
     if spec.voice_direction:
-        parts.append(f"Voice: {spec.voice_direction[:120]}")
+        parts.append(f"Voice: {spec.voice_direction[:160]}")
+    else:
+        parts.append(f"Voice: {DEFAULT_VOICE}")
     if spec.music_direction:
-        parts.append(f"Music: {spec.music_direction[:120]}")
+        parts.append(f"Music: {spec.music_direction[:160]}")
+    else:
+        parts.append(f"Music: {DEFAULT_MUSIC}")
+    spoken = spoken_script(spec)
+    if spoken:
+        parts.append(f"SPOKEN SCRIPT (must be audible, not silent, not text-only): {spoken}")
+    parts.append(
+        "AUDIO IS REQUIRED. This MP4 must be ready to spend on Meta Reels/Stories: "
+        "spoken voiceover throughout, original music under the voice, no copyrighted songs, "
+        "no celebrity likeness. Keep 250px clear at the top and bottom for Reels UI. "
+        "On-screen text only for the hook (first second) and the end CTA, large high-contrast, center-safe. "
+        "Do not bake fake UI, fake reviews, watermarks, or a different product. "
+        f"End on a clear shot of this same {product.title} and {(spec.cta or 'SHOP NOW').replace('_', ' ')}."
+    )
     return " ".join(parts)
 
 
@@ -490,15 +571,20 @@ def video_spec_from_concept(
                 text_overlay=(concept.cta or "SHOP NOW").replace("_", " "),
             ),
         ]
-    duration = sum(max(0.5, float(s.duration or 2)) for s in scenes) or 15
+    for scene in scenes:
+        if not (scene.voiceover or "").strip():
+            scene.voiceover = (scene.text_overlay or concept.hook or product.title)[:180]
+        if not (scene.text_overlay or "").strip():
+            scene.text_overlay = (scene.voiceover or concept.headline or product.title)[:80]
+    duration = min(12.0, max(4.0, sum(max(0.5, float(s.duration or 2)) for s in scenes) or 8))
     return VideoSpec(
         duration=duration,
         format=aspect_ratio,
         hook=concept.hook or product.title,
         scenes=scenes,
-        voice_direction=concept.voice_direction or "Natural, confident, not hypey.",
-        music_direction=concept.music_direction or "Light, modern, unobtrusive.",
-        cta=concept.cta or "SHOP_NOW",
+        voice_direction=concept.voice_direction or DEFAULT_VOICE,
+        music_direction=concept.music_direction or DEFAULT_MUSIC,
+        cta=meta_cta(concept.cta),
     )
 
 

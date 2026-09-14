@@ -1,34 +1,16 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from app.db.models import CreativeAsset, StoreAIAdsSettings
 from app.integrations.meta.client import MetaAdsClient
 from app.services.ai_ads.asset_store import CreativeAssetStore
+from app.services.ai_ads.complete_creative import meta_cta
 from app.services.ai_ads.exceptions import MetaImportError
 
 logger = logging.getLogger(__name__)
-
-_META_CTAS = {
-    "SHOP_NOW",
-    "LEARN_MORE",
-    "SIGN_UP",
-    "SUBSCRIBE",
-    "DOWNLOAD",
-    "GET_OFFER",
-    "CONTACT_US",
-    "APPLY_NOW",
-    "BUY_NOW",
-    "ORDER_NOW",
-    "BOOK_TRAVEL",
-    "GET_QUOTE",
-}
-
-
-def _meta_cta(raw: str | None) -> str:
-    token = (raw or "SHOP_NOW").strip().upper().replace(" ", "_")
-    return token if token in _META_CTAS else "SHOP_NOW"
 
 
 def _is_video_asset(asset: CreativeAsset) -> bool:
@@ -111,9 +93,20 @@ class MetaCreativePublisher:
                 except Exception as exc:
                     logger.info("ai_ads meta video wait skipped video_id=%s err=%s", video_id, exc)
             out["video_id"] = video_id
-            poster = self.store.read_bytes(asset.preview_url) or self.store.read_bytes(asset.local_path)
-            if poster and not poster[1].startswith("video/"):
-                image = await self.client.upload_ad_image(poster[0], filename="ai-ad-poster.png")
+            poster = None
+            spec_path = ""
+            try:
+                spec = json.loads(asset.video_spec_json or "{}")
+                spec_path = str(spec.get("poster_path") or "")
+            except json.JSONDecodeError:
+                spec_path = ""
+            for candidate in (spec_path, asset.preview_url, asset.local_path):
+                poster = self.store.read_bytes(candidate)
+                if poster and not poster[1].startswith("video/"):
+                    break
+                poster = None
+            if poster:
+                image = await self.client.upload_ad_image(poster[0], filename="ai-ad-poster.jpg")
                 out["image_hash"] = str(image.get("hash") or "")
             return out
         image_file = self.store.read_bytes(asset.local_path) or self.store.read_bytes(asset.preview_url)
@@ -135,7 +128,7 @@ class MetaCreativePublisher:
         link: str,
         media: dict[str, str],
     ) -> dict[str, Any]:
-        cta = {"type": _meta_cta(asset.cta), "value": {"link": link}}
+        cta = {"type": meta_cta(asset.cta), "value": {"link": link}}
         if media.get("video_id"):
             video_data: dict[str, Any] = {
                 "video_id": media["video_id"],
@@ -153,7 +146,7 @@ class MetaCreativePublisher:
                 "name": asset.headline or asset.hook or "",
                 "link": link,
                 "image_hash": media.get("image_hash"),
-                "call_to_action": {"type": _meta_cta(asset.cta)},
+                "call_to_action": {"type": meta_cta(asset.cta)},
             },
         }
 

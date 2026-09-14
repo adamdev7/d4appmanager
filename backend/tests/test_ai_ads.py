@@ -1683,3 +1683,59 @@ def test_catalog_prunes_photos_it_can_never_rebuild(tmp_path):
     remaining = list(catalog.db.images)
     assert remaining == ["50514432786680"], "refetchable Shopify photos must be kept for repair"
     assert catalog.has_usable_photos("42")
+
+
+def test_operator_error_message_explains_missing_pillow():
+    from app.services.ai_ads.exceptions import PILLOW_INSTALL_HINT, operator_error_message
+
+    raw = ModuleNotFoundError("No module named 'PIL'")
+    msg = operator_error_message(raw)
+    assert "Pillow" in msg
+    assert "pip install" in msg
+    assert msg == PILLOW_INSTALL_HINT
+
+
+def test_meta_ready_copy_is_publishable():
+    from app.services.ai_ads.complete_creative import meta_cta, meta_ready_copy
+
+    copy = meta_ready_copy(
+        hook="x" * 200,
+        headline="Buy it",
+        primary_text="y" * 3000,
+        cta="shop",
+        product_title="Courage Bracelet",
+    )
+    assert len(copy["hook"]) <= 125
+    assert len(copy["headline"]) <= 255
+    assert len(copy["primary_text"]) <= 2200
+    assert copy["cta"] == "SHOP_NOW"
+    assert meta_cta("learn more") == "LEARN_MORE"
+
+
+def test_video_prompt_requires_spoken_voice_and_music():
+    from app.services.ai_ads.complete_creative import build_video_prompt, video_spec_from_concept
+    from app.services.ai_ads.schemas import CreativeConceptModel, ProductContext, ProductImage
+
+    product = ProductContext(
+        product_id="1",
+        title="Courage Bracelet",
+        images=[ProductImage(src="https://cdn.shopify.com/x.jpg")],
+    )
+    concept = CreativeConceptModel(
+        type="VIDEO",
+        concept_name="Try-on",
+        hook="I never take this off",
+        headline="Courage on your wrist",
+        primary_text="The bracelet that stays with you.",
+        cta="SHOP_NOW",
+        visual_direction="UGC mirror try-on",
+    )
+    spec = video_spec_from_concept(concept, product)
+    assert spec.voice_direction
+    assert spec.music_direction
+    assert all((scene.voiceover or "").strip() for scene in spec.scenes)
+    prompt = build_video_prompt(product=product, spec=spec, styles=["UGC"])
+    assert "AUDIO IS REQUIRED" in prompt
+    assert "SPOKEN SCRIPT" in prompt
+    assert "original" in prompt.lower() or "Music:" in prompt
+

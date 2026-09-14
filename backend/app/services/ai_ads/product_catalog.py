@@ -357,7 +357,14 @@ class ShopifyProductCatalog:
         return out
 
     def attach_identity(self, product: ProductContext, refs: list[tuple[bytes, str]]) -> ProductContext:
-        data_urls = [bytes_to_data_url(raw, mime) for raw, mime in refs[:3] if raw]
+        data_urls: list[str] = []
+        for raw, mime in refs[:3]:
+            if not raw:
+                continue
+            try:
+                data_urls.append(bytes_to_data_url(raw, mime))
+            except Exception as err:
+                logger.info("ai_ads identity data-url skipped product=%s err=%s", product.product_id, err)
         product.brand_context = dict(product.brand_context or {})
         if data_urls:
             product.brand_context["identity_data_urls"] = data_urls

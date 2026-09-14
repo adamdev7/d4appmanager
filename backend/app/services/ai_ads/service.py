@@ -34,6 +34,8 @@ from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_runnin
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.product_catalog import ShopifyProductCatalog, enqueue_catalog_sync
+from app.services.ai_ads.media_io import imaging_available
+from app.services.ai_ads.exceptions import PILLOW_INSTALL_HINT
 from app.services.ai_ads.publisher import MetaCreativePublisher
 
 
@@ -364,6 +366,8 @@ class AIAdsService:
                 status_code=400,
                 detail="Add your OpenAI API key in AI Email Assistant → Business context first",
             )
+        if not imaging_available():
+            raise HTTPException(status_code=503, detail=PILLOW_INSTALL_HINT)
         product_id = str(body.get("product_id") or "")
         if not product_id:
             raise HTTPException(status_code=400, detail="product_id is required")

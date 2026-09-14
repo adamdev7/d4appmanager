@@ -8,6 +8,7 @@ from app.services.ai_ads.exceptions import InvalidAIOutput
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.prompts import VIDEO_SCRIPT
 from app.services.ai_ads.providers.video_provider import VideoGenerationProvider
+from app.services.ai_ads.complete_creative import DEFAULT_MUSIC, DEFAULT_VOICE
 from app.services.ai_ads.schemas import ProductContext, VideoSpec
 
 
@@ -58,31 +59,31 @@ class VideoCreativePlanner:
             return spec
         except (InvalidAIOutput, Exception):
             return VideoSpec(
-                duration=15,
+                duration=8,
                 format=aspect_ratio,
                 hook=concept.hook or product.title,
                 scenes=[
                     {
-                        "duration": 3,
+                        "duration": 2,
                         "visual": f"Open on the product: {product.title}",
                         "voiceover": concept.hook or product.title,
                         "text_overlay": concept.hook or product.title,
                     },
                     {
-                        "duration": 8,
+                        "duration": 4,
                         "visual": concept.visual_direction or "Demonstrate the product in use.",
                         "voiceover": (product.description or product.title)[:180],
                         "text_overlay": concept.headline or product.title,
                     },
                     {
-                        "duration": 4,
+                        "duration": 2,
                         "visual": "Clear product shot and call to action.",
-                        "voiceover": concept.cta or "Shop now",
-                        "text_overlay": concept.cta or "Shop now",
+                        "voiceover": (concept.cta or "Shop now").replace("_", " "),
+                        "text_overlay": (concept.cta or "SHOP NOW").replace("_", " "),
                     },
                 ],
-                voice_direction="Natural, confident, not hypey.",
-                music_direction="Light, modern, unobtrusive.",
+                voice_direction=DEFAULT_VOICE,
+                music_direction=DEFAULT_MUSIC,
                 cta=concept.cta or "SHOP_NOW",
             )
 

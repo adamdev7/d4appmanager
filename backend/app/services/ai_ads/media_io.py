@@ -8,7 +8,34 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
+from app.services.ai_ads.exceptions import ImageGenerationError, PILLOW_INSTALL_HINT
+
 logger = logging.getLogger(__name__)
+
+_imaging_ok: bool | None = None
+
+
+def imaging_available() -> bool:
+    """True when Pillow can open and write a still. Cached so jobs do not import on every call."""
+    global _imaging_ok
+    if _imaging_ok is not None:
+        return _imaging_ok
+    try:
+        from PIL import Image
+
+        probe = Image.new("RGB", (2, 2), (0, 0, 0))
+        probe.load()
+        probe.close()
+        _imaging_ok = True
+    except Exception:
+        _imaging_ok = False
+    return _imaging_ok
+
+
+def require_imaging() -> None:
+    if imaging_available():
+        return
+    raise ImageGenerationError(PILLOW_INSTALL_HINT, retryable=False, code="MISSING_PILLOW")
 
 _FETCH_HEADERS = {
     "User-Agent": (
@@ -193,7 +220,10 @@ def _jpeg_bytes(image, *, quality: int) -> bytes:
 
 def archive_image_bytes(data: bytes, *, max_side: int = 1400) -> tuple[bytes, str]:
     """Convert PNG/WebP/HEIC/JPEG to a compressed JPEG the rest of Astra can reuse."""
-    from PIL import Image, ImageFile, ImageOps
+    try:
+        from PIL import Image, ImageFile, ImageOps
+    except ImportError as err:
+        raise ImageGenerationError(PILLOW_INSTALL_HINT, retryable=False, code="MISSING_PILLOW") from err
 
     ImageFile.LOAD_TRUNCATED_IMAGES = True
     if not data or len(data) < 24:
@@ -230,9 +260,17 @@ def archive_image_bytes(data: bytes, *, max_side: int = 1400) -> tuple[bytes, st
 
 
 def bytes_to_data_url(data: bytes, mime: str | None = None, *, max_side: int = 768) -> str:
-    raw, out_mime = archive_image_bytes(data, max_side=max_side)
-    kind = out_mime or mime or "image/jpeg"
-    return f"data:{kind};base64,{base64.b64encode(raw).decode('ascii')}"
+    """JPEG/PNG identity stills as a data URL. Re-encodes when Pillow is present; otherwise passthrough."""
+    try:
+        raw, out_mime = archive_image_bytes(data, max_side=max_side)
+        kind = out_mime or mime or "image/jpeg"
+        return f"data:{kind};base64,{base64.b64encode(raw).decode('ascii')}"
+    except Exception as err:
+        kind = sniff_image_mime(data, mime)
+        if kind.startswith("image/") and "svg" not in kind and data and len(data) > 32:
+            logger.info("ai_ads data-url passthrough mime=%s err=%s", kind, err)
+            return f"data:{kind};base64,{base64.b64encode(data).decode('ascii')}"
+        raise
 
 
 async def fetch_image_bytes(
@@ -340,7 +378,10 @@ def fit_image_bytes(
 
     cover: crop to fill (image edits). contain: letterbox so the whole SKU stays visible (video).
     """
-    from PIL import Image, ImageOps
+    try:
+        from PIL import Image, ImageOps
+    except ImportError as err:
+        raise ImageGenerationError(PILLOW_INSTALL_HINT, retryable=False, code="MISSING_PILLOW") from err
 
     image = Image.open(BytesIO(data))
     image.load()
@@ -389,6 +430,7 @@ def prepare_video_still(
     height: int,
 ) -> tuple[bytes, str]:
     """Return one Shopify still letterboxed to the video size, or raise."""
+    require_imaging()
     errors: list[str] = []
     for raw, _mime in references or []:
         if not raw:
@@ -396,11 +438,16 @@ def prepare_video_still(
         for mode in ("contain", "cover"):
             try:
                 return fit_image_bytes(raw, width, height, mode=mode)
+            except ImageGenerationError:
+                raise
             except Exception as exc:
                 errors.append(f"{mode}:{exc}")
                 logger.info("ai_ads video still fit skipped mode=%s err=%s", mode, exc)
     detail = "; ".join(errors[:3]) or "no product photos"
-    raise ValueError(f"could not prepare a {width}x{height} product still ({detail})")
+    raise ImageGenerationError(
+        f"Could not prepare a {width}x{height} product still ({detail}).",
+        retryable=False,
+    )
 
 
 def fit_references(
@@ -410,6 +457,9 @@ def fit_references(
     fmt: str = "PNG",
     mode: str = "cover",
 ) -> list[tuple[bytes, str]]:
+    if not imaging_available():
+        logger.warning("ai_ads identity fit skipped: Pillow is not installed")
+        return []
     dims = parse_wxh(size)
     out: list[tuple[bytes, str]] = []
     for raw, mime in references or []:

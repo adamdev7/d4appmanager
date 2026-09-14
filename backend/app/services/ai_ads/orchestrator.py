@@ -31,6 +31,7 @@ from app.services.ai_ads.complete_creative import (
     compact_product,
     format_appearance_lock,
     heuristic_score,
+    meta_ready_copy,
     product_appearance_notes,
     product_reference_urls,
     video_spec_from_concept,
@@ -41,12 +42,13 @@ from app.services.ai_ads.exceptions import (
     GenerationCancelled,
     ImageGenerationError,
     VideoProviderError,
+    operator_error_message,
 )
 from app.services.ai_ads.creative_intelligence import CreativeIntelligenceAnalyzer
 from app.services.ai_ads.creative_planner import CreativePlanner
 from app.services.ai_ads.job_progress import append_job_progress
 from app.services.ai_ads.meta_importer import MetaCreativeImporter
-from app.services.ai_ads.media_io import bytes_to_data_url, prepare_video_still
+from app.services.ai_ads.media_io import bytes_to_data_url, prepare_video_still, require_imaging
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.product_catalog import ShopifyProductCatalog, image_fingerprint, product_image_payloads
 from app.services.ai_ads.product_context import normalize_product
@@ -247,6 +249,7 @@ class AdsAIOrchestrator:
             pct=8,
         )
         try:
+            require_imaging()
             request = json.loads(job.request_json or "{}")
             product = await self.load_product(job.product_id or request.get("product_id"))
             image_count, video_count = resolve_generation_counts(
@@ -458,6 +461,13 @@ class AdsAIOrchestrator:
                         ),
                         pct=pct,
                     )
+                copy = meta_ready_copy(
+                    hook=concept.hook or "",
+                    headline=concept.headline or "",
+                    primary_text=concept.primary_text or "",
+                    cta=concept.cta or "",
+                    product_title=product.title,
+                )
                 asset = CreativeAsset(
                     store_id=self.store.id,
                     user_id=self.user.id,
@@ -469,10 +479,10 @@ class AdsAIOrchestrator:
                     source_product_id=product.product_id,
                     type="VIDEO" if kind == "VIDEO" else "IMAGE",
                     status="GENERATING",
-                    hook=concept.hook,
-                    headline=concept.headline,
-                    primary_text=concept.primary_text,
-                    cta=concept.cta,
+                    hook=copy["hook"],
+                    headline=copy["headline"],
+                    primary_text=copy["primary_text"],
+                    cta=copy["cta"],
                     visual_direction=concept.visual_direction,
                     rationale=concept.rationale,
                     aspect_ratio="9:16" if kind == "VIDEO" else aspect,
@@ -480,105 +490,50 @@ class AdsAIOrchestrator:
                 )
                 self.db.add(asset)
                 self.db.commit()
-                try:
-                    if kind == "VIDEO":
-                        spec = video_spec_from_concept(brief_model, product, aspect_ratio="9:16")
-                        prompt = build_video_prompt(
+                last_exc: BaseException | None = None
+                for attempt in range(2):
+                    try:
+                        await self._render_one_creative(
+                            job=job,
+                            asset=asset,
+                            concept=concept,
+                            brief_model=brief_model,
                             product=product,
-                            spec=spec,
-                            brand_style=brand_style,
-                            winning_notes=winning_motion,
-                            variation_index=video_slot,
-                            variation_count=max(video_total, 1),
-                            styles=styles,
-                        )
-                        payload = spec.model_dump()
-                        payload["prompt"] = prompt
-                        # Sora uses input_reference as the first frame. Letterbox the real
-                        # Shopify photo so the whole SKU stays visible at 720x1280.
-                        _, video_w, video_h = resolve_video_size("9:16")
-                        if not product_refs:
-                            raise VideoProviderError(
-                                f"No Shopify photo of {product.title} to lock into the video."
-                            )
-                        try:
-                            identity_still = prepare_video_still(product_refs, video_w, video_h)
-                        except Exception as exc:
-                            logger.warning(
-                                "ai_ads video still failed store_id=%s err=%s",
-                                self.store.id,
-                                str(exc)[:300],
-                            )
-                            raise VideoProviderError(
-                                f"Could not prepare the {product.title} photo for video."
-                            ) from exc
-                        payload["input_reference"] = identity_still
-                        poster = self.assets.save_bytes(
-                            identity_still[0],
-                            mime_type=identity_still[1],
-                            prefix="poster",
-                        )
-                        asset.preview_url = poster["public_url"]
-                        rendered = await video_provider.generate_video(
-                            payload,
-                            cancel_check=lambda: self._raise_if_cancelled(job),
-                        )
-                        mp4_path = str(rendered.get("local_path") or "")
-                        if not mp4_path.lower().endswith(".mp4"):
-                            raise VideoProviderError("Video render did not produce an MP4")
-                        asset.local_path = mp4_path
-                        asset.width = rendered.get("width") or 720
-                        asset.height = rendered.get("height") or 1280
-                        asset.video_spec_json = json.dumps(
-                            {"spec": spec.model_dump(), "provider": {k: v for k, v in rendered.items() if k != "input_reference"}, "rendered": True}
-                        )
-                        has_media = True
-                    else:
-                        prompt = build_image_prompt(
-                            product=product,
-                            visual_direction=concept.visual_direction,
-                            image_prompt=getattr(brief_model, "image_prompt", "") or "",
+                            product_refs=product_refs,
                             brand_style=brand_style,
                             winning_notes=winning_notes,
-                            aspect_ratio=aspect,
-                            placement=placement,
-                            variation_index=image_slot,
-                            variation_count=max(image_total, 1),
+                            winning_motion=winning_motion,
                             styles=styles,
+                            aspect=aspect,
+                            placement=placement,
+                            kind=kind,
+                            image_slot=image_n - 1 if kind != "VIDEO" else 0,
+                            video_slot=video_n - 1 if kind == "VIDEO" else 0,
+                            image_total=image_total,
+                            video_total=video_total,
+                            image_provider=image_provider,
+                            video_provider=video_provider,
                         )
-                        result = await image_provider.generate(
-                            ImageGenerationRequest(
-                                prompt=prompt,
-                                aspect_ratio=aspect,
-                                placement=placement,
-                            ),
-                            identity_images=product_refs,
+                        last_exc = None
+                        break
+                    except GenerationCancelled:
+                        raise
+                    except (ImageGenerationError, VideoProviderError) as exc:
+                        last_exc = exc
+                        if not exc.retryable or attempt == 1:
+                            break
+                        self._progress(
+                            job,
+                            step="error",
+                            title=f"Retrying {concept.concept_name or kind.lower()}",
+                            detail=operator_error_message(exc)[:280],
+                            pct=job.progress_pct or pct,
                         )
-                        asset.local_path = result.local_path
-                        asset.preview_url = result.preview_url
-                        asset.width = result.width
-                        asset.height = result.height
-                        has_media = bool(result.preview_url)
-                        if not has_media:
-                            raise ImageGenerationError("Image generation returned no file")
-                    score = heuristic_score(
-                        has_media=has_media,
-                        hook=concept.hook or "",
-                        headline=concept.headline or "",
-                        primary_text=concept.primary_text or "",
-                        visual=concept.visual_direction or "",
-                        winning_notes=winning_notes,
-                        portfolio_bucket=concept.portfolio_bucket or "",
-                        product_title=product.title,
-                    )
-                    asset.ai_score = float(score.total)
-                    asset.score_breakdown_json = score.breakdown.model_dump_json()
-                    if not has_media:
-                        raise ImageGenerationError(
-                            "Complete creative requires a rendered image or MP4 — text-only concepts are not saved as ready ads."
-                        )
-                    asset.status = "READY"
-                    concept.status = "READY"
+                        await asyncio.sleep(2)
+                    except Exception as exc:
+                        last_exc = exc
+                        break
+                if last_exc is None:
                     job.completed_items += 1
                     done_pct = 55 + int(((index + 1) / total) * 40)
                     self._progress(
@@ -588,30 +543,16 @@ class AdsAIOrchestrator:
                         detail=f"{job.completed_items} of {job.total_items} creatives ready.",
                         pct=done_pct,
                     )
-                except GenerationCancelled:
-                    raise
-                except (ImageGenerationError, VideoProviderError) as exc:
+                else:
                     asset.status = "FAILED"
-                    asset.failure_reason = exc.message
+                    asset.failure_reason = operator_error_message(last_exc)[:500]
                     concept.status = "FAILED"
                     job.failed_items += 1
                     self._progress(
                         job,
                         step="error",
                         title=f"Could not finish {concept.concept_name or kind.lower()}",
-                        detail=exc.message[:280],
-                        pct=job.progress_pct or pct,
-                    )
-                except Exception as exc:
-                    asset.status = "FAILED"
-                    asset.failure_reason = str(exc)[:500]
-                    concept.status = "FAILED"
-                    job.failed_items += 1
-                    self._progress(
-                        job,
-                        step="error",
-                        title=f"Could not finish {concept.concept_name or kind.lower()}",
-                        detail=str(exc)[:280],
+                        detail=asset.failure_reason[:280],
                         pct=job.progress_pct or pct,
                     )
                 self.db.commit()
@@ -621,7 +562,17 @@ class AdsAIOrchestrator:
                 job.status = "PARTIAL"
             elif job.failed_items and not job.completed_items:
                 job.status = "FAILED"
-                job.error_message = "All creatives failed"
+                job.error_message = operator_error_message(
+                    Exception(job.error_message or "All creatives failed")
+                )
+                if job.failed_items:
+                    failed_asset = self.db.scalar(
+                        select(CreativeAsset)
+                        .where(CreativeAsset.job_id == job.id, CreativeAsset.status == "FAILED")
+                        .limit(1)
+                    )
+                    if failed_asset and failed_asset.failure_reason:
+                        job.error_message = failed_asset.failure_reason[:800]
             else:
                 job.status = "COMPLETED"
             job.finished_at = datetime.now(UTC)
@@ -641,15 +592,150 @@ class AdsAIOrchestrator:
         except Exception as exc:
             logger.exception("ai_ads generation job failed store_id=%s job=%s", self.store.id, job.id)
             job.status = "FAILED"
-            job.error_message = str(exc)[:800]
+            job.error_message = operator_error_message(exc)
             job.finished_at = datetime.now(UTC)
             self._progress(
                 job,
                 step="error",
                 title="Generation stopped",
-                detail=str(exc)[:280],
+                detail=job.error_message[:280],
                 pct=max(job.progress_pct or 0, 8),
             )
+
+    async def _render_one_creative(
+        self,
+        *,
+        job: CreativeGenerationJob,
+        asset: CreativeAsset,
+        concept: Any,
+        brief_model: Any,
+        product: ProductContext,
+        product_refs: list[tuple[bytes, str]],
+        brand_style: str,
+        winning_notes: str,
+        winning_motion: str,
+        styles: list[str],
+        aspect: str,
+        placement: str,
+        kind: str,
+        image_slot: int,
+        video_slot: int,
+        image_total: int,
+        video_total: int,
+        image_provider: OpenAIImageProvider,
+        video_provider: OpenAIVideoProvider,
+    ) -> None:
+        """Render one image or MP4. Raises on failure so the job loop can retry."""
+        copy = meta_ready_copy(
+            hook=asset.hook or concept.hook or "",
+            headline=asset.headline or concept.headline or "",
+            primary_text=asset.primary_text or concept.primary_text or "",
+            cta=asset.cta or concept.cta or "",
+            product_title=product.title,
+        )
+        asset.hook = copy["hook"]
+        asset.headline = copy["headline"]
+        asset.primary_text = copy["primary_text"]
+        asset.cta = copy["cta"]
+        if kind == "VIDEO":
+            spec = video_spec_from_concept(brief_model, product, aspect_ratio="9:16")
+            prompt = build_video_prompt(
+                product=product,
+                spec=spec,
+                brand_style=brand_style,
+                winning_notes=winning_motion,
+                variation_index=video_slot,
+                variation_count=max(video_total, 1),
+                styles=styles,
+            )
+            payload = spec.model_dump()
+            payload["prompt"] = prompt
+            _, video_w, video_h = resolve_video_size("9:16")
+            if not product_refs:
+                raise VideoProviderError(
+                    f"No Shopify photo of {product.title} to lock into the video."
+                )
+            try:
+                identity_still = prepare_video_still(product_refs, video_w, video_h)
+            except ImageGenerationError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "ai_ads video still failed store_id=%s err=%s",
+                    self.store.id,
+                    str(exc)[:300],
+                )
+                raise VideoProviderError(
+                    f"Could not prepare the {product.title} photo for video."
+                ) from exc
+            payload["input_reference"] = identity_still
+            poster = self.assets.save_bytes(
+                identity_still[0],
+                mime_type=identity_still[1],
+                prefix="poster",
+            )
+            asset.preview_url = poster["public_url"]
+            rendered = await video_provider.generate_video(
+                payload,
+                cancel_check=lambda: self._raise_if_cancelled(job),
+            )
+            mp4_path = str(rendered.get("local_path") or "")
+            if not mp4_path.lower().endswith(".mp4"):
+                raise VideoProviderError("Video render did not produce an MP4")
+            asset.local_path = mp4_path
+            asset.width = rendered.get("width") or 720
+            asset.height = rendered.get("height") or 1280
+            asset.video_spec_json = json.dumps(
+                {
+                    "spec": spec.model_dump(),
+                    "provider": {k: v for k, v in rendered.items() if k != "input_reference"},
+                    "rendered": True,
+                    "poster_path": poster.get("relative_path"),
+                }
+            )
+            has_media = True
+        else:
+            prompt = build_image_prompt(
+                product=product,
+                visual_direction=concept.visual_direction,
+                image_prompt=getattr(brief_model, "image_prompt", "") or "",
+                brand_style=brand_style,
+                winning_notes=winning_notes,
+                aspect_ratio=aspect,
+                placement=placement,
+                variation_index=image_slot,
+                variation_count=max(image_total, 1),
+                styles=styles,
+            )
+            result = await image_provider.generate(
+                ImageGenerationRequest(
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                    placement=placement,
+                ),
+                identity_images=product_refs,
+            )
+            asset.local_path = result.local_path
+            asset.preview_url = result.preview_url
+            asset.width = result.width
+            asset.height = result.height
+            has_media = bool(result.preview_url or result.local_path)
+            if not has_media:
+                raise ImageGenerationError("Image generation returned no file")
+        score = heuristic_score(
+            has_media=has_media,
+            hook=asset.hook or "",
+            headline=asset.headline or "",
+            primary_text=asset.primary_text or "",
+            visual=concept.visual_direction or "",
+            winning_notes=winning_notes,
+            portfolio_bucket=concept.portfolio_bucket or "",
+            product_title=product.title,
+        )
+        asset.ai_score = float(score.total)
+        asset.score_breakdown_json = score.breakdown.model_dump_json()
+        asset.status = "READY"
+        concept.status = "READY"
 
     def _raise_if_cancelled(self, job: CreativeGenerationJob) -> None:
         from app.services.ai_ads.job_runner import is_cancel_requested
@@ -699,7 +785,10 @@ class AdsAIOrchestrator:
             for raw, mime in identity_images[:3]:
                 if not raw:
                     continue
-                images.append({"url": bytes_to_data_url(raw, mime)})
+                try:
+                    images.append({"url": bytes_to_data_url(raw, mime)})
+                except Exception as err:
+                    logger.info("ai_ads appearance lock still skipped err=%s", err)
         if not images:
             images = [{"url": src} for src in product_reference_urls(product)[:3]]
         text = fallback

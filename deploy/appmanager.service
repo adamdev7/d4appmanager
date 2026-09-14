@@ -6,6 +6,8 @@ After=network.target
 Type=simple
 WorkingDirectory=/var/www/appmanager/backend
 Environment=PATH=/var/www/appmanager/backend/.venv/bin
+# After git pull, install deps before restart so Pillow and other packages stay present:
+#   /var/www/appmanager/backend/.venv/bin/pip install -r /var/www/appmanager/backend/requirements.txt
 ExecStart=/var/www/appmanager/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=3
