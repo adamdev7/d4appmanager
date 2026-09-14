@@ -132,7 +132,7 @@ export function AIAdsDashboardPage() {
           <Link to="/ai-ads/generate">
             <Button>
               <Sparkles className="h-4 w-4" />
-              Generate videos
+              Generate ads
             </Button>
           </Link>
         </div>
@@ -161,9 +161,9 @@ export function AIAdsDashboardPage() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Stat
-          label="Videos this week"
-          value={String(data?.generated_this_week.videos ?? 0)}
-          foot="Rendered by Astra"
+          label="Generated this week"
+          value={`${data?.generated_this_week.images ?? 0} · ${data?.generated_this_week.videos ?? 0}`}
+          foot="Stills · videos"
           icon={Film}
         />
         <Stat
@@ -226,7 +226,7 @@ export function AIAdsDashboardPage() {
             <EmptyLine
               text="No generated creatives yet."
               to="/ai-ads/generate"
-              cta="Generate your first video"
+              cta="Generate your first ads"
             />
           )}
         </Card>
@@ -390,10 +390,10 @@ function NextStep({
     return {
       icon: Sparkles,
       title: "Render your next batch",
-      body: "Strategy is ready and photos are stored. Pick a product and generate vertical clips you can caption yourself.",
+      body: "Strategy is ready and photos are stored. Pick a product and generate stills and vertical clips you can caption yourself.",
       action: (
         <Link to="/ai-ads/generate">
-          <Button>Generate videos</Button>
+          <Button>Generate ads</Button>
         </Link>
       ),
     };

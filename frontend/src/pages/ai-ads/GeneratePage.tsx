@@ -29,8 +29,13 @@ const STYLES = [
   { id: "LIFESTYLE", label: "Lifestyle", help: "Build a world around the product" },
   { id: "PROBLEM_SOLUTION", label: "Problem / solution", help: "The pain first, then this product as the fix" },
   { id: "PROMOTIONAL", label: "Promotional", help: "Offer energy on your real price — never a fake discount" },
+  { id: "UNBOXING", label: "Unboxing", help: "First-touch reveal from tissue or a box" },
+  { id: "MACRO", label: "Macro", help: "Extreme close-up of materials and hardware" },
+  { id: "FLAT_LAY", label: "Flat lay", help: "Editorial overhead — product fully readable" },
+  { id: "STREET_STYLE", label: "Street style", help: "Candid outdoor fashion, product worn" },
 ] as const;
 
+const MAX_IMAGES = 4;
 const MAX_VIDEOS = 4;
 
 export function GeneratePage() {
@@ -42,11 +47,13 @@ export function GeneratePage() {
   const [jobs, setJobs] = useState<AIAdsJob[]>([]);
   const [productId, setProductId] = useState("");
   const [query, setQuery] = useState("");
+  const [imageCount, setImageCount] = useState(2);
   const [videoCount, setVideoCount] = useState(1);
   const [styles, setStyles] = useState<string[]>(["UGC", "PRODUCT_DEMO", "LIFESTYLE"]);
   const [audience, setAudience] = useState("");
   const [objective, setObjective] = useState("conversions");
-  const [placement, setPlacement] = useState("reels");
+  const [placement, setPlacement] = useState("feed");
+  const [aspect, setAspect] = useState("4:5");
   const [avatarId, setAvatarId] = useState("");
   const [brandStyle, setBrandStyle] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -148,13 +155,13 @@ export function GeneratePage() {
     try {
       const created = await api.aiAds.createGenerationJob(storeId, {
         product_id: productId,
-        image_count: 0,
+        image_count: imageCount,
         video_count: videoCount,
         styles,
         audience,
         objective,
         placement,
-        aspect_ratio: "9:16",
+        aspect_ratio: aspect,
         brand_style: brandStyle,
         avatar_id: avatarId || undefined,
       });
@@ -185,7 +192,14 @@ export function GeneratePage() {
 
   const photosLocked = Boolean(selectedProduct?.photos_cached);
   const recent = jobs.filter((j) => !isLiveJob(j)).slice(0, 6);
-  const blocked = !productId || !photosLocked || styles.length === 0 || Boolean(liveJob);
+  const hasMedia = imageCount + videoCount >= 1;
+  const blocked = !productId || !photosLocked || styles.length === 0 || !hasMedia || Boolean(liveJob);
+  const mixLabel = [
+    imageCount ? `${imageCount} still${imageCount === 1 ? "" : "s"}` : null,
+    videoCount ? `${videoCount} video${videoCount === 1 ? "" : "s"}` : null,
+  ]
+    .filter(Boolean)
+    .join(" + ") || "Nothing selected";
 
   return (
     <div className="space-y-6">
@@ -204,7 +218,7 @@ export function GeneratePage() {
             n={1}
             done={Boolean(selectedProduct)}
             title="Pick the product"
-            description="Every clip is rendered from this SKU's real photos, so the product on screen is the one you ship."
+            description="Every still and clip is rendered from this SKU's real photos, so the product on screen is the one you ship."
           >
             {products.length === 0 ? (
               <p className="text-sm text-content-subtle">
@@ -362,7 +376,7 @@ export function GeneratePage() {
             title="Choose the creative angles"
             description="Astra writes one concept per angle and keeps rotating through your picks."
           >
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
               {STYLES.map((s) => {
                 const on = styles.includes(s.id);
                 return (
@@ -402,31 +416,26 @@ export function GeneratePage() {
               </p>
             )}
 
-            <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-              <div>
-                <p className="text-sm font-medium text-content">How many videos</p>
-                <p className="text-xs text-content-subtle">
-                  Each clip spends model credits. Start small, keep the winners.
+            <div className="mt-5 space-y-4 border-t border-border pt-4">
+              <CountRow
+                label="Still images"
+                hint="Feed-ready stills. Clean plates — you add copy later."
+                value={imageCount}
+                max={MAX_IMAGES}
+                onChange={setImageCount}
+              />
+              <CountRow
+                label="Vertical videos"
+                hint="9:16 MP4s. No burned-in text or voice."
+                value={videoCount}
+                max={MAX_VIDEOS}
+                onChange={setVideoCount}
+              />
+              {imageCount + videoCount < 1 && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  Set images or videos to at least 1.
                 </p>
-              </div>
-              <div className="inline-flex rounded-lg border border-border bg-surface-muted p-1">
-                {Array.from({ length: MAX_VIDEOS }, (_, i) => i + 1).map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    onClick={() => setVideoCount(n)}
-                    aria-pressed={videoCount === n}
-                    className={cn(
-                      "h-8 w-10 rounded-md text-sm font-semibold transition-all duration-150",
-                      videoCount === n
-                        ? "bg-surface text-content shadow-sm ring-1 ring-inset ring-brand-500/25"
-                        : "text-content-muted hover:text-content"
-                    )}
-                  >
-                    {n}
-                  </button>
-                ))}
-              </div>
+              )}
             </div>
           </Step>
 
@@ -467,11 +476,25 @@ export function GeneratePage() {
                 <Select
                   label="Placement"
                   value={placement}
-                  onChange={(e) => setPlacement(e.target.value)}
-                  hint="Vertical 9:16 either way"
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setPlacement(next);
+                    setAspect(next === "feed" ? "4:5" : "9:16");
+                  }}
                 >
+                  <option value="feed">Feed</option>
                   <option value="reels">Reels</option>
                   <option value="stories">Stories</option>
+                </Select>
+                <Select
+                  label="Image aspect"
+                  value={aspect}
+                  onChange={(e) => setAspect(e.target.value)}
+                  hint="Videos always render 9:16"
+                >
+                  <option value="4:5">4:5 feed</option>
+                  <option value="1:1">1:1 square</option>
+                  <option value="9:16">9:16 stories</option>
                 </Select>
                 <Input
                   label="Brand style"
@@ -504,14 +527,22 @@ export function GeneratePage() {
         <div className="space-y-4 lg:sticky lg:top-32">
           <Card className="border-brand-line/40 bg-[radial-gradient(circle_at_top_right,rgba(34,197,94,0.09),transparent_45%)]">
             <div className="flex items-center gap-2">
-              <Video className="h-4 w-4 text-brand-600 dark:text-brand-400" />
-              <CardTitle className="text-base">
-                {videoCount} vertical video{videoCount === 1 ? "" : "s"}
-              </CardTitle>
+              {videoCount && !imageCount ? (
+                <Video className="h-4 w-4 text-brand-600 dark:text-brand-400" />
+              ) : (
+                <ImagePlus className="h-4 w-4 text-brand-600 dark:text-brand-400" />
+              )}
+              <CardTitle className="text-base">{mixLabel}</CardTitle>
             </div>
             <CardDescription>
-              9:16 MP4 · {placement} · clean plate with no burned-in text or voice, so you add
-              captions and text-to-speech yourself.
+              {imageCount
+                ? `${aspect} stills`
+                : null}
+              {imageCount && videoCount ? " · " : ""}
+              {videoCount ? `9:16 MP4 · ${placement}` : placement}
+              {" · "}
+              clean plates with no burned-in text
+              {videoCount ? " or voice" : ""}, so you add captions yourself.
             </CardDescription>
 
             <ul className="mt-4 space-y-2">
@@ -530,6 +561,9 @@ export function GeneratePage() {
                   ? `${styles.length} angle${styles.length === 1 ? "" : "s"} selected`
                   : "Choose a creative angle"}
               </Requirement>
+              <Requirement ok={hasMedia}>
+                {hasMedia ? mixLabel : "Set images or videos above 0"}
+              </Requirement>
             </ul>
 
             <Button
@@ -540,13 +574,13 @@ export function GeneratePage() {
               disabled={blocked}
             >
               <Sparkles className="h-4 w-4" />
-              Generate {videoCount} video{videoCount === 1 ? "" : "s"}
+              Generate {mixLabel.toLowerCase()}
             </Button>
 
             <p className="mt-3 text-xs text-content-subtle">
               {liveJob
                 ? "A run is already in progress. Wait for it to finish or halt it from Jobs."
-                : "Rendering takes a few minutes per clip. You can leave this page — progress is saved under Jobs."}
+                : "Rendering takes a few minutes per file. You can leave this page — progress is saved under Jobs."}
             </p>
           </Card>
 
@@ -578,6 +612,47 @@ export function GeneratePage() {
           <JobHistoryList jobs={recent} products={products} />
         </div>
       )}
+    </div>
+  );
+}
+
+function CountRow({
+  label,
+  hint,
+  value,
+  max,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  max: number;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <p className="text-sm font-medium text-content">{label}</p>
+        <p className="text-xs text-content-subtle">{hint}</p>
+      </div>
+      <div className="inline-flex rounded-lg border border-border bg-surface-muted p-1">
+        {Array.from({ length: max + 1 }, (_, n) => n).map((n) => (
+          <button
+            key={n}
+            type="button"
+            onClick={() => onChange(n)}
+            aria-pressed={value === n}
+            className={cn(
+              "h-8 w-9 rounded-md text-sm font-semibold transition-all duration-150",
+              value === n
+                ? "bg-surface text-content shadow-sm ring-1 ring-inset ring-brand-500/25"
+                : "text-content-muted hover:text-content"
+            )}
+          >
+            {n}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

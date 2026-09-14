@@ -303,7 +303,7 @@ class AdsOpenAIClient:
             "n": 1,
         }
         if _is_gpt_image(model):
-            payload["quality"] = "medium"
+            payload["quality"] = "high"
         else:
             payload["response_format"] = "b64_json"
         last_error: Exception | None = None
@@ -390,7 +390,7 @@ class AdsOpenAIClient:
             "n": "1",
         }
         if _is_gpt_image(model):
-            form["quality"] = "medium"
+            form["quality"] = "high"
             form["input_fidelity"] = "low"
         # One still, exact pixels. Sending a catalog crop or mixed image[] sizes
         # makes OpenAI return "Inpaint image must match the requested width and height".

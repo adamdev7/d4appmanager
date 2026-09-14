@@ -275,7 +275,7 @@ export function CreativesPage() {
             body={
               status
                 ? "Clear the status filter to see the rest of the library."
-                : "Pick a product, lock its photos, and Astra renders vertical clips you can caption yourself."
+                : "Pick a product, lock its photos, and Astra renders stills and vertical clips you can caption yourself."
             }
             action={
               status ? (
@@ -286,7 +286,7 @@ export function CreativesPage() {
                 <Link to="/ai-ads/generate">
                   <Button>
                     <Sparkles className="h-4 w-4" />
-                    Generate videos
+                    Generate ads
                   </Button>
                 </Link>
               )

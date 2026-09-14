@@ -486,6 +486,25 @@ def test_promotional_style_builds_offer_ad_not_catalog_retouch():
     assert "catalog" in prompt.lower() or "listing" in prompt.lower()
 
 
+def test_image_prompt_is_a_clean_plate_without_baked_text():
+    from app.services.ai_ads.complete_creative import KNOWN_STYLES, build_image_prompt
+    from app.services.ai_ads.schemas import ProductContext
+
+    assert "UNBOXING" in KNOWN_STYLES
+    assert "MACRO" in KNOWN_STYLES
+    assert "FLAT_LAY" in KNOWN_STYLES
+    assert "STREET_STYLE" in KNOWN_STYLES
+    prompt = build_image_prompt(
+        product=ProductContext(product_id="1", title="Courage Bracelet"),
+        visual_direction="Street stride",
+        styles=["STREET_STYLE"],
+        aspect_ratio="4:5",
+    )
+    assert "CLEAN PLATE" in prompt
+    assert "on-screen text" in prompt.lower()
+    assert "headline overlay" not in prompt.lower()
+
+
 def test_diversify_concepts_makes_five_distinct_image_prompts():
     from app.services.ai_ads.complete_creative import diversify_concepts, image_shot_recipe
     from app.services.ai_ads.schemas import CreativeConceptModel, ProductContext

@@ -41,9 +41,9 @@ export function AIAdsLayout() {
           </p>
           <h1 className="text-2xl font-semibold tracking-tight text-content">AI Ads</h1>
           <p className="mt-1.5 max-w-2xl text-sm text-content-muted">
-            Astra learns from your live Meta campaigns, then renders vertical video from your real
-            product photos. Clips come back as clean plates — no burned-in text, no voice — and
-            nothing spends until you approve it.
+            Astra learns from your live Meta campaigns, then renders stills and vertical video from
+            your real product photos. Files come back as clean plates — no burned-in text, no
+            voice — and nothing spends until you approve it.
           </p>
         </div>
       </header>

@@ -115,8 +115,8 @@ export function AIAdsSettingsPage() {
             <CardTitle>Weekly automation</CardTitle>
           </div>
           <CardDescription>
-            Syncs Meta, then queues a small batch of videos modelled on your winning ads. Nothing is
-            auto-published, and every clip still needs your approval.
+            Syncs Meta, then queues a small batch of stills and videos modelled on your winning ads.
+            Nothing is auto-published, and every file still needs your approval.
           </CardDescription>
         </CardHeader>
         <div className="space-y-5">
@@ -140,12 +140,24 @@ export function AIAdsSettingsPage() {
               ))}
             </Select>
             <Select
+              label="Stills per run"
+              value={String(Math.min(8, Math.max(0, settings.image_count ?? 2)))}
+              onChange={(e) => setSettings({ ...settings, image_count: Number(e.target.value) })}
+              hint="Each still spends model credits"
+            >
+              {[0, 1, 2, 3, 4].map((n) => (
+                <option key={n} value={n}>
+                  {n} still{n === 1 ? "" : "s"}
+                </option>
+              ))}
+            </Select>
+            <Select
               label="Videos per run"
-              value={String(Math.min(4, Math.max(1, settings.video_count || 1)))}
+              value={String(Math.min(4, Math.max(0, settings.video_count ?? 1)))}
               onChange={(e) => setSettings({ ...settings, video_count: Number(e.target.value) })}
               hint="Each clip spends model credits"
             >
-              {[1, 2, 3, 4].map((n) => (
+              {[0, 1, 2, 3, 4].map((n) => (
                 <option key={n} value={n}>
                   {n} video{n === 1 ? "" : "s"}
                 </option>

@@ -56,30 +56,32 @@ GENERATION_PLAN = f"""{SHARED_RULES}
 
 Task: from Shopify product data + ranked Meta campaign creatives, return ONE JSON object:
 - strategy: what to keep from stronger ads, what to avoid from weaker ads, angles to test
-- concepts: exactly video_count VIDEO ads. image_count is always 0 — do not return IMAGE concepts.
-
+- concepts: exactly image_count IMAGE ads and video_count VIDEO ads. If a count is 0, return none of that type.
 
 Attached images, in order:
 1) Catalog photos of the EXACT product. Every concept must feature this SKU — same materials, colors, clasp, construction. Never a different bracelet or generic jewelry stand-in.
 2) Winning Meta ads (if attached). Study how those ads present the offer visually, then invent NEW scenes that use those patterns.
 
 You are briefing brand-new advertisement files. Copy alone is not enough.
-Honor the operator's selected styles (round-robin): UGC, PRODUCT_DEMO, LIFESTYLE, PROBLEM_SOLUTION, PROMOTIONAL.
+Honor the operator's selected styles (round-robin): UGC, PRODUCT_DEMO, LIFESTYLE, PROBLEM_SOLUTION, PROMOTIONAL, UNBOXING, MACRO, FLAT_LAY, STREET_STYLE.
 - UGC: phone-native, messy real life, not a studio catalog.
 - PRODUCT_DEMO: show how the exact product works on a body.
 - LIFESTYLE: a new world around the product that the listing never used.
 - PROBLEM_SOLUTION: friction then the fix, using only product facts.
-- PROMOTIONAL: offer-ad energy (gift, drop, urgency, overlay-safe space) using the real price only. Never invent a discount.
-Each VIDEO needs a unique scene list featuring the same locked product.
-If they asked for N videos, N different storyboards.
-Return zero IMAGE concepts.
+- PROMOTIONAL: offer-ad energy using the real price only. Never invent a discount. Never paint prices.
+- UNBOXING: first-touch reveal from tissue or box.
+- MACRO: extreme close-up of materials and hardware.
+- FLAT_LAY: editorial overhead, product fully readable.
+- STREET_STYLE: candid outdoor fashion, product worn.
+Each IMAGE needs a unique full-frame NEW scene featuring the locked product. CLEAN PLATE: no on-screen text.
+Each VIDEO needs a unique scene list. CLEAN PLATE: 9:16, 4–12 seconds, NO on-screen text, NO spoken voiceover.
+If they asked for N images, N different stills. If they asked for N videos, N different storyboards.
+Do not brief a retouch, crop, or color-grade of the attached catalog still.
 
 Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
-Borrow winning offer-look traits (wrist lifestyle, macro clasp, UGC energy) — do NOT clone those ads or catalog photos.
+Borrow winning offer-look traits — do NOT clone those ads or catalog photos.
 Do not invent product facts, discounts, or reviews.
-Keep image_prompt specific and product-accurate. No fake UI or unreadable text in images.
-Do not brief a retouch, crop, or color-grade of the attached catalog still.
-VIDEO concepts are clean visual plates: 9:16, 4–12 seconds, NO on-screen text, NO spoken voiceover. Operator adds captions and TTS later. Never a silent-text end card.
+Keep image_prompt specific, product-accurate, photorealistic, and text-free.
 """
 
 CREATIVE_STRATEGY = f"""{SHARED_RULES}
@@ -95,7 +97,7 @@ Task: generate DISTINCT complete advertisement creatives (not sketches, not copy
 The attached catalog photos are the EXACT product. Never invent a different SKU.
 Do not clone a winning ad or catalog shot — new scene, same product.
 Honor the requested styles in the payload (round-robin) and the portfolio mix:
-- UGC / PRODUCT_DEMO / LIFESTYLE / PROBLEM_SOLUTION / PROMOTIONAL as specified
+- UGC / PRODUCT_DEMO / LIFESTYLE / PROBLEM_SOLUTION / PROMOTIONAL / UNBOXING / MACRO / FLAT_LAY / STREET_STYLE as specified
 - winner_variation: keep a TRAIT associated with stronger Meta ads (hook type, proof, energy) but invent a NEW visual
 - combination: combine traits from different stronger ads into a NEW scene
 - exploration: a meaningfully different direction (new setting, camera, lighting)
@@ -105,6 +107,7 @@ source_creative_ids when inspired by existing ads, and a rationale.
 IMAGE concepts: image_prompt must describe THIS locked product in a full photorealistic NEW advertisement shot.
 Every IMAGE in the batch must differ in setting, camera angle, lighting, and composition.
 Never retouch the catalog photo. The attached still is identity only.
+CLEAN PLATE for images: no letters, numbers, logos, prices, or UI on the frame.
 VIDEO concepts: include 3-5 scenes (duration, visual) that sum 8-12 seconds.
 Do not fill voiceover or text_overlay — those stay empty. No on-screen words.
 Every VIDEO in the batch must have a different storyboard.
@@ -125,7 +128,8 @@ Task: write a single image-generation prompt for a brand-new advertisement still
 The reference image is the exact product. Preserve identity: materials, colors, hardware, geometry.
 Describe a new scene, camera, lighting, and composition. Do not return the reference photo.
 Specify composition, lighting, background, aspect ratio, and placement.
-Do not add logos, fake UI, fake reviews, unreadable dense text, extra products, or a different SKU.
+Photorealistic craft: sharp product, true materials, correct anatomy, no melted metal.
+CLEAN PLATE: no logos, fake UI, fake reviews, prices, letters, numbers, extra products, or a different SKU.
 Do not invent packaging details.
 The prompt itself should be a detailed visual description, not JSON.
 """

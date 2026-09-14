@@ -94,7 +94,7 @@ export function JobHistoryList({
           log.
         </CardDescription>
         <Link to="/ai-ads/generate" className="inline-block mt-4">
-          <Button>Generate videos</Button>
+          <Button>Generate ads</Button>
         </Link>
       </Card>
     );

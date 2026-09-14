@@ -28,7 +28,7 @@ from app.db.models import (
     User,
 )
 from app.integrations.shopify.client import ShopifyClient
-from app.services.ai_ads.complete_creative import clamp_generation_counts, video_only_count
+from app.services.ai_ads.complete_creative import clamp_generation_counts, resolve_generation_counts
 from app.services.ai_ads.job_progress import append_job_progress, parse_job_log
 from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_running, request_cancel
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
@@ -379,24 +379,31 @@ class AIAdsService:
                 detail="Add product pictures first. Save them on Generate, then run again.",
             )
         settings_row = self.get_or_create_settings(db, store_id)
-        videos = video_only_count(
+        images, videos = resolve_generation_counts(
+            body.get("image_count"),
             body.get("video_count"),
-            default_videos=settings_row.video_count if settings_row.video_count else 1,
+            default_images=settings_row.image_count if settings_row.image_count is not None else 2,
+            default_videos=settings_row.video_count if settings_row.video_count is not None else 1,
         )
-        if videos < 1:
+        if images + videos < 1:
             raise HTTPException(
                 status_code=400,
-                detail="Astra only renders videos. Set videos to at least 1.",
+                detail="Set images or videos above 0. Astra will not generate a type you set to 0.",
             )
+        placement = str(body.get("placement") or settings_row.default_placement or "feed")
+        aspect = str(body.get("aspect_ratio") or settings_row.default_aspect_ratio or "4:5")
+        if videos and not images:
+            placement = str(body.get("placement") or settings_row.default_placement or "reels")
+            aspect = "9:16"
         payload = {
             "product_id": product_id,
-            "image_count": 0,
+            "image_count": images,
             "video_count": videos,
             "styles": list(body.get("styles") or json.loads(settings_row.creative_styles_json or "[]")),
             "audience": body.get("audience") or settings_row.default_audience,
             "objective": body.get("objective") or settings_row.default_objective,
-            "placement": body.get("placement") or settings_row.default_placement or "reels",
-            "aspect_ratio": "9:16",
+            "placement": placement,
+            "aspect_ratio": aspect,
             "brand_style": body.get("brand_style") or settings_row.brand_style,
             "avatar_id": body.get("avatar_id"),
             "portfolio_mix": {

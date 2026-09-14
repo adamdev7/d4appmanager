@@ -14,6 +14,17 @@ from app.services.ai_ads.schemas import (
 MAX_IMAGE_ADS = 8
 MAX_VIDEO_ADS = 4
 
+CLEAN_PLATE = (
+    "CLEAN PLATE. Zero on-screen text, letters, numbers, captions, titles, subtitles, watermarks, logos, prices, "
+    "CTA words, UI chrome, or end-card copy. Quiet negative space only — the operator adds text later."
+)
+
+CRAFT = (
+    "Photorealistic, print-ad craft. Sharp focus on the product, true materials, correct metal "
+    "reflections, anatomically correct hands if any, no extra fingers, no melted jewelry, no "
+    "duplicate clasps, no warped geometry. Single SKU. No fake packaging."
+)
+
 STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
     "UGC": {
         "promise": "Authentic phone-shot social proof. Lived-in rooms, imperfect framing, real light.",
@@ -26,8 +37,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Getting-ready still: anonymous hands fastening or sliding the piece on, phone-angle, real bedroom.",
         ],
         "video": [
-            "Handheld UGC: no face needed, quick try-on, product hold-up, no captions.",
-            "Mirror get-ready clip, then a step-outside beat, end on the product in natural light. No text.",
+            "Handheld UGC: no face needed, quick try-on, product hold-up. No text.",
+            "Mirror get-ready clip, then a step-outside beat, end on the product in natural light. No captions.",
         ],
     },
     "PRODUCT_DEMO": {
@@ -57,7 +68,7 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
         ],
         "video": [
             "1-second product close-up, pull back into a new in-use world, end on a clean packshot. No text.",
-            "Editorial montage: four distinct camera angles of the same product. No captions, no end-card copy.",
+            "Editorial montage: four distinct camera angles of the same product. No captions.",
         ],
     },
     "PROBLEM_SOLUTION": {
@@ -78,16 +89,76 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
     "PROMOTIONAL": {
         "promise": "Offer-ad energy that makes someone buy now. Gift, drop, value — using the REAL price only.",
         "forbid": "Invented discount percents, fake timers, fake reviews, plain catalog photo with a filter.",
-        "copy": "Offer framing with the real price if provided. Urgency without lying. Empty overlay band for headline.",
+        "copy": "Offer framing with the real price if provided. Urgency without lying. Quiet space for later overlay.",
         "scenes": [
-            "Gift-ready still: wrapped table, the exact product as the present being revealed, empty top third for offer type.",
-            "Price-as-hero composition: product on a new surface, huge negative space for a real-price overlay — never bake a fake % off.",
-            "Limited-drop drama: dark rim light, single hero object, urgency crop, overlay-safe margins.",
-            "Unboxing / treat-yourself: hands lifting the exact SKU from tissue, warm practical light, not the website photo.",
+            "Gift-ready still: wrapped table, the exact product as the present being revealed. Quiet top third, no numbers.",
+            "Hero composition: product on a new surface, huge negative space — never bake a fake % off, price, or discount.",
+            "Limited-drop drama: dark rim light, single hero object, urgency crop, blank margins.",
+            "Treat-yourself: hands lifting the exact SKU from tissue, warm practical light, not the website photo.",
         ],
         "video": [
             "Gift-reveal motion, product identity close-up, freeze on a shoppable packshot. No text, no fake discounts.",
             "Drop energy: quick cuts, freeze on a clean product hold. No captions.",
+        ],
+    },
+    "UNBOXING": {
+        "promise": "The first-touch reveal. Tissue, box, hands — the SKU arriving as a gift to the self.",
+        "forbid": "Website packshot, empty seamless, fake branded box art that is not in the product facts.",
+        "copy": "The moment it lands. Specific, tactile. No invented unboxing claims.",
+        "scenes": [
+            "Hands peeling tissue to reveal the exact product, warm indoor light, real table clutter.",
+            "Open box from above: the SKU sitting in packing, fingers reaching in, identity locked.",
+            "First-wear right after unboxing: piece going onto a wrist or neck, leftover tissue in frame.",
+            "Close hold to camera after the reveal — product sharp, packing softly out of focus.",
+        ],
+        "video": [
+            "Tissue peel, product lift, hold to camera. No text.",
+            "Box open, hands take the SKU, first wear, freeze. No captions.",
+        ],
+    },
+    "MACRO": {
+        "promise": "Proof in the details. Extreme close-up of materials, hardware, and construction.",
+        "forbid": "Full-body lifestyle, tiny product in a wide room, generic jewelry that is not this SKU.",
+        "copy": "One tactile fact from the product data. Texture over slogans.",
+        "scenes": [
+            "Extreme close-up of clasp, beads, stitching, or metal grain filling most of the frame.",
+            "Raking light across the surface so material (leather, gold, enamel) is unmistakable.",
+            "Fingers pinch a unique hardware detail; skin for scale; product razor-sharp.",
+            "Three-quarter macro of the worn piece so shape and construction stay true.",
+        ],
+        "video": [
+            "Slow push into hardware, light graze, pull back to the worn product. No text.",
+            "Three macro beats of the same SKU, end on a clean hold. No captions.",
+        ],
+    },
+    "FLAT_LAY": {
+        "promise": "Editorial overhead. Styled surface, complementary props, product fully readable from above.",
+        "forbid": "On-body crop, messy UGC, the Shopify listing backdrop, props that hide the SKU.",
+        "copy": "Quiet, editorial. The object is the headline.",
+        "scenes": [
+            "Top-down on linen or stone, the exact product centered, two quiet props only.",
+            "Diagonal overhead, morning window, product catching a hard shadow, identity locked.",
+            "Magazine grid: product plus one related object, generous empty space, no labels.",
+            "Dark editorial flat lay, rim light, single hero object, blank margins.",
+        ],
+        "video": [
+            "Overhead drift across a styled table, settle on the SKU. No text.",
+            "Props part to reveal the product, hold. No captions.",
+        ],
+    },
+    "STREET_STYLE": {
+        "promise": "Candid outdoor fashion. Real streets, daylight, the product worn as the finishing detail.",
+        "forbid": "Indoor catalog set, studio cyclorama, posed lookbook cloned from the site.",
+        "copy": "Seen in the wild. One line of attitude, no invented city names as proof.",
+        "scenes": [
+            "Sidewalk stride, real architecture, product catching daylight, anonymous wearer.",
+            "Cafe terrace candid: product in the foreground, street bokeh, new camera height.",
+            "Crosswalk still: motion blur in the city, SKU sharp on the body.",
+            "Golden-hour wall: product worn, hard sun, not the listing crop.",
+        ],
+        "video": [
+            "Walk-up, product catch-light, hold. No text.",
+            "Street pan onto the worn SKU, freeze. No captions.",
         ],
     },
 }
@@ -185,7 +256,7 @@ def resolve_generation_counts(
 
 
 def video_only_count(videos: Any, *, default_videos: int = 1) -> int:
-    """Astra only renders MP4s. Images are skipped so operators can caption and VO in post."""
+    """Clamp a video request. Images are planned separately via resolve_generation_counts."""
     _images, count = resolve_generation_counts(0, videos, default_images=0, default_videos=default_videos)
     return count
 
@@ -448,6 +519,8 @@ def build_image_prompt(
         "The reference is NOT a layout to copy. Do not return the catalog photo, a crop of it, "
         "a color grade of it, or a Meta ad you have seen. New camera, new lighting, new background, new crop.",
         f"This is unique still {variation_index + 1} of {max(variation_count, 1)}.",
+        CRAFT,
+        CLEAN_PLATE,
         "Do not invent materials, logos, discounts, or packaging details that are not in the product facts.",
     ]
     desc = (product.description or "").strip()
@@ -456,13 +529,14 @@ def build_image_prompt(
     if product.price is not None and style == "PROMOTIONAL":
         currency = product.currency or ""
         extras.append(
-            f"PROMOTIONAL offer ad: you may imply value using the real price {currency} {product.price}. "
-            "Leave empty space for an overlay. Never invent a % off, fake timer, or fake review."
+            f"PROMOTIONAL offer ad: imply value using the real price {currency} {product.price}. "
+            "Leave quiet negative space. Never invent a % off, fake timer, or fake review. "
+            "Never paint the price, a discount, or any number on the image."
         )
     elif style == "PROMOTIONAL":
         extras.append(
-            "PROMOTIONAL offer ad: gift/drop/urgency composition with overlay-safe margins. "
-            "Never invent a discount, fake timer, or fake review."
+            "PROMOTIONAL offer ad: gift/drop/urgency composition with quiet margins. "
+            "Never invent a discount, fake timer, or fake review. Never paint numbers on the frame."
         )
     if winning_notes:
         extras.append(
@@ -473,9 +547,8 @@ def build_image_prompt(
         extras.append(f"Brand look: {brand_style[:160]}")
     extras.append(
         f"Finished Meta {placement} advertisement still, aspect {aspect_ratio}. "
-        "Photorealistic, generous safe margins for headline overlay, "
-        "single product, no fake UI, no fake reviews, no watermarks, no extra logos, "
-        "no unreadable text baked into the image."
+        f"{CRAFT} {CLEAN_PLATE} "
+        "Single product, no fake UI, no extra logos."
     )
     return f"{prompt}\n\n" + " ".join(extras)
 
@@ -510,6 +583,7 @@ def build_video_prompt(
         "Camera may move around THIS item and the setting may change after the opening beat, "
         "but the SKU on screen must stay the one in the reference.",
         "Do not recreate an existing Meta ad. Do not invent a different product to match a winning ad's look.",
+        CRAFT,
         f"Hook: {spec.hook or product.title}.",
         f"Shot list featuring {product.title} only: {shot_list}.",
         "Keep the product clearly visible most of the time. Smooth camera, no fake UI, no watermarks.",
@@ -527,9 +601,7 @@ def build_video_prompt(
         parts.append(f"Brand look: {brand_style[:140]}")
     parts.append(f"Music: {spec.music_direction or DEFAULT_MUSIC}")
     parts.append(
-        "CLEAN PLATE. This MP4 is a visual-only product clip. The operator will add captions and text-to-speech later. "
-        "FORBIDDEN: any on-screen text, letters, numbers, captions, titles, subtitles, watermarks, logos, prices, or CTA words. "
-        "No white text, no dark text, no end-card copy, no lower-thirds. "
+        f"{CLEAN_PLATE} "
         "FORBIDDEN: spoken words, voiceover, narration, or talking. "
         "Leave 250px empty at the top and bottom for later overlays. "
         f"End on a still of this same {product.title} with a blank frame — no text."
