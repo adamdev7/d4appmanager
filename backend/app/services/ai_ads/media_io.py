@@ -9,9 +9,29 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _FETCH_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; AppManagerAds/1.0)",
-    "Accept": "image/jpeg,image/png,image/webp,image/*,*/*;q=0.8",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "image/jpeg,image/png,image/webp,image/avif,image/*,*/*;q=0.8",
 }
+
+
+def _enable_extra_decoders() -> None:
+    """Shopify CDN often serves AVIF. Stock Pillow cannot open that."""
+    try:
+        import pillow_avif  # noqa: F401
+    except Exception:
+        pass
+    try:
+        from pillow_heif import register_heif_opener
+
+        register_heif_opener()
+    except Exception:
+        pass
+
+
+_enable_extra_decoders()
 
 
 def is_mp4(data: bytes | None) -> bool:
@@ -26,6 +46,8 @@ def sniff_image_mime(data: bytes, declared: str | None = None) -> str:
         return "image/jpeg"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
+    if len(data) > 12 and data[4:8] == b"ftyp" and b"avif" in data[:16].lower():
+        return "image/avif"
     declared = (declared or "").split(";")[0].strip().lower()
     if declared.startswith("image/"):
         return declared
@@ -40,33 +62,68 @@ def _can_open_image(data: bytes) -> bool:
         image.load()
         image.close()
         return True
-    except Exception:
+    except Exception as exc:
+        logger.info("ai_ads still not decodable mime=%s err=%s", sniff_image_mime(data), exc)
         return False
+
+
+def normalize_image_url(url: str) -> str:
+    src = (url or "").strip()
+    if src.startswith("//"):
+        src = "https:" + src
+    return src
 
 
 def prefer_jpeg_url(url: str) -> str:
     """Ask Shopify CDN for a JPEG so Pillow can decode the still."""
-    parsed = urlparse(url or "")
+    parsed = urlparse(normalize_image_url(url))
     host = (parsed.netloc or "").lower()
     if "shopify" not in host and "shopifysvc" not in host:
-        return url
+        return normalize_image_url(url)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     query["format"] = "jpg"
-    query.setdefault("width", "1600")
+    query.setdefault("width", "1400")
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
+def shopify_still_candidates(url: str) -> list[str]:
+    src = normalize_image_url(url)
+    if not src:
+        return []
+    out = [src]
+    parsed = urlparse(src)
+    host = (parsed.netloc or "").lower()
+    if "shopify" not in host and "shopifysvc" not in host:
+        return out
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    for fmt in ("jpg", "pjpg", "png"):
+        q = dict(query)
+        q["format"] = fmt
+        q.setdefault("width", "1400")
+        out.append(urlunparse(parsed._replace(query=urlencode(q))))
+    q = {k: v for k, v in query.items() if k != "format"}
+    q["width"] = "1400"
+    out.append(urlunparse(parsed._replace(query=urlencode(q))))
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for item in out:
+        if item not in seen:
+            seen.add(item)
+            uniq.append(item)
+    return uniq
+
+
 async def fetch_image_bytes(url: str, *, timeout: float = 30) -> tuple[bytes, str] | None:
-    src = (url or "").strip()
+    src = normalize_image_url(url)
     if not src.startswith("http"):
         return None
-    candidates = [src]
-    jpeg_url = prefer_jpeg_url(src)
-    if jpeg_url not in candidates:
-        candidates.append(jpeg_url)
+    parsed = urlparse(src)
+    headers = dict(_FETCH_HEADERS)
+    if parsed.netloc:
+        headers["Referer"] = f"https://{parsed.netloc}/"
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=_FETCH_HEADERS) as client:
-            for candidate in candidates:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
+            for candidate in shopify_still_candidates(src):
                 try:
                     resp = await client.get(candidate)
                     resp.raise_for_status()
@@ -74,7 +131,15 @@ async def fetch_image_bytes(url: str, *, timeout: float = 30) -> tuple[bytes, st
                     logger.info("ai_ads image fetch failed url=%s err=%s", candidate[:160], exc)
                     continue
                 data = resp.content or b""
-                if len(data) < 32 or not _can_open_image(data):
+                if len(data) < 32:
+                    continue
+                if not _can_open_image(data):
+                    logger.info(
+                        "ai_ads image undecodable url=%s ctype=%s magic=%s",
+                        candidate[:160],
+                        resp.headers.get("content-type"),
+                        data[:16],
+                    )
                     continue
                 mime = sniff_image_mime(data, resp.headers.get("content-type"))
                 return data, mime
@@ -89,11 +154,12 @@ async def fetch_product_images(urls: list[str] | None, *, limit: int = 4) -> lis
     for url in urls or []:
         if len(out) >= limit:
             break
-        key = (url or "").split("?")[0]
+        src = normalize_image_url(url)
+        key = src.split("?")[0]
         if not key or key in seen:
             continue
         seen.add(key)
-        got = await fetch_image_bytes(url)
+        got = await fetch_image_bytes(src)
         if got:
             out.append(got)
     return out

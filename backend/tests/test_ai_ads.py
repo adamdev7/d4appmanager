@@ -1006,10 +1006,13 @@ def test_fit_image_bytes_matches_requested_size():
     skipped = fit_references([(b"not-an-image", "image/jpeg")], "720x1280")
     assert skipped == []
 
-    from app.services.ai_ads.media_io import prefer_jpeg_url, prepare_video_still
+    from app.services.ai_ads.media_io import prefer_jpeg_url, prepare_video_still, shopify_still_candidates
 
     shopify = prefer_jpeg_url("https://cdn.shopify.com/s/files/1/x/courage.png?v=9")
     assert "format=jpg" in shopify
+    variants = shopify_still_candidates("//cdn.shopify.com/s/files/1/x/courage.png?v=9")
+    assert variants[0].startswith("https://")
+    assert any("format=jpg" in item for item in variants)
     still, still_mime = prepare_video_still([(src.getvalue(), "image/jpeg")], 720, 1280)
     assert still_mime == "image/jpeg"
     assert Image.open(BytesIO(still)).size == (720, 1280)
