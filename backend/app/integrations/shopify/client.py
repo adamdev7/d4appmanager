@@ -454,7 +454,7 @@ class ShopifyClient:
         pid = str(product_id).strip()
         if pid.startswith("gid://"):
             pid = pid.rsplit("/", 1)[-1]
-        async with httpx.AsyncClient(timeout=45) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(
                 f"{self.admin_api_base}/products/{pid}.json",
                 headers={"X-Shopify-Access-Token": self.access_token},
@@ -462,71 +462,22 @@ class ShopifyClient:
             resp.raise_for_status()
             return resp.json()["product"]
 
-    async def get_product_jpeg_urls(self, product_id: str | int) -> dict[str, str]:
-        """Map numeric Shopify image ids to JPEG CDN URLs via Admin GraphQL transforms."""
-        if not self.access_token:
-            return {}
-        pid = str(product_id).strip()
-        if pid.startswith("gid://"):
-            pid = pid.rsplit("/", 1)[-1]
-        query = """
-        query ProductJpeg($id: ID!) {
-          product(id: $id) {
-            images(first: 12) {
-              nodes {
-                id
-                url(transform: { maxWidth: 1400, preferredContentType: JPG })
-              }
-            }
-          }
-        }
-        """
-        headers = {
-            "X-Shopify-Access-Token": self.access_token,
-            "Content-Type": "application/json",
-        }
-        try:
-            async with httpx.AsyncClient(timeout=45) as client:
-                resp = await client.post(
-                    f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
-                    headers=headers,
-                    json={
-                        "query": query,
-                        "variables": {"id": f"gid://shopify/Product/{pid}"},
-                    },
-                )
-                resp.raise_for_status()
-                nodes = (
-                    (((resp.json().get("data") or {}).get("product") or {}).get("images") or {}).get("nodes")
-                    or []
-                )
-        except Exception as exc:
-            logger.info("shopify jpeg transform failed product=%s err=%s", pid, exc)
-            return {}
-        out: dict[str, str] = {}
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            gid = str(node.get("id") or "")
-            url = str(node.get("url") or "").strip()
-            if not url:
-                continue
-            numeric = gid.rsplit("/", 1)[-1] if gid else ""
-            if numeric:
-                out[numeric] = url
-        return out
+    async def list_products(self, *, limit: int = 250, max_items: int | None = None) -> list[dict]:
+        """Fetch products with variants from Shopify.
 
-    async def list_products(self, *, limit: int = 250) -> list[dict]:
-        """Fetch products with variants from Shopify."""
+        ``limit`` is the page size. ``max_items`` stops pagination early so callers
+        do not wait on the full catalog.
+        """
         if not self.access_token:
             raise ValueError("No access token")
         all_products: list[dict] = []
         page_info: str | None = None
-        async with httpx.AsyncClient(timeout=45) as client:
+        page_size = min(max(limit, 1), 250)
+        async with httpx.AsyncClient(timeout=20) as client:
             for _ in range(10):
-                params: dict[str, str | int] = {"limit": min(limit, 250)}
+                params: dict[str, str | int] = {"limit": page_size}
                 if page_info:
-                    params = {"limit": min(limit, 250), "page_info": page_info}
+                    params = {"limit": page_size, "page_info": page_info}
                 resp = await client.get(
                     f"{self.admin_api_base}/products.json",
                     params=params,
@@ -535,6 +486,8 @@ class ShopifyClient:
                 resp.raise_for_status()
                 batch = list(resp.json().get("products") or [])
                 all_products.extend(batch)
+                if max_items is not None and len(all_products) >= max_items:
+                    return all_products[:max_items]
                 link = resp.headers.get("Link", "")
                 if 'rel="next"' not in link:
                     break

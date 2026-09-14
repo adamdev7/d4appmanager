@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -99,6 +100,9 @@ class AdsAIOrchestrator:
 
     async def load_product(self, product_id: str) -> ProductContext:
         catalog = ShopifyProductCatalog(self.db, self.store, self.assets)
+        cached = catalog.load_context(product_id)
+        if cached and catalog.cached_identity_bytes(product_id, limit=1):
+            return cached
         client = self.shopify_client()
         if not client:
             cached = catalog.load_context(product_id)
@@ -106,7 +110,7 @@ class AdsAIOrchestrator:
                 return cached
             raise AIAdsError("Connect a Shopify store first")
         try:
-            raw = await client.get_product(product_id)
+            raw = await asyncio.wait_for(client.get_product(product_id), timeout=15)
         except Exception as exc:
             cached = catalog.load_context(product_id)
             if cached:
@@ -135,26 +139,35 @@ class AdsAIOrchestrator:
     ) -> tuple[ProductContext, list[tuple[bytes, str]], str, bool]:
         """Return identity stills from the local catalog, fetching only if photos changed."""
         catalog = ShopifyProductCatalog(self.db, self.store, self.assets)
+        local = catalog.cached_identity_bytes(product.product_id)
+        raw = _raw_from_product(product)
+        fingerprint = image_fingerprint(product_image_payloads(raw))
+        if local:
+            catalog.attach_identity(product, local)
+            cached_lock = catalog.appearance_lock_if_current(product.product_id, fingerprint)
+            if cached_lock:
+                product.brand_context = dict(product.brand_context or {})
+                product.brand_context["appearance_lock"] = cached_lock
+            return product, local, fingerprint, True
         client = self.shopify_client()
-        raw: dict[str, Any] | None = None
+        shopify_raw: dict[str, Any] | None = None
         if refresh and client:
             try:
-                raw = await client.get_product(product.product_id)
+                shopify_raw = await asyncio.wait_for(client.get_product(product.product_id), timeout=15)
             except Exception as exc:
                 logger.warning(
                     "ai_ads product refresh skipped store_id=%s err=%s", self.store.id, exc
                 )
-        if raw is not None:
-            catalog.upsert_product_row(raw)
+        if shopify_raw is not None:
+            catalog.upsert_product_row(shopify_raw)
             self.db.commit()
             product = normalize_product(
-                raw,
+                shopify_raw,
                 shop_domain=self.store.shop_domain,
                 currency=self.store.currency,
                 brand_name=self.store.name,
             )
-        else:
-            raw = _raw_from_product(product)
+            raw = shopify_raw
         fingerprint = image_fingerprint(product_image_payloads(raw))
         used_cache = catalog.cached_ready(product.product_id, fingerprint)
         refs = await catalog.ensure_product_images(raw)

@@ -67,6 +67,12 @@ export class ApiError extends Error {
 }
 
 async function parseError(res: Response): Promise<string> {
+  if (res.status === 504 || res.status === 502) {
+    const err = await res.json().catch(() => ({}));
+    const detail = (err as { detail?: unknown }).detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+    return "Shopify took too long. Saved products in App Manager will load on the next try.";
+  }
   const err = await res.json().catch(() => ({}));
   const detail = (err as { detail?: unknown }).detail;
   if (typeof detail === "string") return detail;

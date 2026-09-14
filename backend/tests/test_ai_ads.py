@@ -1021,6 +1021,8 @@ def test_fit_image_bytes_matches_requested_size():
         shop_domain="luxory.myshopify.com",
     )
     assert any("/cdn/shop/files/courage.png" in item for item in shop_variants)
+    assert not any("/cdn/shop/products/" in item for item in shop_variants)
+    assert len(shop_variants) <= 5
     transformed = shopify_still_candidates(
         "https://cdn.shopify.com/s/files/1/x/ChatGPTImage4oct.2025_15_40_38_1400x.png.jpg?v=9",
         shop_domain="luxory.myshopify.com",

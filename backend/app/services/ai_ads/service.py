@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -33,7 +34,6 @@ from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_runnin
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.product_catalog import ShopifyProductCatalog, enqueue_catalog_sync
-from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.publisher import MetaCreativePublisher
 
 
@@ -241,32 +241,31 @@ class AIAdsService:
         store = self.ensure_store(db, user, store_id)
         if not store.access_token_encrypted:
             raise HTTPException(status_code=400, detail="Connect a Shopify store first")
+        catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
+        cached = catalog.list_picker_cards()
+        enqueue_catalog_sync(store.id)
+        if cached:
+            return cached
         try:
             token = decrypt_value(store.access_token_encrypted)
         except Exception as exc:
             raise HTTPException(status_code=400, detail="Could not read Shopify credentials") from exc
         client = ShopifyClient(store.shop_domain, token)
-        products = await client.list_products(limit=100)
-        catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
-        out = []
-        for p in products:
-            catalog.upsert_product_row(p)
-            ctx = normalize_product(p, shop_domain=store.shop_domain, currency=store.currency)
-            cached_photos = catalog.cached_identity_bytes(ctx.product_id, limit=1)
-            out.append(
-                {
-                    "id": ctx.product_id,
-                    "title": ctx.title,
-                    "price": ctx.price,
-                    "currency": ctx.currency,
-                    "image": ctx.images[0].src if ctx.images else None,
-                    "product_url": ctx.product_url,
-                    "photos_cached": bool(cached_photos),
-                }
+        try:
+            products = await asyncio.wait_for(
+                client.list_products(limit=50, max_items=50),
+                timeout=12,
             )
+        except Exception as err:
+            raise HTTPException(
+                status_code=504,
+                detail="Shopify took too long to list products. Try Generate again in a few seconds.",
+            ) from err
+        for raw in products:
+            catalog.upsert_product_row(raw)
         db.commit()
         enqueue_catalog_sync(store.id)
-        return out
+        return catalog.list_picker_cards()
 
     async def sync_meta(self, db: Session, user: User, store_id: str) -> dict:
         store = self.ensure_store(db, user, store_id)

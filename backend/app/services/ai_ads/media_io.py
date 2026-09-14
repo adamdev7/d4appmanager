@@ -146,18 +146,15 @@ def shopify_still_candidates(url: str, *, shop_domain: str | None = None) -> lis
     if not _is_shopify_image_host(src):
         return [src]
     canonical = canonical_shopify_url(src)
-    out: list[str] = [
-        _with_format(canonical, "pjpg"),
-        _with_format(src, "pjpg"),
-        _with_format(canonical, "jpg"),
-    ]
-    for folder in ("files", "products"):
-        shop_url = _shop_cdn_url(canonical, shop_domain, folder)
-        if shop_url:
-            out.append(_with_format(shop_url, "pjpg"))
-            out.append(shop_url)
+    out: list[str] = [_with_format(canonical, "pjpg")]
+    shop_url = _shop_cdn_url(canonical, shop_domain, "files")
+    if shop_url:
+        out.append(_with_format(shop_url, "pjpg"))
+    if src != canonical:
+        out.append(_with_format(src, "pjpg"))
     out.append(canonical)
-    out.append(src)
+    if src != canonical:
+        out.append(src)
     seen: set[str] = set()
     uniq: list[str] = []
     for item in out:
@@ -207,7 +204,7 @@ def bytes_to_data_url(data: bytes, mime: str | None = None, *, max_side: int = 7
 async def fetch_image_bytes(
     url: str,
     *,
-    timeout: float = 30,
+    timeout: float = 10,
     referer: str | None = None,
     shop_domain: str | None = None,
     client: httpx.AsyncClient | None = None,
@@ -231,7 +228,7 @@ async def fetch_image_bytes(
         for candidate in shopify_still_candidates(src, shop_domain=shop_domain):
             attempt_headers = fallback_headers if "format=" not in candidate else headers
             try:
-                resp = await http.get(candidate, headers=attempt_headers)
+                resp = await http.get(candidate, headers=attempt_headers, timeout=timeout)
                 resp.raise_for_status()
             except Exception as exc:
                 logger.info("ai_ads image fetch failed url=%s err=%s", candidate[:160], exc)
@@ -268,23 +265,6 @@ async def fetch_image_bytes(
     except Exception as exc:
         logger.info("ai_ads image fetch failed url=%s err=%s", src[:160], exc)
     return None
-
-
-async def fetch_product_images(urls: list[str] | None, *, limit: int = 4) -> list[tuple[bytes, str]]:
-    out: list[tuple[bytes, str]] = []
-    seen: set[str] = set()
-    for url in urls or []:
-        if len(out) >= limit:
-            break
-        src = normalize_image_url(url)
-        key = src.split("?")[0]
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        got = await fetch_image_bytes(src)
-        if got:
-            out.append(got)
-    return out
 
 
 def parse_wxh(size: str | None) -> tuple[int, int] | None:

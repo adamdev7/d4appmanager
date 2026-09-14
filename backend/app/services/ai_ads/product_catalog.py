@@ -243,14 +243,52 @@ class ShopifyProductCatalog:
             return False
         return bool(self.cached_identity_bytes(product_id, limit=1))
 
+    def list_picker_cards(self) -> list[dict[str, Any]]:
+        """Return saved catalog rows for the Generate picker. No Shopify, no disk reads."""
+        products = list(
+            self.db.scalars(
+                select(ShopifyCatalogProduct)
+                .where(ShopifyCatalogProduct.store_id == self.store.id)
+                .order_by(ShopifyCatalogProduct.title.asc())
+            ).all()
+        )
+        photo_ids = {
+            str(pid)
+            for pid in self.db.scalars(
+                select(ShopifyCatalogImage.shopify_product_id).where(
+                    ShopifyCatalogImage.store_id == self.store.id
+                )
+            ).all()
+            if pid
+        }
+        out: list[dict[str, Any]] = []
+        for row in products:
+            try:
+                payload = json.loads(row.images_json or "[]")
+            except json.JSONDecodeError:
+                payload = []
+            src = None
+            if payload and isinstance(payload[0], dict):
+                src = str(payload[0].get("src") or "") or None
+            out.append(
+                {
+                    "id": row.shopify_product_id,
+                    "title": row.title,
+                    "price": row.price,
+                    "currency": row.currency,
+                    "image": src,
+                    "product_url": row.product_url,
+                    "photos_cached": row.shopify_product_id in photo_ids,
+                }
+            )
+        return out
+
     async def ensure_product_images(
         self,
         raw: dict[str, Any],
         *,
-        jpeg_by_id: dict[str, str] | None = None,
         limit: int = MAX_STORED_IMAGES,
     ) -> list[tuple[bytes, str]]:
-        del jpeg_by_id
         row = self.upsert_product_row(raw)
         pid = row.shopify_product_id
         payloads = product_image_payloads(raw)[:limit]
@@ -265,7 +303,7 @@ class ShopifyProductCatalog:
         identity: list[tuple[bytes, str]] = []
         wanted_keys = {key for key, _src in wanted}
 
-        async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=4.0), follow_redirects=True) as client:
             for position, img in enumerate(payloads):
                 key = image_key(img)
                 src = normalize_image_url(str(img.get("src") or img.get("url") or ""))
@@ -337,7 +375,7 @@ class ShopifyProductCatalog:
         return identity[:IDENTITY_LIMIT]
 
     async def sync_store(self, client: ShopifyClient, *, download_images: bool = True) -> list[dict[str, Any]]:
-        products = await client.list_products(limit=100)
+        products = await client.list_products(limit=100, max_items=100)
         for raw in products:
             self.upsert_product_row(raw)
         self.db.commit()
@@ -363,18 +401,11 @@ class ShopifyProductCatalog:
 
 
 def enqueue_catalog_sync(store_id: str) -> None:
-    """Download missing/changed Shopify photos in the background after a product list."""
+    """Download missing/changed Shopify photos off the HTTP event loop."""
     with _thread_lock:
         if store_id in _running_stores:
             return
         _running_stores.add(store_id)
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        loop.create_task(_run_catalog_sync(store_id))
-        return
     threading.Thread(target=_run_catalog_sync_thread, args=(store_id,), daemon=True).start()
 
 

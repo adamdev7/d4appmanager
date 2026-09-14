@@ -162,8 +162,9 @@ export function GeneratePage() {
               <div className="min-w-0">
                 <p className="text-sm font-medium text-content truncate">{selectedProduct.title}</p>
                 <p className="text-xs text-content-muted">
-                  Astra uses this Shopify photo as the product. Pick another item above if this is
-                  wrong.
+                  {selectedProduct.photos_cached
+                    ? "Photos are saved in App Manager. Generate uses those files, not a live Shopify download."
+                    : "Astra will save this Shopify photo into App Manager, then generate from the saved file."}
                 </p>
               </div>
             </div>
