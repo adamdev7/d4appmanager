@@ -56,7 +56,7 @@ GENERATION_PLAN = f"""{SHARED_RULES}
 
 Task: from Shopify product data + ranked Meta campaign creatives, return ONE JSON object:
 - strategy: what to keep from stronger ads, what to avoid from weaker ads, angles to test
-- concepts: the exact requested number of COMPLETE NEW ads (image_count IMAGE + video_count VIDEO)
+- concepts: the exact requested number of COMPLETE NEW ads (image_count IMAGE + video_count VIDEO). If either count is 0, return none of that type.
 
 Attached images, in order:
 1) Catalog photos of the EXACT product. Every concept must feature this SKU — same materials, colors, clasp, construction. Never a different bracelet or generic jewelry stand-in.
@@ -72,6 +72,7 @@ Honor the operator's selected styles (round-robin): UGC, PRODUCT_DEMO, LIFESTYLE
 Each IMAGE needs a unique full-frame image_prompt that names the locked product appearance AND a brand-new scene.
 Each VIDEO needs a unique scene list featuring the same locked product.
 If the user asked for 5 images, return 5 different scenes. If they asked for N videos, N different storyboards.
+If image_count is 0, return zero IMAGE concepts. If video_count is 0, return zero VIDEO concepts.
 
 Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
 Borrow winning offer-look traits (wrist lifestyle, macro clasp, UGC energy) — do NOT clone those ads or catalog photos.

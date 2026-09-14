@@ -178,6 +178,21 @@ class CreativePlanner:
     ) -> tuple[AIAdStrategy, list[tuple[CreativeConcept, Any]]]:
         """One model call: strategy + complete image and video ads."""
         total = image_count + video_count
+        if total <= 0:
+            strategy_row = AIAdStrategy(
+                store_id=self.store_id,
+                product_id=product.product_id,
+                summary="No image or video ads were requested.",
+                target_audience=audience,
+                strategy_json=json.dumps({"summary": "No creatives requested"}),
+                intelligence_report_json=json.dumps({}),
+                confidence=0,
+                model_used=self.model,
+            )
+            db.add(strategy_row)
+            db.commit()
+            db.refresh(strategy_row)
+            return strategy_row, []
         image_buckets = allocate_portfolio(image_count, mix)
         video_buckets = allocate_portfolio(video_count, mix)
         payload: dict[str, Any] = {
@@ -205,7 +220,8 @@ class CreativePlanner:
         winning_stills = list(brief.get("winning_images") or [])[:2]
         attached = catalog + winning_stills
         user = (
-            f"Return {image_count} IMAGE and {video_count} VIDEO brand-new ads. "
+            f"Return exactly {image_count} IMAGE and {video_count} VIDEO brand-new ads. "
+            "If a count is 0, return none of that type — do not invent extras. "
             "The first attached images are the EXACT product SKU — every ad must show that item, never a different piece. "
             "Later attachments (if any) are winning Meta ads: study HOW the offer looks, then invent scenes that have never been shot. "
             f"Honor these creative styles, round-robin across ads: {json.dumps(styles)}. "

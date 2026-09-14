@@ -26,7 +26,7 @@ from app.integrations.shopify.client import ShopifyClient
 from app.services.ai_ads.complete_creative import (
     build_image_prompt,
     build_video_prompt,
-    clamp_generation_counts,
+    resolve_generation_counts,
     compact_product,
     format_appearance_lock,
     heuristic_score,
@@ -179,10 +179,14 @@ class AdsAIOrchestrator:
         try:
             request = json.loads(job.request_json or "{}")
             product = await self.load_product(job.product_id or request.get("product_id"))
-            image_count, video_count = clamp_generation_counts(
-                int(request.get("image_count") or settings.ai_ad_image_count),
-                int(request.get("video_count") or settings.ai_ad_video_count),
+            image_count, video_count = resolve_generation_counts(
+                request.get("image_count"),
+                request.get("video_count"),
+                default_images=settings.ai_ad_image_count,
+                default_videos=settings.ai_ad_video_count,
             )
+            if image_count + video_count < 1:
+                raise AIAdsError("No images or videos were requested.")
             styles = list(request.get("styles") or ["UGC", "PRODUCT_DEMO", "LIFESTYLE"])
             audience = str(request.get("audience") or "")
             objective = str(request.get("objective") or "conversions")
@@ -347,6 +351,10 @@ class AdsAIOrchestrator:
             for index, (concept, brief_model) in enumerate(paired):
                 self._raise_if_cancelled(job)
                 kind = (concept.type or "IMAGE").upper()
+                if kind == "VIDEO" and video_count <= 0:
+                    continue
+                if kind != "VIDEO" and image_count <= 0:
+                    continue
                 base = 55
                 span = 40
                 pct = base + int((index / total) * span)

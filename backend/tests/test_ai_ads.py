@@ -435,11 +435,16 @@ def test_storyboard_preview_from_video_asset():
 
 
 def test_clamp_generation_counts_caps_token_use():
-    from app.services.ai_ads.complete_creative import clamp_generation_counts
+    from app.services.ai_ads.complete_creative import clamp_generation_counts, resolve_generation_counts
 
     assert clamp_generation_counts(40, 40) == (8, 4)
     assert clamp_generation_counts(3, 2) == (3, 2)
     assert clamp_generation_counts(-1, 0) == (0, 0)
+    assert clamp_generation_counts(0, 2) == (0, 2)
+    assert clamp_generation_counts(5, 0) == (5, 0)
+    assert resolve_generation_counts(0, 0, default_images=3, default_videos=2) == (0, 0)
+    assert resolve_generation_counts(None, 0, default_images=3, default_videos=2) == (3, 0)
+    assert resolve_generation_counts(0, None, default_images=3, default_videos=2) == (0, 2)
 
 
 def test_complete_image_prompt_includes_product_and_winners():
@@ -662,6 +667,9 @@ def test_generation_request_model_has_unique_fields():
 
     assert list(AIAdsGenerationJobRequest.model_fields).count("styles") == 1
     assert list(AIAdsSettingsUpdate.model_fields).count("brand_style") == 1
+    zero = AIAdsGenerationJobRequest(product_id="1", image_count=0, video_count=0)
+    assert zero.image_count == 0
+    assert zero.video_count == 0
 
 
 def test_preview_url_normalizes_local_paths():

@@ -103,7 +103,7 @@ export function AIAdsSettingsPage() {
           />
           <div className="grid gap-3 sm:grid-cols-2">
             <Input
-              label="Default image count (max 8)"
+              label="Default image count (0 = skip, max 8)"
               type="number"
               min={0}
               max={8}
@@ -111,7 +111,7 @@ export function AIAdsSettingsPage() {
               onChange={(e) => setSettings({ ...settings, image_count: Number(e.target.value) })}
             />
             <Input
-              label="Default video count (max 4)"
+              label="Default video count (0 = skip, max 4)"
               type="number"
               min={0}
               max={4}

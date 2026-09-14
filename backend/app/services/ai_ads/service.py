@@ -27,7 +27,7 @@ from app.db.models import (
     User,
 )
 from app.integrations.shopify.client import ShopifyClient
-from app.services.ai_ads.complete_creative import clamp_generation_counts
+from app.services.ai_ads.complete_creative import clamp_generation_counts, resolve_generation_counts
 from app.services.ai_ads.job_progress import append_job_progress, parse_job_log
 from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_running, request_cancel
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
@@ -311,10 +311,17 @@ class AIAdsService:
         if not product_id:
             raise HTTPException(status_code=400, detail="product_id is required")
         settings_row = self.get_or_create_settings(db, store_id)
-        images, videos = clamp_generation_counts(
-            int(body.get("image_count") if body.get("image_count") is not None else settings_row.image_count or 3),
-            int(body.get("video_count") if body.get("video_count") is not None else settings_row.video_count or 2),
+        images, videos = resolve_generation_counts(
+            body.get("image_count"),
+            body.get("video_count"),
+            default_images=settings_row.image_count if settings_row.image_count is not None else 3,
+            default_videos=settings_row.video_count if settings_row.video_count is not None else 2,
         )
+        if images + videos < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Set images or videos above 0. Astra will not generate a type you set to 0.",
+            )
         payload = {
             "product_id": product_id,
             "image_count": images,

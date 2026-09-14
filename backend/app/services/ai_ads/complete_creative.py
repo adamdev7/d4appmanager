@@ -96,8 +96,28 @@ KNOWN_STYLES = tuple(STYLE_PLAYBOOKS.keys())
 DEFAULT_STYLES = ["UGC", "PRODUCT_DEMO", "LIFESTYLE"]
 
 
+def _as_count(value: Any, default: int = 0) -> int:
+    if value is None or value == "":
+        return int(default or 0)
+    return int(value)
+
+
 def clamp_generation_counts(images: int, videos: int) -> tuple[int, int]:
-    return max(0, min(int(images or 0), MAX_IMAGE_ADS)), max(0, min(int(videos or 0), MAX_VIDEO_ADS))
+    return max(0, min(_as_count(images), MAX_IMAGE_ADS)), max(0, min(_as_count(videos), MAX_VIDEO_ADS))
+
+
+def resolve_generation_counts(
+    images: Any,
+    videos: Any,
+    *,
+    default_images: int = 0,
+    default_videos: int = 0,
+) -> tuple[int, int]:
+    """Keep an explicit 0. Only fall back to defaults when the value is missing."""
+    return clamp_generation_counts(
+        _as_count(images, default_images),
+        _as_count(videos, default_videos),
+    )
 
 
 def normalize_styles(styles: list[str] | None) -> list[str]:

@@ -90,6 +90,10 @@ export function GeneratePage() {
 
   async function submit() {
     if (!storeId || !productId) return;
+    if (imageCount + videoCount < 1) {
+      setError("Set images or videos above 0. Zero means skip that type.");
+      return;
+    }
     setSubmitting(true);
     setError("");
     try {
@@ -169,7 +173,7 @@ export function GeneratePage() {
           )}
           <div className="grid gap-3 sm:grid-cols-2">
             <Input
-              label="Images (max 8)"
+              label="Images (0 = skip, max 8)"
               type="number"
               min={0}
               max={8}
@@ -177,7 +181,7 @@ export function GeneratePage() {
               onChange={(e) => setImageCount(Math.min(8, Math.max(0, Number(e.target.value))))}
             />
             <Input
-              label="Video concepts (max 4)"
+              label="Videos (0 = skip, max 4)"
               type="number"
               min={0}
               max={4}
@@ -185,6 +189,9 @@ export function GeneratePage() {
               onChange={(e) => setVideoCount(Math.min(4, Math.max(0, Number(e.target.value))))}
             />
           </div>
+          {imageCount + videoCount === 0 && (
+            <p className="text-sm text-content-muted">Set images or videos above 0. Zero means skip that type.</p>
+          )}
           <div>
             <p className="text-sm font-medium text-content mb-2">Creative styles</p>
             <div className="flex flex-wrap gap-2">
@@ -269,7 +276,7 @@ export function GeneratePage() {
           <Button
             onClick={() => void submit()}
             isLoading={submitting}
-            disabled={!productId || !!liveJob || styles.length === 0}
+            disabled={!productId || !!liveJob || styles.length === 0 || imageCount + videoCount < 1}
           >
             Generate creatives
           </Button>
