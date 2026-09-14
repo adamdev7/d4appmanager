@@ -84,28 +84,31 @@ def fit_image_bytes(
     fmt: str = "JPEG",
 ) -> tuple[bytes, str]:
     """Center-crop and resize so a still matches an API size exactly."""
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     image = Image.open(BytesIO(data))
-    target = width / max(height, 1)
-    src = image.width / max(image.height, 1)
-    if src > target:
-        new_w = max(1, int(image.height * target))
-        left = (image.width - new_w) // 2
-        image = image.crop((left, 0, left + new_w, image.height))
-    else:
-        new_h = max(1, int(image.width / target))
-        top = (image.height - new_h) // 2
-        image = image.crop((0, top, image.width, top + new_h))
-    image = image.resize((width, height), Image.Resampling.LANCZOS)
+    image = ImageOps.exif_transpose(image) or image
+    image = ImageOps.fit(
+        image.convert("RGB"),
+        (width, height),
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.5),
+    )
+    if image.size != (width, height):
+        canvas = Image.new("RGB", (width, height), (0, 0, 0))
+        canvas.paste(image, (0, 0))
+        image = canvas
     buf = BytesIO()
     if (fmt or "JPEG").upper() == "PNG":
-        image = image.convert("RGBA")
-        image.save(buf, format="PNG")
-        return buf.getvalue(), "image/png"
-    image = image.convert("RGB")
-    image.save(buf, format="JPEG", quality=92)
-    return buf.getvalue(), "image/jpeg"
+        image.save(buf, format="PNG", optimize=True)
+        raw, mime = buf.getvalue(), "image/png"
+    else:
+        image.save(buf, format="JPEG", quality=92, subsampling=0)
+        raw, mime = buf.getvalue(), "image/jpeg"
+    verify = Image.open(BytesIO(raw))
+    if verify.size != (width, height):
+        raise ValueError(f"fitted still is {verify.size}, expected {(width, height)}")
+    return raw, mime
 
 
 def fit_references(
@@ -120,11 +123,9 @@ def fit_references(
         if not raw:
             continue
         if not dims:
-            out.append((raw, mime))
             continue
         try:
             out.append(fit_image_bytes(raw, dims[0], dims[1], fmt=fmt))
         except Exception as exc:
             logger.info("ai_ads identity fit skipped err=%s", exc)
-            out.append((raw, mime))
     return out

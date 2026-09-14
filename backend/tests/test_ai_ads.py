@@ -981,9 +981,16 @@ def test_fit_image_bytes_matches_requested_size():
     fitted = Image.open(BytesIO(out))
     assert fitted.size == (1024, 1536)
 
+    video, video_mime = fit_image_bytes(src.getvalue(), 720, 1280)
+    assert video_mime == "image/jpeg"
+    assert Image.open(BytesIO(video)).size == (720, 1280)
+
     refs = fit_references([(src.getvalue(), "image/jpeg")], "1024x1536", fmt="PNG")
     assert len(refs) == 1
     assert Image.open(BytesIO(refs[0][0])).size == (1024, 1536)
+
+    skipped = fit_references([(b"not-an-image", "image/jpeg")], "720x1280")
+    assert skipped == []
 
 
 def test_video_provider_rejects_non_mp4_download():

@@ -50,7 +50,7 @@ from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.prompts import PRODUCT_APPEARANCE
 from app.services.ai_ads.providers.openai_image import OpenAIImageProvider
-from app.services.ai_ads.providers.openai_video import OpenAIVideoProvider
+from app.services.ai_ads.providers.openai_video import OpenAIVideoProvider, resolve_video_size
 from app.services.ai_ads.recommendation_engine import RecommendationEngine
 from app.services.ai_ads.schemas import (
     CreativeIntelligenceReport,
@@ -410,47 +410,27 @@ class AdsAIOrchestrator:
                             variation_count=max(video_total, 1),
                             styles=styles,
                         )
-                        identity_still: tuple[bytes, str] | None = None
-                        try:
-                            frame = await image_provider.generate(
-                                ImageGenerationRequest(
-                                    prompt=build_image_prompt(
-                                        product=product,
-                                        visual_direction=concept.visual_direction,
-                                        image_prompt=getattr(brief_model, "image_prompt", "") or spec.hook,
-                                        brand_style=brand_style,
-                                        winning_notes=winning_notes,
-                                        aspect_ratio="9:16",
-                                        placement="stories",
-                                        variation_index=video_slot,
-                                        variation_count=max(video_total, 1),
-                                        styles=styles,
-                                    ),
-                                    aspect_ratio="9:16",
-                                    placement="stories",
-                                ),
-                                identity_images=product_refs,
-                            )
-                            asset.preview_url = frame.preview_url
-                            identity_still = self.assets.read_bytes(frame.local_path)
-                        except ImageGenerationError as exc:
-                            logger.warning(
-                                "ai_ads video first frame failed store_id=%s err=%s",
-                                self.store.id,
-                                str(exc)[:220],
-                            )
                         payload = spec.model_dump()
                         payload["prompt"] = prompt
-                        if identity_still and identity_still[0]:
+                        # Do not run /images/edits for a first frame. That call is what
+                        # OpenAI rejects with "Inpaint image must match the requested
+                        # width and height". Sora only needs one still at the video size.
+                        _, video_w, video_h = resolve_video_size("9:16")
+                        identity_still: tuple[bytes, str] | None = None
+                        if product_refs:
                             try:
-                                payload["input_reference"] = fit_image_bytes(identity_still[0], 720, 1280)
-                            except Exception:
-                                payload["input_reference"] = identity_still
-                        else:
-                            payload["input_reference"] = fit_image_bytes(product_refs[0][0], 720, 1280)
+                                identity_still = fit_image_bytes(product_refs[0][0], video_w, video_h)
+                            except Exception as exc:
+                                logger.warning(
+                                    "ai_ads video identity fit failed store_id=%s err=%s",
+                                    self.store.id,
+                                    str(exc)[:220],
+                                )
+                        if identity_still:
+                            payload["input_reference"] = identity_still
                             poster = self.assets.save_bytes(
-                                payload["input_reference"][0],
-                                mime_type=payload["input_reference"][1],
+                                identity_still[0],
+                                mime_type=identity_still[1],
                                 prefix="poster",
                             )
                             asset.preview_url = poster["public_url"]

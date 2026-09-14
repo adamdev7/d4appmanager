@@ -377,23 +377,34 @@ class AdsOpenAIClient:
         }
         if _is_gpt_image(model):
             form["quality"] = "medium"
-            # Low fidelity keeps SKU identity without cloning the catalog crop.
             form["input_fidelity"] = "low"
-        field = "image[]" if _is_gpt_image(model) else "image"
-        files = _identity_files(references, field)
-        if not files:
+        # One still, exact pixels. Sending a catalog crop or mixed image[] sizes
+        # makes OpenAI return "Inpaint image must match the requested width and height".
+        refs = fit_references(references, size, fmt="PNG")[:1]
+        send_files = _identity_files(refs, "image")
+        if not send_files:
             raise OpenAIServiceError(
                 user_message="No product reference image was available.",
                 stop_autopilot=False,
             )
         async with httpx.AsyncClient(timeout=180) as client:
-            resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=files)
-            if resp.status_code >= 400 and field == "image[]":
-                alt = _identity_files(references, "image")
-                resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=alt)
+            resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=send_files)
+            body = (resp.text or "").lower()
+            if resp.status_code >= 400 and "inpaint" in body and size != "1024x1024":
+                square = fit_references(references, "1024x1024", fmt="PNG")[:1]
+                square_files = _identity_files(square, "image")
+                if square_files:
+                    form["size"] = "1024x1024"
+                    send_files = square_files
+                    resp = await client.post(
+                        OPENAI_IMAGE_EDITS_URL,
+                        headers=headers,
+                        data=form,
+                        files=send_files,
+                    )
             if resp.status_code >= 400 and "input_fidelity" in form:
                 form.pop("input_fidelity", None)
-                resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=files)
+                resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=send_files)
         latency = int((time.perf_counter() - started) * 1000)
         if resp.status_code >= 400:
             self._log(
@@ -445,11 +456,25 @@ class AdsOpenAIClient:
             fitted = fit_references([(raw, mime)], size, fmt="JPEG")
             if fitted:
                 raw, mime = fitted[0]
-            mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
-            ext = "png" if "png" in mime else "jpg"
-            files = {"input_reference": (f"product.{ext}", raw, mime)}
+                mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
+                ext = "png" if "png" in mime else "jpg"
+                files = {"input_reference": (f"product.{ext}", raw, mime)}
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form, files=files)
+            body = (resp.text or "").lower()
+            size_mismatch = (
+                "inpaint" in body
+                or "must match" in body
+                or "width and height" in body
+                or "input_reference" in body
+            )
+            if resp.status_code >= 400 and files and size_mismatch:
+                logger.warning(
+                    "ai_ads video input_reference rejected store_id=%s err=%s",
+                    self._store_id,
+                    (resp.text or "")[:200],
+                )
+                resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form)
         latency = int((time.perf_counter() - started) * 1000)
         if resp.status_code >= 400:
             self._log(
