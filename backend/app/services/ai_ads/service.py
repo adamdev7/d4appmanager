@@ -284,7 +284,7 @@ class AIAdsService:
         if not card.get("photos_cached"):
             raise HTTPException(
                 status_code=400,
-                detail="Could not read those pictures. Use JPEG or PNG files under 8 MB.",
+                detail="Could not use those pictures. PNG is converted automatically — try another file if this one is damaged.",
             )
         return card
 

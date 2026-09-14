@@ -46,10 +46,13 @@ async def upload_product_photos(
     blobs: list[bytes] = []
     for item in files[:8]:
         data = await item.read()
-        if data and len(data) <= 8 * 1024 * 1024:
+        if data and len(data) <= 32 * 1024 * 1024:
             blobs.append(data)
     if not blobs:
-        raise HTTPException(status_code=400, detail="Choose JPEG or PNG pictures under 8 MB.")
+        raise HTTPException(
+            status_code=400,
+            detail="Choose a picture under 32 MB. PNG is fine — we convert and compress it here.",
+        )
     return _service.upload_product_photos(db, user, store_id, product_id, blobs)
 
 

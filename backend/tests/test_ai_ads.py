@@ -1048,6 +1048,39 @@ def test_fit_image_bytes_matches_requested_size():
     assert Image.open(BytesIO(prepared)).size == (720, 1280)
 
 
+def test_archive_converts_png_and_webp_to_compressed_jpeg():
+    from io import BytesIO
+
+    from PIL import Image
+
+    from app.services.ai_ads.media_io import archive_image_bytes
+
+    rgba = Image.new("RGBA", (1800, 1200), (200, 40, 80, 180))
+    png = BytesIO()
+    rgba.save(png, format="PNG")
+    archived, mime = archive_image_bytes(png.getvalue(), max_side=1400)
+    assert mime == "image/jpeg"
+    out = Image.open(BytesIO(archived))
+    assert out.format == "JPEG"
+    assert out.mode == "RGB"
+    assert max(out.size) <= 1400
+    assert archived[:3] == b"\xff\xd8\xff"
+    assert len(archived) < len(png.getvalue()) or len(png.getvalue()) < 50_000
+
+    palette = rgba.convert("P", palette=Image.Palette.ADAPTIVE, colors=32)
+    pal = BytesIO()
+    palette.save(pal, format="PNG")
+    pal_archived, pal_mime = archive_image_bytes(pal.getvalue())
+    assert pal_mime == "image/jpeg"
+    assert Image.open(BytesIO(pal_archived)).mode == "RGB"
+
+    webp = BytesIO()
+    Image.new("RGB", (400, 300), (9, 90, 40)).save(webp, format="WEBP")
+    webp_archived, webp_mime = archive_image_bytes(webp.getvalue())
+    assert webp_mime == "image/jpeg"
+    assert Image.open(BytesIO(webp_archived)).size == (400, 300)
+
+
 def test_video_provider_rejects_non_mp4_download():
     import asyncio
 
@@ -1413,8 +1446,16 @@ def test_catalog_stores_manual_photos_once(tmp_path):
     assert len(card["photos"]) == 1
     assert catalog.cached_identity_bytes("9864947138808", limit=1)
     assert any(str(key).startswith("manual_") for key in catalog.db.images)
+
+    png_path = tmp_path / "ring.png"
+    Image.new("RGBA", (120, 80), (10, 20, 30, 200)).save(png_path, format="PNG")
+    png_card = catalog.store_manual_photos("9864947138808", [png_path.read_bytes()])
+    assert len(png_card["photos"]) == 2
+    stored = catalog.cached_identity_bytes("9864947138808", limit=2)
+    assert all(mime == "image/jpeg" for _raw, mime in stored)
+
     again = catalog.store_manual_photos("9864947138808", [raw_bytes])
-    assert len(again["photos"]) == 1
+    assert len(again["photos"]) == 2
     try:
         catalog.store_manual_photos("nope", [b"not-an-image"])
         raise AssertionError("expected ValueError")

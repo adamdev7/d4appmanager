@@ -323,6 +323,7 @@ class ShopifyProductCatalog:
             try:
                 archived = archive_image_bytes(data)
             except Exception:
+                logger.info("ai_ads manual photo skipped product=%s", pid)
                 continue
             saved = self.assets.save_bytes(
                 archived[0],
@@ -354,7 +355,10 @@ class ShopifyProductCatalog:
             row.last_images_fetched_at = datetime.now(UTC)
             self.db.commit()
         elif not existing:
-            raise ValueError("Could not read those pictures. Use JPEG or PNG files under 8 MB.")
+            raise ValueError(
+                "Could not use those pictures. The server converts and compresses PNG automatically "
+                "— try a different file if this one is damaged."
+            )
         card = self.product_picker_card(pid)
         if not card:
             raise ValueError("Could not save product pictures")

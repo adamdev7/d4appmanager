@@ -205,7 +205,7 @@ export function GeneratePage() {
                 <p className="text-xs text-content-muted mt-0.5">
                   {selectedProduct.photos_cached
                     ? "These pictures are stored in App Manager. Generate always uses them — Shopify download is not needed."
-                    : "Shopify photos did not save for this SKU. Add JPEG or PNG pictures once. Astra reuses them for every ad after that."}
+                    : "Shopify photos did not save for this SKU. Add pictures once — PNG is fine. The server converts and compresses them."}
                 </p>
               </div>
               {savedPhotos.length > 0 && (
@@ -223,7 +223,7 @@ export function GeneratePage() {
               <input
                 ref={fileRef}
                 type="file"
-                accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+                accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.heic,.heif"
                 multiple
                 className="hidden"
                 onChange={(e) => void onPickPhotos(e.target.files)}
@@ -373,7 +373,7 @@ export function GeneratePage() {
           </Button>
           {selectedProduct && !selectedProduct.photos_cached && (
             <p className="text-xs text-content-muted">
-              Add product pictures first. They are stored once and reused for this SKU.
+              Add product pictures first. PNG, JPEG, WebP, or HEIC — we convert and compress them here.
             </p>
           )}
         </div>

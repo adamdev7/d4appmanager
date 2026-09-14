@@ -164,20 +164,50 @@ def shopify_still_candidates(url: str, *, shop_domain: str | None = None) -> lis
     return uniq
 
 
-def archive_image_bytes(data: bytes, *, max_side: int = 1400) -> tuple[bytes, str]:
-    """Normalize a catalog still to a Pillow-safe JPEG suitable for reuse."""
-    from PIL import Image, ImageOps
+def _flatten_to_rgb(image):
+    from PIL import Image
 
-    image = Image.open(BytesIO(data))
-    image.load()
-    image = ImageOps.exif_transpose(image) or image
-    if image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info):
+    mode = image.mode
+    if mode == "P":
+        image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+        mode = image.mode
+    if mode in {"RGBA", "RGBa", "LA", "La", "PA"} or "transparency" in getattr(image, "info", {}):
         rgba = image.convert("RGBA")
         background = Image.new("RGB", rgba.size, (255, 255, 255))
         background.paste(rgba, mask=rgba.split()[-1])
-        image = background
-    else:
-        image = image.convert("RGB")
+        return background
+    if mode == "RGB":
+        return image
+    return image.convert("RGB")
+
+
+def _jpeg_bytes(image, *, quality: int) -> bytes:
+    buf = BytesIO()
+    try:
+        image.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True)
+    except Exception:
+        buf = BytesIO()
+        image.save(buf, format="JPEG", quality=max(68, quality - 6))
+    return buf.getvalue()
+
+
+def archive_image_bytes(data: bytes, *, max_side: int = 1400) -> tuple[bytes, str]:
+    """Convert PNG/WebP/HEIC/JPEG to a compressed JPEG the rest of Astra can reuse."""
+    from PIL import Image, ImageFile, ImageOps
+
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+    if not data or len(data) < 24:
+        raise ValueError("That file is empty.")
+    try:
+        image = Image.open(BytesIO(data))
+        image.load()
+    except Exception as err:
+        raise ValueError("Could not open that picture. PNG, JPEG, WebP, and HEIC are supported.") from err
+    try:
+        image = ImageOps.exif_transpose(image) or image
+    except Exception:
+        pass
+    image = _flatten_to_rgb(image)
     width, height = image.size
     longest = max(width, height)
     if longest > max_side > 0:
@@ -186,13 +216,17 @@ def archive_image_bytes(data: bytes, *, max_side: int = 1400) -> tuple[bytes, st
             (max(1, int(width * scale)), max(1, int(height * scale))),
             Image.Resampling.LANCZOS,
         )
-    buf = BytesIO()
-    try:
-        image.save(buf, format="JPEG", quality=90, subsampling=0, optimize=True)
-    except Exception:
-        buf = BytesIO()
-        image.save(buf, format="JPEG", quality=88)
-    return buf.getvalue(), "image/jpeg"
+    quality = 88
+    raw = _jpeg_bytes(image, quality=quality)
+    while len(raw) > 1_200_000 and quality > 68:
+        quality -= 8
+        raw = _jpeg_bytes(image, quality=quality)
+    if len(raw) > 1_200_000:
+        image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        raw = _jpeg_bytes(image, quality=78)
+    if len(raw) < 32:
+        raise ValueError("Could not compress that picture.")
+    return raw, "image/jpeg"
 
 
 def bytes_to_data_url(data: bytes, mime: str | None = None, *, max_side: int = 768) -> str:
