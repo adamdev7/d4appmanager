@@ -88,13 +88,13 @@ export function JobHistoryList({
   if (!jobs.length) {
     return (
       <Card>
-        <CardTitle>No jobs yet</CardTitle>
+        <CardTitle>No runs yet</CardTitle>
         <CardDescription className="mt-2">
-          Start a run from Generate. Finished jobs will show up here so you can reopen the
-          creatives and the activity log.
+          Start one from Generate. Every finished run stays here with its clips and full activity
+          log.
         </CardDescription>
         <Link to="/ai-ads/generate" className="inline-block mt-4">
-          <Button>Generate creatives</Button>
+          <Button>Generate videos</Button>
         </Link>
       </Card>
     );
@@ -211,7 +211,7 @@ export function FinishedJobDetail({
       {creatives.length > 0 ? (
         <div className="mb-5">
           <p className="text-xs uppercase tracking-wide text-content-subtle mb-2">
-            Creatives · {ready.length}/{creatives.length}
+            Clips · {ready.length}/{creatives.length} usable
           </p>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {creatives.map((c) => {

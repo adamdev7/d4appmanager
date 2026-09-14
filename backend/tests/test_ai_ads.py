@@ -1712,9 +1712,12 @@ def test_meta_ready_copy_is_publishable():
     assert meta_cta("learn more") == "LEARN_MORE"
 
 
-def test_video_prompt_requires_spoken_voice_and_music():
-    from app.services.ai_ads.complete_creative import build_video_prompt, video_spec_from_concept
+def test_video_prompt_is_a_clean_plate_without_text_or_speech():
+    from app.services.ai_ads.complete_creative import build_video_prompt, video_only_count, video_spec_from_concept
     from app.services.ai_ads.schemas import CreativeConceptModel, ProductContext, ProductImage
+
+    assert video_only_count(3) == 3
+    assert video_only_count(None, default_videos=2) == 2
 
     product = ProductContext(
         product_id="1",
@@ -1731,11 +1734,12 @@ def test_video_prompt_requires_spoken_voice_and_music():
         visual_direction="UGC mirror try-on",
     )
     spec = video_spec_from_concept(concept, product)
-    assert spec.voice_direction
     assert spec.music_direction
-    assert all((scene.voiceover or "").strip() for scene in spec.scenes)
+    assert all(not (scene.voiceover or "").strip() for scene in spec.scenes)
+    assert all(not (scene.text_overlay or "").strip() for scene in spec.scenes)
     prompt = build_video_prompt(product=product, spec=spec, styles=["UGC"])
-    assert "AUDIO IS REQUIRED" in prompt
-    assert "SPOKEN SCRIPT" in prompt
-    assert "original" in prompt.lower() or "Music:" in prompt
+    assert "CLEAN PLATE" in prompt
+    assert "FORBIDDEN" in prompt
+    assert "SPOKEN SCRIPT" not in prompt
+    assert "on-screen text" in prompt.lower() or "NO on-screen text" in prompt or "any on-screen text" in prompt
 

@@ -26,8 +26,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Getting-ready still: anonymous hands fastening or sliding the piece on, phone-angle, real bedroom.",
         ],
         "video": [
-            "Handheld UGC: spoken first-person VO, original music bed, no readable face, quick try-on, product hold-up CTA.",
-            "Mirror get-ready clip with spoken hook, then a step-outside beat, music swell, end on the product in natural light.",
+            "Handheld UGC: no face needed, quick try-on, product hold-up, no captions.",
+            "Mirror get-ready clip, then a step-outside beat, end on the product in natural light. No text.",
         ],
     },
     "PRODUCT_DEMO": {
@@ -41,8 +41,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Detail proof: extreme close-up of the unique hardware while it is being used, not on a void background.",
         ],
         "video": [
-            "Spoken demo VO: open on the problem of putting it on, demonstrate the mechanism, music under, end on a clean wear shot and CTA.",
-            "Three tight angles of the same action with a voice explaining the feature, then pull back to the worn product.",
+            "Silent demo: open on putting it on, show the mechanism, end on a clean wear shot. No text.",
+            "Three tight angles of the same action, then pull back to the worn product. No captions.",
         ],
     },
     "LIFESTYLE": {
@@ -56,8 +56,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Editorial lifestyle: magazine styling, complementary props only, product fully recognizable.",
         ],
         "video": [
-            "Spoken lifestyle VO over original music: 1-second product close-up, pull back into a new in-use world, end on packshot and CTA.",
-            "Editorial montage: four distinct camera angles of the same product, music-led with a whispered VO and on-screen CTA.",
+            "1-second product close-up, pull back into a new in-use world, end on a clean packshot. No text.",
+            "Editorial montage: four distinct camera angles of the same product. No captions, no end-card copy.",
         ],
     },
     "PROBLEM_SOLUTION": {
@@ -71,8 +71,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Close-up of the solving feature (adjustable fit, clasp, construction) in a new setting.",
         ],
         "video": [
-            "Spoken problem-to-solution: friction beat, product appears, after-moment, original music, end card CTA.",
-            "Voice names the painful alternative, cut to this product on the body, hold, spoken CTA.",
+            "Problem-to-solution in pictures only: friction beat, product appears, after-moment. No text.",
+            "Show the painful alternative, cut to this product on the body, hold. No captions.",
         ],
     },
     "PROMOTIONAL": {
@@ -86,8 +86,8 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
             "Unboxing / treat-yourself: hands lifting the exact SKU from tissue, warm practical light, not the website photo.",
         ],
         "video": [
-            "Spoken gift-reveal hook over music, product identity close-up, offer-safe end card with CTA. No fake discounts.",
-            "Drop energy: quick cuts, energetic original music, freeze on a shoppable packshot with spoken CTA.",
+            "Gift-reveal motion, product identity close-up, freeze on a shoppable packshot. No text, no fake discounts.",
+            "Drop energy: quick cuts, freeze on a clean product hold. No captions.",
         ],
     },
 }
@@ -112,12 +112,10 @@ META_CTAS = {
 }
 
 DEFAULT_VOICE = (
-    "Native spoken English, warm confident woman, 1–2 feet from the mic, not a radio announcer. "
-    "Every scene voiceover line must be heard clearly in the MP4."
+    "None. No talking, no narration, no lip-sync speech. The operator will add voice-over later."
 )
 DEFAULT_MUSIC = (
-    "Original instrumental bed only — soft luxury pop, no lyrics, no named artists, no copyrighted songs. "
-    "Sit under the voice at about -12 dB, swell into the CTA."
+    "Light original instrumental only — no lyrics, no vocals, no named artists, no copyrighted songs."
 )
 
 
@@ -186,6 +184,12 @@ def resolve_generation_counts(
     )
 
 
+def video_only_count(videos: Any, *, default_videos: int = 1) -> int:
+    """Astra only renders MP4s. Images are skipped so operators can caption and VO in post."""
+    _images, count = resolve_generation_counts(0, videos, default_images=0, default_videos=default_videos)
+    return count
+
+
 def normalize_styles(styles: list[str] | None) -> list[str]:
     out: list[str] = []
     for raw in styles or []:
@@ -248,21 +252,21 @@ def diversify_concepts(
                     concept.scenes = [
                         VideoScene(
                             duration=3,
-                            visual=f"Hook: {recipe} Show {product.title}.",
-                            voiceover=concept.hook or product.title,
-                            text_overlay=concept.hook or product.title,
+                            visual=f"Hook: {recipe} Show {product.title}. No text on screen.",
+                            voiceover="",
+                            text_overlay="",
                         ),
                         VideoScene(
                             duration=6,
-                            visual=f"Middle: {recipe} Keep {product.title} recognizable in a brand-new setting.",
-                            voiceover=(concept.primary_text or product.description or product.title)[:180],
-                            text_overlay=concept.headline or product.title,
+                            visual=f"Middle: {recipe} Keep {product.title} recognizable in a brand-new setting. No captions.",
+                            voiceover="",
+                            text_overlay="",
                         ),
                         VideoScene(
                             duration=3,
-                            visual=f"End on a new packshot of {product.title} and CTA. {lock}",
-                            voiceover=(concept.cta or "Shop now").replace("_", " "),
-                            text_overlay=(concept.cta or "SHOP NOW").replace("_", " "),
+                            visual=f"End on a clean packshot of {product.title}, no CTA text. {lock}",
+                            voiceover="",
+                            text_overlay="",
                         ),
                     ]
                 else:
@@ -509,7 +513,7 @@ def build_video_prompt(
         f"Hook: {spec.hook or product.title}.",
         f"Shot list featuring {product.title} only: {shot_list}.",
         "Keep the product clearly visible most of the time. Smooth camera, no fake UI, no watermarks.",
-        f"End on a clear shot of this same {product.title} and the call to action {(spec.cta or 'SHOP NOW').replace('_', ' ')}.",
+        f"End on a clean hold of this same {product.title} with nothing written on the frame.",
     ]
     desc = (product.description or "").strip()
     if desc:
@@ -521,24 +525,14 @@ def build_video_prompt(
         )
     if brand_style:
         parts.append(f"Brand look: {brand_style[:140]}")
-    if spec.voice_direction:
-        parts.append(f"Voice: {spec.voice_direction[:160]}")
-    else:
-        parts.append(f"Voice: {DEFAULT_VOICE}")
-    if spec.music_direction:
-        parts.append(f"Music: {spec.music_direction[:160]}")
-    else:
-        parts.append(f"Music: {DEFAULT_MUSIC}")
-    spoken = spoken_script(spec)
-    if spoken:
-        parts.append(f"SPOKEN SCRIPT (must be audible, not silent, not text-only): {spoken}")
+    parts.append(f"Music: {spec.music_direction or DEFAULT_MUSIC}")
     parts.append(
-        "AUDIO IS REQUIRED. This MP4 must be ready to spend on Meta Reels/Stories: "
-        "spoken voiceover throughout, original music under the voice, no copyrighted songs, "
-        "no celebrity likeness. Keep 250px clear at the top and bottom for Reels UI. "
-        "On-screen text only for the hook (first second) and the end CTA, large high-contrast, center-safe. "
-        "Do not bake fake UI, fake reviews, watermarks, or a different product. "
-        f"End on a clear shot of this same {product.title} and {(spec.cta or 'SHOP NOW').replace('_', ' ')}."
+        "CLEAN PLATE. This MP4 is a visual-only product clip. The operator will add captions and text-to-speech later. "
+        "FORBIDDEN: any on-screen text, letters, numbers, captions, titles, subtitles, watermarks, logos, prices, or CTA words. "
+        "No white text, no dark text, no end-card copy, no lower-thirds. "
+        "FORBIDDEN: spoken words, voiceover, narration, or talking. "
+        "Leave 250px empty at the top and bottom for later overlays. "
+        f"End on a still of this same {product.title} with a blank frame — no text."
     )
     return " ".join(parts)
 
@@ -554,35 +548,33 @@ def video_spec_from_concept(
         scenes = [
             VideoScene(
                 duration=3,
-                visual=f"Open on {product.title}. {(concept.visual_direction or '')[:160]}",
-                voiceover=concept.hook or product.title,
-                text_overlay=concept.hook or product.title,
+                visual=f"Open on {product.title}. {(concept.visual_direction or '')[:160]} No text.",
+                voiceover="",
+                text_overlay="",
             ),
             VideoScene(
                 duration=8,
-                visual=concept.visual_direction or f"Show {product.title} in use.",
-                voiceover=(concept.primary_text or product.description or product.title)[:180],
-                text_overlay=concept.headline or product.title,
+                visual=concept.visual_direction or f"Show {product.title} in use. No captions.",
+                voiceover="",
+                text_overlay="",
             ),
             VideoScene(
                 duration=4,
-                visual=f"Clear product shot of {product.title} and call to action.",
-                voiceover=(concept.cta or "Shop now").replace("_", " "),
-                text_overlay=(concept.cta or "SHOP NOW").replace("_", " "),
+                visual=f"Clean product hold of {product.title}. No call-to-action text.",
+                voiceover="",
+                text_overlay="",
             ),
         ]
     for scene in scenes:
-        if not (scene.voiceover or "").strip():
-            scene.voiceover = (scene.text_overlay or concept.hook or product.title)[:180]
-        if not (scene.text_overlay or "").strip():
-            scene.text_overlay = (scene.voiceover or concept.headline or product.title)[:80]
+        scene.voiceover = ""
+        scene.text_overlay = ""
     duration = min(12.0, max(4.0, sum(max(0.5, float(s.duration or 2)) for s in scenes) or 8))
     return VideoSpec(
         duration=duration,
         format=aspect_ratio,
         hook=concept.hook or product.title,
         scenes=scenes,
-        voice_direction=concept.voice_direction or DEFAULT_VOICE,
+        voice_direction=DEFAULT_VOICE,
         music_direction=concept.music_direction or DEFAULT_MUSIC,
         cta=meta_cta(concept.cta),
     )

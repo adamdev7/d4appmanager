@@ -43,8 +43,8 @@ class AIAdsStrategyRequest(BaseModel):
 
 class AIAdsGenerationJobRequest(BaseModel):
     product_id: str
-    image_count: int = Field(default=3, ge=0)
-    video_count: int = Field(default=2, ge=0)
+    image_count: int = Field(default=0, ge=0)
+    video_count: int = Field(default=1, ge=0)
     styles: list[str] | None = None
     audience: str | None = None
     objective: str | None = None

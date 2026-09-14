@@ -255,16 +255,17 @@ class AdsAIOrchestrator:
             image_count, video_count = resolve_generation_counts(
                 request.get("image_count"),
                 request.get("video_count"),
-                default_images=settings.ai_ad_image_count,
+                default_images=0,
                 default_videos=settings.ai_ad_video_count,
             )
-            if image_count + video_count < 1:
-                raise AIAdsError("No images or videos were requested.")
+            image_count = 0
+            if video_count < 1:
+                raise AIAdsError("Astra only renders videos. Set videos to at least 1.")
             styles = list(request.get("styles") or ["UGC", "PRODUCT_DEMO", "LIFESTYLE"])
             audience = str(request.get("audience") or "")
             objective = str(request.get("objective") or "conversions")
-            placement = str(request.get("placement") or "feed")
-            aspect = str(request.get("aspect_ratio") or "4:5")
+            placement = str(request.get("placement") or "reels")
+            aspect = "9:16"
             brand_style = str(request.get("brand_style") or "")
             avatar_id = request.get("avatar_id")
             mix = request.get("portfolio_mix")
@@ -387,8 +388,9 @@ class AdsAIOrchestrator:
                 step="plan",
                 title="Planning brand-new creatives",
                 detail=(
-                    f"Drafting {image_count} distinct image scene(s) and {video_count} distinct video storyboard(s) "
-                    f"in styles {', '.join(styles) or 'default'} that feature the real {product.title} in brand-new situations."
+                    f"Drafting {video_count} distinct 9:16 video storyboard(s) "
+                    f"in styles {', '.join(styles) or 'default'} featuring the real {product.title}. "
+                    "Clean visual plates — no on-screen text. You add captions and voice later."
                 ),
                 pct=42,
             )

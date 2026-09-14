@@ -34,33 +34,40 @@ export function PerformancePage() {
           Latest imported Meta snapshots. Missing metrics stay blank — nothing is invented.
         </CardDescription>
       </CardHeader>
-      {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
+      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
       {rows.length === 0 ? (
         <p className="text-sm text-content-subtle">No snapshots yet. Sync Meta ads first.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="-mx-1 overflow-x-auto px-1">
+          <table className="w-full min-w-[44rem] text-sm">
             <thead>
-              <tr className="text-left text-content-subtle border-b border-border">
-                <th className="py-2 pr-3">Ad</th>
-                <th className="py-2 pr-3">Spend</th>
-                <th className="py-2 pr-3">CTR</th>
-                <th className="py-2 pr-3">ROAS</th>
-                <th className="py-2 pr-3">CPA</th>
-                <th className="py-2 pr-3">Purchases</th>
-                <th className="py-2">Range</th>
+              <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-content-subtle">
+                <th className="py-2.5 pr-3 font-medium">Ad</th>
+                <th className="py-2.5 pr-3 text-right font-medium">Spend</th>
+                <th className="py-2.5 pr-3 text-right font-medium">CTR</th>
+                <th className="py-2.5 pr-3 text-right font-medium">ROAS</th>
+                <th className="py-2.5 pr-3 text-right font-medium">CPA</th>
+                <th className="py-2.5 pr-3 text-right font-medium">Purchases</th>
+                <th className="py-2.5 font-medium">Range</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r, i) => (
-                <tr key={i} className="border-b border-border/60">
-                  <td className="py-2 pr-3 font-mono text-xs">{r.ad_id || "—"}</td>
-                  <td className="py-2 pr-3">{n(r.spend)}</td>
-                  <td className="py-2 pr-3">{r.ctr == null ? "—" : `${r.ctr.toFixed(2)}%`}</td>
-                  <td className="py-2 pr-3">{n(r.roas)}</td>
-                  <td className="py-2 pr-3">{n(r.cpa)}</td>
-                  <td className="py-2 pr-3">{n(r.purchases)}</td>
-                  <td className="py-2 text-content-muted text-xs">
+                <tr
+                  key={i}
+                  className="border-b border-border/60 transition-colors last:border-0 hover:bg-surface-muted/50"
+                >
+                  <td className="py-2.5 pr-3 font-mono text-xs text-content-muted">
+                    {r.ad_id || "—"}
+                  </td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums">{n(r.spend)}</td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums">
+                    {r.ctr == null ? "—" : `${r.ctr.toFixed(2)}%`}
+                  </td>
+                  <td className="py-2.5 pr-3 text-right font-medium tabular-nums">{n(r.roas)}</td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums">{n(r.cpa)}</td>
+                  <td className="py-2.5 pr-3 text-right tabular-nums">{n(r.purchases)}</td>
+                  <td className="py-2.5 text-xs text-content-muted">
                     {r.insufficient_data
                       ? "insufficient data"
                       : `${r.date_range_start || "?"} – ${r.date_range_end || "?"}`}

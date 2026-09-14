@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Sparkles } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api, type AIAdsJob, type AIAdsProduct } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
@@ -154,13 +154,16 @@ export function GenerationProgressPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-content">Jobs</h2>
-          <p className="text-sm text-content-muted mt-0.5">
-            Past generation runs. Open one for creatives, status, and the activity log.
+          <h2 className="text-lg font-semibold text-content">Runs</h2>
+          <p className="mt-0.5 text-sm text-content-muted">
+            Every generation run, newest first. Open one for its clips, status, and activity log.
           </p>
         </div>
         <Link to="/ai-ads/generate">
-          <Button size="sm">New generation</Button>
+          <Button size="sm">
+            <Sparkles className="h-3.5 w-3.5" />
+            New run
+          </Button>
         </Link>
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}

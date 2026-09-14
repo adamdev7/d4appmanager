@@ -199,9 +199,9 @@ export function GenerationControlPanel({
 
       {lost && (
         <p className="text-sm text-amber-600 dark:text-amber-400 mb-3">
-          The card can sit at 0/2 while OpenAI is still working — or the worker died. Halt cuts the
-          run. Nudge restarts the same job if the process is gone. Replay starts a clean job from
-          the same brief.
+          Progress can sit still while OpenAI is rendering — or the worker died. Halt cuts the run,
+          Nudge restarts the same job if the process is gone, and Replay starts a clean job from the
+          same brief.
         </p>
       )}
 

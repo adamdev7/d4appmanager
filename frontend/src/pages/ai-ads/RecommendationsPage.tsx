@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Lightbulb } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api, type AIAdsRecommendation } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
@@ -49,42 +50,57 @@ export function RecommendationsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between gap-3 items-center">
-        <p className="text-sm text-content-muted">
-          Recommendations distinguish observed data from interpretation and experiments.
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-content">Recommendations</h2>
+          <p className="mt-0.5 max-w-2xl text-sm text-content-muted">
+            Each one separates what the data shows from what Astra infers, so you can decide what to
+            test. None of it is a promised return.
+          </p>
+        </div>
         <Button onClick={() => void analyze()} isLoading={analyzing}>
+          <Lightbulb className="h-4 w-4" />
           Analyze creatives
         </Button>
       </div>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-600">
+          {error}
+        </p>
+      )}
       {rows.length === 0 ? (
-        <Card>
-          <p className="text-sm text-content-subtle">
-            No recommendations yet. Sync Meta ads, then run analysis.
+        <Card className="py-12 text-center">
+          <span className="mx-auto grid h-11 w-11 place-items-center rounded-xl bg-surface-muted">
+            <Lightbulb className="h-5 w-5 text-content-subtle" />
+          </span>
+          <p className="mt-3 font-semibold text-content">Nothing to recommend yet</p>
+          <p className="mx-auto mt-1 max-w-sm text-sm text-content-muted">
+            Sync your Meta ads from Overview, then run the analysis to surface what your winners
+            have in common.
           </p>
         </Card>
       ) : (
         rows.map((r) => (
           <Card key={r.id}>
-            <CardHeader>
-              <div className="flex items-start justify-between gap-2">
+            <CardHeader className="mb-3">
+              <div className="flex items-start justify-between gap-3">
                 <CardTitle>{r.title}</CardTitle>
-                <Badge variant="brand">
+                <Badge variant="brand" className="shrink-0">
                   {Math.round((r.confidence || 0) * 100)}% confidence
                 </Badge>
               </div>
-              <CardDescription>{r.explanation}</CardDescription>
+              <CardDescription className="mt-1.5 leading-relaxed">{r.explanation}</CardDescription>
             </CardHeader>
             {r.recommended_action && (
-              <p className="text-sm text-content">
-                <span className="font-medium">Action: </span>
+              <p className="rounded-lg border border-brand-line/30 bg-brand-500/5 px-3 py-2.5 text-sm text-content">
+                <span className="font-medium">Try this: </span>
                 {r.recommended_action}
               </p>
             )}
             {(r.supporting_creative_ids?.length || 0) > 0 && (
-              <p className="text-xs text-content-subtle mt-2">
-                Supporting creatives: {r.supporting_creative_ids?.join(", ")}
+              <p className="mt-2 text-xs text-content-subtle">
+                Based on {r.supporting_creative_ids?.length} creative
+                {r.supporting_creative_ids?.length === 1 ? "" : "s"} in your account.
               </p>
             )}
           </Card>

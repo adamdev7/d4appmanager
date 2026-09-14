@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useStore } from "@/context/StoreContext";
 import { api, type AIAdsProduct, type AIAdsStrategy } from "@/lib/api";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { cn } from "@/lib/cn";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Select } from "@/components/ui/Select";
 import { PageLoader } from "@/components/ui/Loading";
 
 export function StrategyPage() {
@@ -23,8 +26,10 @@ export function StrategyPage() {
     ]);
     setStrategy(s);
     setProducts(p);
-    if (!productId && p[0]) setProductId(p[0].id);
-  }, [storeId, productId]);
+    setProductId((current) =>
+      current && p.some((row) => row.id === current) ? current : p[0]?.id ?? ""
+    );
+  }, [storeId]);
 
   useEffect(() => {
     if (!storeId) {
@@ -65,23 +70,21 @@ export function StrategyPage() {
             guarantee.
           </CardDescription>
         </CardHeader>
-        <div className="flex flex-wrap gap-3 items-end">
-          <label className="text-sm font-medium text-content">
-            Product
-            <select
-              value={productId}
-              onChange={(e) => setProductId(e.target.value)}
-              className="mt-1.5 flex h-10 min-w-[220px] rounded-lg border border-border bg-surface px-3 text-sm"
-            >
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.title}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="flex flex-wrap items-end gap-3">
+          <Select
+            label="Product"
+            className="min-w-[16rem]"
+            value={productId}
+            onChange={(e) => setProductId(e.target.value)}
+          >
+            {products.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.title}
+              </option>
+            ))}
+          </Select>
           <Button onClick={() => void create()} isLoading={running} disabled={!productId}>
-            Generate strategy
+            Build strategy
           </Button>
         </div>
         {error && <p className="text-sm text-red-600 mt-3">{error}</p>}
@@ -96,26 +99,27 @@ export function StrategyPage() {
       {strategy && (
         <>
           <Card>
-            <CardTitle>Summary</CardTitle>
-            <p className="mt-2 text-sm text-content">{strategy.summary}</p>
-            <p className="mt-2 text-xs text-content-subtle">
-              Confidence {Math.round((strategy.confidence || 0) * 100)}%
-            </p>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <CardTitle>Summary</CardTitle>
+              <Badge variant="brand">
+                {Math.round((strategy.confidence || 0) * 100)}% confidence
+              </Badge>
+            </div>
+            <p className="mt-2 text-sm leading-relaxed text-content">{strategy.summary}</p>
+            <div className="mt-4 flex flex-wrap gap-x-5 gap-y-1 border-t border-border pt-3 text-xs text-content-muted">
+              <span>Winners {asList(report.winning_creatives).length}</span>
+              <span>Average {asList(report.average_creatives).length}</span>
+              <span>Underperformers {asList(report.losing_creatives).length}</span>
+            </div>
           </Card>
-          <ListCard title="Winning patterns (observed)" items={asList(body.winning_patterns)} />
-          <ListCard title="Creative angles" items={asList(body.creative_angles)} />
-          <ListCard title="Hook directions" items={asList(body.hook_directions)} />
-          <ListCard title="Visual directions" items={asList(body.visual_directions)} />
-          <ListCard title="Avoid" items={asList(body.avoid)} />
-          <ListCard title="Hypotheses to test" items={asList(body.hypotheses)} />
-          <Card>
-            <CardTitle>Intelligence snapshot</CardTitle>
-            <p className="text-sm text-content-muted mt-2">
-              Winners {asList(report.winning_creatives).length} · Average{" "}
-              {asList(report.average_creatives).length} · Underperformers{" "}
-              {asList(report.losing_creatives).length}
-            </p>
-          </Card>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ListCard title="Winning patterns (observed)" items={asList(body.winning_patterns)} />
+            <ListCard title="Creative angles" items={asList(body.creative_angles)} />
+            <ListCard title="Hook directions" items={asList(body.hook_directions)} />
+            <ListCard title="Visual directions" items={asList(body.visual_directions)} />
+            <ListCard title="Avoid" items={asList(body.avoid)} tone="warn" />
+            <ListCard title="Hypotheses to test" items={asList(body.hypotheses)} />
+          </div>
         </>
       )}
     </div>
@@ -126,14 +130,30 @@ function asList(v: unknown): string[] {
   return Array.isArray(v) ? v.map((x) => (typeof x === "string" ? x : JSON.stringify(x))) : [];
 }
 
-function ListCard({ title, items }: { title: string; items: string[] }) {
+function ListCard({
+  title,
+  items,
+  tone,
+}: {
+  title: string;
+  items: string[];
+  tone?: "warn";
+}) {
   if (!items.length) return null;
   return (
-    <Card>
-      <CardTitle>{title}</CardTitle>
-      <ul className="mt-2 list-disc pl-5 space-y-1 text-sm text-content">
+    <Card className={tone === "warn" ? "border-amber-500/25" : undefined}>
+      <CardTitle className="text-sm">{title}</CardTitle>
+      <ul className="mt-3 space-y-2">
         {items.map((item, i) => (
-          <li key={i}>{item}</li>
+          <li key={i} className="flex gap-2.5 text-sm text-content">
+            <span
+              className={cn(
+                "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
+                tone === "warn" ? "bg-amber-500" : "bg-brand-500"
+              )}
+            />
+            <span className="min-w-0 leading-snug">{item}</span>
+          </li>
         ))}
       </ul>
     </Card>

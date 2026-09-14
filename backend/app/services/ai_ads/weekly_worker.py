@@ -13,7 +13,7 @@ from app.config import settings
 from app.core.openai_credentials import resolve_openai_api_key
 from app.db.models import CreativeGenerationJob, Store, StoreAIAdsSettings, User
 from app.db.session import SessionLocal
-from app.services.ai_ads.complete_creative import resolve_generation_counts
+from app.services.ai_ads.complete_creative import video_only_count
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.job_runner import enqueue_generation_job
 from app.services.ai_ads.orchestrator import AdsAIOrchestrator
@@ -105,14 +105,12 @@ async def _tick() -> None:
                 row.last_weekly_run_at = datetime.now(UTC)
                 db.commit()
                 continue
-            images, videos = resolve_generation_counts(
-                row.image_count,
+            videos = video_only_count(
                 row.video_count,
-                default_images=settings.ai_ad_image_count,
                 default_videos=settings.ai_ad_video_count,
             )
-            if images + videos < 1:
-                row.last_weekly_error = "Weekly image and video counts are both 0"
+            if videos < 1:
+                row.last_weekly_error = "Weekly video count is 0"
                 row.last_weekly_run_at = datetime.now(UTC)
                 db.commit()
                 continue
@@ -124,13 +122,13 @@ async def _tick() -> None:
                 request_json=json.dumps(
                     {
                         "product_id": product_id,
-                        "image_count": images,
+                        "image_count": 0,
                         "video_count": videos,
                         "styles": json.loads(row.creative_styles_json or "[]"),
                         "audience": row.default_audience,
                         "objective": row.default_objective,
-                        "placement": row.default_placement,
-                        "aspect_ratio": row.default_aspect_ratio,
+                        "placement": row.default_placement or "reels",
+                        "aspect_ratio": "9:16",
                         "brand_style": row.brand_style,
                         "source": "weekly_automation",
                     }

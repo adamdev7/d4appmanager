@@ -56,7 +56,8 @@ GENERATION_PLAN = f"""{SHARED_RULES}
 
 Task: from Shopify product data + ranked Meta campaign creatives, return ONE JSON object:
 - strategy: what to keep from stronger ads, what to avoid from weaker ads, angles to test
-- concepts: the exact requested number of COMPLETE NEW ads (image_count IMAGE + video_count VIDEO). If either count is 0, return none of that type.
+- concepts: exactly video_count VIDEO ads. image_count is always 0 — do not return IMAGE concepts.
+
 
 Attached images, in order:
 1) Catalog photos of the EXACT product. Every concept must feature this SKU — same materials, colors, clasp, construction. Never a different bracelet or generic jewelry stand-in.
@@ -69,17 +70,16 @@ Honor the operator's selected styles (round-robin): UGC, PRODUCT_DEMO, LIFESTYLE
 - LIFESTYLE: a new world around the product that the listing never used.
 - PROBLEM_SOLUTION: friction then the fix, using only product facts.
 - PROMOTIONAL: offer-ad energy (gift, drop, urgency, overlay-safe space) using the real price only. Never invent a discount.
-Each IMAGE needs a unique full-frame image_prompt that names the locked product appearance AND a brand-new scene.
 Each VIDEO needs a unique scene list featuring the same locked product.
-If the user asked for 5 images, return 5 different scenes. If they asked for N videos, N different storyboards.
-If image_count is 0, return zero IMAGE concepts. If video_count is 0, return zero VIDEO concepts.
+If they asked for N videos, N different storyboards.
+Return zero IMAGE concepts.
 
 Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
 Borrow winning offer-look traits (wrist lifestyle, macro clasp, UGC energy) — do NOT clone those ads or catalog photos.
 Do not invent product facts, discounts, or reviews.
 Keep image_prompt specific and product-accurate. No fake UI or unreadable text in images.
 Do not brief a retouch, crop, or color-grade of the attached catalog still.
-VIDEO concepts must be Meta-spend-ready: 9:16, 4–12 seconds, spoken voiceover on every scene, original music_direction, SHOP_NOW CTA. Never a silent clip.
+VIDEO concepts are clean visual plates: 9:16, 4–12 seconds, NO on-screen text, NO spoken voiceover. Operator adds captions and TTS later. Never a silent-text end card.
 """
 
 CREATIVE_STRATEGY = f"""{SHARED_RULES}
@@ -105,8 +105,8 @@ source_creative_ids when inspired by existing ads, and a rationale.
 IMAGE concepts: image_prompt must describe THIS locked product in a full photorealistic NEW advertisement shot.
 Every IMAGE in the batch must differ in setting, camera angle, lighting, and composition.
 Never retouch the catalog photo. The attached still is identity only.
-VIDEO concepts: include 3-5 scenes (duration, visual, voiceover, text_overlay) that sum 8-12 seconds.
-Every scene needs a spoken voiceover line the renderer will say out loud, plus music_direction and voice_direction.
+VIDEO concepts: include 3-5 scenes (duration, visual) that sum 8-12 seconds.
+Do not fill voiceover or text_overlay — those stay empty. No on-screen words.
 Every VIDEO in the batch must have a different storyboard.
 Copy must not invent offers or product claims. Do not copy headlines verbatim.
 PROMOTIONAL copy may use the real price; never invent a % off.
@@ -133,11 +133,13 @@ The prompt itself should be a detailed visual description, not JSON.
 VIDEO_SCRIPT = f"""{SHARED_RULES}
 
 Task: produce a complete Meta Reels/Stories video specification.
-Required fields: duration (4, 8, or 12 seconds), format 9:16, hook, scenes, voice_direction, music_direction, CTA.
-Every scene needs visual, spoken voiceover (the line that is heard), and a short text_overlay.
-Audio is mandatory: native spoken VO plus an original instrumental bed. Never silent. Never copyrighted songs.
+Required fields: duration (4, 8, or 12 seconds), format 9:16, hook, scenes, music_direction, CTA.
+Every scene needs a visual only. voiceover and text_overlay must be empty strings.
+This is a clean visual plate: the operator will add captions and text-to-speech later.
+FORBIDDEN: on-screen text, captions, titles, subtitles, CTA words, spoken narration.
+Optional light original instrumental (no lyrics, no vocals, no copyrighted songs).
 Scenes must add up to the total duration. Do not invent product facts.
-CTA must be a Meta enum (SHOP_NOW, LEARN_MORE, ...).
+CTA must be a Meta enum (SHOP_NOW, LEARN_MORE, ...) for later publishing, not drawn in the video.
 """
 
 RECOMMENDATIONS = f"""{SHARED_RULES}
