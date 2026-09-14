@@ -1011,11 +1011,22 @@ def test_fit_image_bytes_matches_requested_size():
     from app.services.ai_ads.media_io import prefer_jpeg_url, prepare_video_still, shopify_still_candidates
 
     shopify = prefer_jpeg_url("https://cdn.shopify.com/s/files/1/x/courage.png?v=9")
-    assert "format=jpg" in shopify
+    assert "format=pjpg" in shopify
+    assert "width=" not in shopify
     variants = shopify_still_candidates("//cdn.shopify.com/s/files/1/x/courage.png?v=9")
     assert variants[0].startswith("https://")
-    assert any("format=jpg" in item for item in variants)
-    assert any("_1024x1024" in item for item in variants)
+    assert "format=pjpg" in variants[0]
+    shop_variants = shopify_still_candidates(
+        "https://cdn.shopify.com/s/files/1/x/courage.png?v=9",
+        shop_domain="luxory.myshopify.com",
+    )
+    assert any("/cdn/shop/files/courage.png" in item for item in shop_variants)
+    transformed = shopify_still_candidates(
+        "https://cdn.shopify.com/s/files/1/x/ChatGPTImage4oct.2025_15_40_38_1400x.png.jpg?v=9",
+        shop_domain="luxory.myshopify.com",
+    )
+    assert any("ChatGPTImage4oct.2025_15_40_38.png" in item and "_1400x" not in item for item in transformed)
+    assert "format=pjpg" in transformed[0]
 
     from app.services.ai_ads.media_io import archive_image_bytes, bytes_to_data_url
 

@@ -15,9 +15,8 @@ _FETCH_HEADERS = {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
-    # Prefer JPEG/PNG. Advertising AVIF makes Shopify CDN return HEIF that stock
-    # Pillow cannot decode even when format=jpg is on the URL.
-    "Accept": "image/jpeg,image/jpg,image/png,image/webp;q=0.8,*/*;q=0.4",
+    # format=pjpg returns JPEG only when the client does not also accept WebP/AVIF.
+    "Accept": "image/jpeg,image/jpg",
 }
 
 
@@ -53,9 +52,9 @@ def sniff_image_mime(data: bytes, declared: str | None = None) -> str:
     if len(data) > 12 and data[4:8] == b"ftyp" and b"avif" in data[:16].lower():
         return "image/avif"
     declared = (declared or "").split(";")[0].strip().lower()
-    if declared.startswith("image/"):
+    if declared.startswith("image/") and "svg" not in declared:
         return declared
-    return "image/jpeg"
+    return "application/octet-stream"
 
 
 def _can_open_image(data: bytes) -> bool:
@@ -78,58 +77,87 @@ def normalize_image_url(url: str) -> str:
     return src
 
 
-def prefer_jpeg_url(url: str) -> str:
-    """Ask Shopify CDN for a JPEG so Pillow can decode the still."""
+# GraphQL preferredContentType: JPG turns foo.png into foo_1400x.png.jpg — those URLs stay WebP or 404.
+_TRANSFORM_DOUBLE_EXT = re.compile(
+    r"_(?:[1-9]\d{2,4})x(?:[1-9]\d{2,4})?(\.[A-Za-z0-9]+)\.jpe?g$",
+    re.IGNORECASE,
+)
+
+
+def _is_shopify_image_host(url: str) -> bool:
     parsed = urlparse(normalize_image_url(url))
     host = (parsed.netloc or "").lower()
-    if "shopify" not in host and "shopifysvc" not in host:
-        return normalize_image_url(url)
+    path = parsed.path or ""
+    return "shopify" in host or "shopifysvc" in host or "/cdn/shop/" in path
+
+
+def canonical_shopify_url(url: str) -> str:
+    """Strip GraphQL transform filenames and keep only the CDN version query."""
+    src = normalize_image_url(url)
+    parsed = urlparse(src)
+    directory, slash, name = (parsed.path or "").rpartition("/")
+    if name:
+        match = _TRANSFORM_DOUBLE_EXT.search(name)
+        if match:
+            name = _TRANSFORM_DOUBLE_EXT.sub(match.group(1), name)
+            path = f"{directory}{slash}{name}" if slash else f"/{name}"
+            parsed = parsed._replace(path=path)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query["format"] = "jpg"
-    query.setdefault("width", "1400")
+    keep = {}
+    if query.get("v"):
+        keep["v"] = query["v"]
+    return urlunparse(parsed._replace(query=urlencode(keep)))
+
+
+def prefer_jpeg_url(url: str) -> str:
+    """Ask Shopify CDN for a progressive JPEG. format=jpg is ignored and still returns WebP."""
+    src = canonical_shopify_url(url) if _is_shopify_image_host(url) else normalize_image_url(url)
+    if not _is_shopify_image_host(src):
+        return src
+    return _with_format(src, "pjpg")
+
+
+def _with_format(url: str, fmt: str) -> str:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["format"] = fmt
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
-def _shopify_sized_path(url: str, suffix: str) -> str | None:
-    parsed = urlparse(url)
-    path = parsed.path or ""
-    name = path.rsplit("/", 1)[-1]
-    if "." not in name:
+def _shop_cdn_url(url: str, shop_domain: str | None, folder: str) -> str | None:
+    host = (shop_domain or "").replace("https://", "").replace("http://", "").strip("/")
+    if not host:
         return None
-    stem, ext = name.rsplit(".", 1)
-    if re.search(r"_\d+x(\d+)?$", stem):
+    parsed = urlparse(canonical_shopify_url(url))
+    name = (parsed.path or "").rsplit("/", 1)[-1]
+    if not name:
         return None
-    new_name = f"{stem}_{suffix}.{ext}"
-    new_path = path[: -len(name)] + new_name
-    return urlunparse(parsed._replace(path=new_path))
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    path = f"https://{host}/cdn/shop/{folder}/{name}"
+    if query.get("v"):
+        path = f"{path}?v={query['v']}"
+    return path
 
 
-def shopify_still_candidates(url: str) -> list[str]:
+def shopify_still_candidates(url: str, *, shop_domain: str | None = None) -> list[str]:
     src = normalize_image_url(url)
     if not src:
         return []
-    out = [src]
-    parsed = urlparse(src)
-    host = (parsed.netloc or "").lower()
-    if "shopify" not in host and "shopifysvc" not in host:
-        return out
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    for fmt in ("jpg", "pjpg", "png"):
-        q = dict(query)
-        q["format"] = fmt
-        q.setdefault("width", "1400")
-        out.append(urlunparse(parsed._replace(query=urlencode(q))))
-    q = {k: v for k, v in query.items() if k != "format"}
-    q["width"] = "1400"
-    out.append(urlunparse(parsed._replace(query=urlencode(q))))
-    for suffix in ("1024x1024", "1400x"):
-        sized = _shopify_sized_path(src, suffix)
-        if sized:
-            out.append(sized)
-            parsed_s = urlparse(sized)
-            qs = dict(parse_qsl(parsed_s.query, keep_blank_values=True))
-            qs["format"] = "jpg"
-            out.append(urlunparse(parsed_s._replace(query=urlencode(qs))))
+    if not _is_shopify_image_host(src):
+        return [src]
+    canonical = canonical_shopify_url(src)
+    out: list[str] = [
+        _with_format(canonical, "pjpg"),
+        _with_format(src, "pjpg"),
+        _with_format(canonical, "jpg"),
+    ]
+    for folder in ("files", "products"):
+        shop_url = _shop_cdn_url(canonical, shop_domain, folder)
+        if shop_url:
+            out.append(_with_format(shop_url, "pjpg"))
+            out.append(shop_url)
+    out.append(canonical)
+    out.append(src)
     seen: set[str] = set()
     uniq: list[str] = []
     for item in out:
@@ -181,6 +209,7 @@ async def fetch_image_bytes(
     *,
     timeout: float = 30,
     referer: str | None = None,
+    shop_domain: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> tuple[bytes, str] | None:
     src = normalize_image_url(url)
@@ -190,30 +219,45 @@ async def fetch_image_bytes(
     headers = dict(_FETCH_HEADERS)
     if referer:
         headers["Referer"] = referer
+    elif shop_domain:
+        host = shop_domain.replace("https://", "").replace("http://", "").strip("/")
+        headers["Referer"] = f"https://{host}/"
     elif parsed.netloc:
         headers["Referer"] = f"https://{parsed.netloc}/"
+    fallback_headers = dict(headers)
+    fallback_headers["Accept"] = "image/jpeg,image/jpg,image/png,image/webp,image/*,*/*;q=0.1"
 
     async def _try(http: httpx.AsyncClient) -> tuple[bytes, str] | None:
-        for candidate in shopify_still_candidates(src):
+        for candidate in shopify_still_candidates(src, shop_domain=shop_domain):
+            attempt_headers = fallback_headers if "format=" not in candidate else headers
             try:
-                resp = await http.get(candidate, headers=headers)
+                resp = await http.get(candidate, headers=attempt_headers)
                 resp.raise_for_status()
             except Exception as exc:
                 logger.info("ai_ads image fetch failed url=%s err=%s", candidate[:160], exc)
                 continue
             data = resp.content or b""
-            if len(data) < 32:
+            ctype = (resp.headers.get("content-type") or "").lower()
+            if (
+                len(data) < 32
+                or ctype.startswith("text/")
+                or data[:15].lower().startswith(b"<!doctype")
+                or data[:6].lower().startswith(b"<html")
+            ):
                 continue
             if not _can_open_image(data):
                 logger.info(
                     "ai_ads image undecodable url=%s ctype=%s magic=%s",
                     candidate[:160],
-                    resp.headers.get("content-type"),
+                    ctype,
                     data[:16],
                 )
                 continue
-            mime = sniff_image_mime(data, resp.headers.get("content-type"))
-            return data, mime
+            try:
+                return archive_image_bytes(data)
+            except Exception:
+                continue
+        logger.warning("ai_ads image fetch exhausted url=%s", src[:160])
         return None
 
     try:

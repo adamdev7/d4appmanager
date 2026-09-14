@@ -157,13 +157,7 @@ class AdsAIOrchestrator:
             raw = _raw_from_product(product)
         fingerprint = image_fingerprint(product_image_payloads(raw))
         used_cache = catalog.cached_ready(product.product_id, fingerprint)
-        jpeg_map: dict[str, str] = {}
-        if not used_cache and client:
-            try:
-                jpeg_map = await client.get_product_jpeg_urls(product.product_id)
-            except Exception:
-                jpeg_map = {}
-        refs = await catalog.ensure_product_images(raw, jpeg_by_id=jpeg_map)
+        refs = await catalog.ensure_product_images(raw)
         catalog.attach_identity(product, refs)
         cached_lock = catalog.appearance_lock_if_current(product.product_id, fingerprint)
         if cached_lock:
@@ -268,7 +262,7 @@ class AdsAIOrchestrator:
                 pct=12,
             )
             product, product_refs, photo_fp, used_photo_cache = await self._prepare_product_identity(
-                product, refresh=False
+                product, refresh=True
             )
             if not product_refs:
                 raise AIAdsError(

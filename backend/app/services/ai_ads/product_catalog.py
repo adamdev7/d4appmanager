@@ -250,6 +250,7 @@ class ShopifyProductCatalog:
         jpeg_by_id: dict[str, str] | None = None,
         limit: int = MAX_STORED_IMAGES,
     ) -> list[tuple[bytes, str]]:
+        del jpeg_by_id
         row = self.upsert_product_row(raw)
         pid = row.shopify_product_id
         payloads = product_image_payloads(raw)[:limit]
@@ -264,20 +265,19 @@ class ShopifyProductCatalog:
         identity: list[tuple[bytes, str]] = []
         wanted_keys = {key for key, _src in wanted}
 
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:
             for position, img in enumerate(payloads):
                 key = image_key(img)
                 src = normalize_image_url(str(img.get("src") or img.get("url") or ""))
-                jpeg_src = (jpeg_by_id or {}).get(numeric_shopify_id(img.get("id"))) or src
                 cached_row = existing_rows.get(key)
                 if key not in need and cached_row:
                     got = self.assets.read_bytes(cached_row.local_path)
                     if got:
                         identity.append(got)
                         continue
-                fetched = await fetch_image_bytes(jpeg_src, referer=referer, client=client)
-                if not fetched and jpeg_src != src:
-                    fetched = await fetch_image_bytes(src, referer=referer, client=client)
+                fetched = await fetch_image_bytes(
+                    src, referer=referer, shop_domain=self.store.shop_domain, client=client
+                )
                 if not fetched:
                     if cached_row:
                         stale = self.assets.read_bytes(cached_row.local_path)
@@ -292,8 +292,8 @@ class ShopifyProductCatalog:
                     continue
                 try:
                     archived = archive_image_bytes(fetched[0])
-                except Exception as exc:
-                    logger.info("ai_ads catalog archive skipped key=%s err=%s", key, exc)
+                except Exception as err:
+                    logger.info("ai_ads catalog archive skipped key=%s err=%s", key, err)
                     continue
                 saved = self.assets.save_bytes(
                     archived[0],
@@ -323,11 +323,14 @@ class ShopifyProductCatalog:
                     self.assets.delete_local(old_path)
                 identity.append(archived)
 
-        for key, old in existing_rows.items():
-            if key in wanted_keys:
-                continue
-            self.assets.delete_local(old.local_path)
-            self.db.delete(old)
+        if identity:
+            for key, old in existing_rows.items():
+                if key in wanted_keys:
+                    continue
+                self.assets.delete_local(old.local_path)
+                self.db.delete(old)
+        else:
+            identity = self.cached_identity_bytes(pid)
 
         row.last_images_fetched_at = datetime.now(UTC)
         self.db.commit()
@@ -346,13 +349,8 @@ class ShopifyProductCatalog:
             pid = numeric_shopify_id(raw.get("id"))
             if self.cached_ready(pid, fingerprint):
                 continue
-            jpeg_map: dict[str, str] = {}
             try:
-                jpeg_map = await client.get_product_jpeg_urls(pid)
-            except Exception as exc:
-                logger.info("ai_ads catalog jpeg urls skipped product=%s err=%s", pid, exc)
-            try:
-                await self.ensure_product_images(raw, jpeg_by_id=jpeg_map)
+                await self.ensure_product_images(raw)
             except Exception:
                 logger.exception("ai_ads catalog image sync failed store_id=%s product=%s", self.store.id, pid)
         settings_row = self.db.scalar(
