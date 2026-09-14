@@ -1009,6 +1009,26 @@ export const api = {
       request<AIAdsOverview>(`/ai-ads/stores/${storeId}/overview`),
     listProducts: (storeId: string) =>
       request<AIAdsProduct[]>(`/ai-ads/stores/${storeId}/products`),
+    uploadProductPhotos: async (storeId: string, productId: string, files: File[]) => {
+      const token = localStorage.getItem("access_token");
+      const form = new FormData();
+      for (const file of files) {
+        form.append("files", file);
+      }
+      const res = await fetch(`${API_BASE}/ai-ads/stores/${storeId}/products/${productId}/photos`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: form,
+      });
+      if (!res.ok) {
+        throw new ApiError(await parseError(res), res.status);
+      }
+      return res.json() as Promise<AIAdsProduct>;
+    },
+    clearProductPhotos: (storeId: string, productId: string) =>
+      request<AIAdsProduct>(`/ai-ads/stores/${storeId}/products/${productId}/photos`, {
+        method: "DELETE",
+      }),
     syncMeta: (storeId: string) =>
       request<Record<string, number>>(`/ai-ads/stores/${storeId}/sync-meta`, { method: "POST" }),
     analyzePerformance: (storeId: string) =>

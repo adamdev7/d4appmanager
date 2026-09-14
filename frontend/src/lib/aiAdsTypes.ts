@@ -39,6 +39,7 @@ export type AIAdsProduct = {
   price: number | null;
   currency: string | null;
   image: string | null;
+  photos?: string[];
   product_url: string | null;
   photos_cached?: boolean;
 };

@@ -1325,3 +1325,98 @@ def test_catalog_ensure_skips_unchanged_photos(tmp_path, monkeypatch):
     assert len(third) == 1
     assert len(fetches) == 2
     _ = original_get, original_listed
+
+
+def test_catalog_stores_manual_photos_once(tmp_path):
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    from app.services.ai_ads.asset_store import CreativeAssetStore
+    from app.services.ai_ads.product_catalog import ShopifyProductCatalog
+
+    jpeg = tmp_path / "ring.jpg"
+    Image.new("RGB", (80, 80), (200, 40, 80)).save(jpeg, format="JPEG")
+    raw_bytes = jpeg.read_bytes()
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def where(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class FakeDB:
+        def __init__(self):
+            self.products = {}
+            self.images = {}
+
+        def scalar(self, query):
+            return None
+
+        def scalars(self, query):
+            return FakeQuery(list(self.images.values()))
+
+        def add(self, row):
+            image_key = getattr(row, "image_key", None)
+            if image_key:
+                self.images[image_key] = row
+            pid = getattr(row, "shopify_product_id", None)
+            if pid and hasattr(row, "image_fingerprint"):
+                self.products[pid] = row
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def delete(self, row):
+            key = getattr(row, "image_key", None)
+            if key:
+                self.images.pop(key, None)
+
+    store = SimpleNamespace(id="store-1", shop_domain="d4.myshopify.com", currency="USD", name="D4")
+    assets = CreativeAssetStore("store-1")
+    assets.dir = tmp_path / "uploads"
+    assets.dir.mkdir(parents=True, exist_ok=True)
+    catalog = ShopifyProductCatalog(FakeDB(), store, assets)
+    catalog.get_product_row = lambda product_id: catalog.db.products.get(str(product_id))
+    catalog.listed_images = lambda product_id: [
+        img for img in catalog.db.images.values() if img.shopify_product_id == str(product_id)
+    ]
+
+    def picker(pid):
+        imgs = catalog.listed_images(pid)
+        photos = [catalog.assets.public_url(img.local_path) for img in imgs if img.local_path]
+        return {
+            "id": str(pid),
+            "title": "",
+            "price": None,
+            "currency": None,
+            "image": photos[0] if photos else None,
+            "photos": photos,
+            "product_url": None,
+            "photos_cached": bool(photos),
+        }
+
+    catalog.product_picker_card = picker
+
+    card = catalog.store_manual_photos("9864947138808", [raw_bytes])
+    assert card["photos_cached"] is True
+    assert len(card["photos"]) == 1
+    assert catalog.cached_identity_bytes("9864947138808", limit=1)
+    assert any(str(key).startswith("manual_") for key in catalog.db.images)
+    again = catalog.store_manual_photos("9864947138808", [raw_bytes])
+    assert len(again["photos"]) == 1
+    try:
+        catalog.store_manual_photos("nope", [b"not-an-image"])
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass

@@ -252,23 +252,27 @@ class ShopifyProductCatalog:
                 .order_by(ShopifyCatalogProduct.title.asc())
             ).all()
         )
-        photo_ids = {
-            str(pid)
-            for pid in self.db.scalars(
-                select(ShopifyCatalogImage.shopify_product_id).where(
-                    ShopifyCatalogImage.store_id == self.store.id
-                )
+        stored = list(
+            self.db.scalars(
+                select(ShopifyCatalogImage)
+                .where(ShopifyCatalogImage.store_id == self.store.id)
+                .order_by(ShopifyCatalogImage.position.asc())
             ).all()
-            if pid
-        }
+        )
+        photos_by_pid: dict[str, list[str]] = {}
+        for img in stored:
+            if not img.local_path:
+                continue
+            photos_by_pid.setdefault(img.shopify_product_id, []).append(self.assets.public_url(img.local_path))
         out: list[dict[str, Any]] = []
         for row in products:
+            photos = photos_by_pid.get(row.shopify_product_id) or []
             try:
                 payload = json.loads(row.images_json or "[]")
             except json.JSONDecodeError:
                 payload = []
-            src = None
-            if payload and isinstance(payload[0], dict):
+            src = photos[0] if photos else None
+            if not src and payload and isinstance(payload[0], dict):
                 src = str(payload[0].get("src") or "") or None
             out.append(
                 {
@@ -277,11 +281,95 @@ class ShopifyProductCatalog:
                     "price": row.price,
                     "currency": row.currency,
                     "image": src,
+                    "photos": photos,
                     "product_url": row.product_url,
-                    "photos_cached": row.shopify_product_id in photo_ids,
+                    "photos_cached": bool(photos),
                 }
             )
         return out
+
+    def product_picker_card(self, product_id: str) -> dict[str, Any] | None:
+        pid = numeric_shopify_id(product_id)
+        for card in self.list_picker_cards():
+            if str(card.get("id")) == pid:
+                return card
+        return None
+
+    def store_manual_photos(self, product_id: str, blobs: list[bytes]) -> dict[str, Any]:
+        """Save operator-uploaded stills once. Generate reuses these files after that."""
+        pid = numeric_shopify_id(product_id)
+        if not pid:
+            raise ValueError("product_id is required")
+        row = self.get_product_row(pid)
+        if not row:
+            row = ShopifyCatalogProduct(store_id=self.store.id, shopify_product_id=pid)
+            self.db.add(row)
+            self.db.flush()
+        existing = self.listed_images(pid)
+        existing_keys = {img.image_key for img in existing}
+        room = MAX_STORED_IMAGES - len(existing)
+        if room <= 0:
+            card = self.product_picker_card(pid)
+            if card:
+                return card
+            raise ValueError("This product already has the maximum number of saved pictures.")
+        added = 0
+        position = max((img.position for img in existing), default=-1) + 1
+        for data in blobs:
+            if added >= room:
+                break
+            if not data or len(data) < 32:
+                continue
+            try:
+                archived = archive_image_bytes(data)
+            except Exception:
+                continue
+            saved = self.assets.save_bytes(
+                archived[0],
+                mime_type=archived[1],
+                prefix=f"sku_{pid}",
+            )
+            key = f"manual_{saved['hash'][:16]}"
+            if key in existing_keys:
+                continue
+            image_row = ShopifyCatalogImage(
+                store_id=self.store.id,
+                shopify_product_id=pid,
+                image_key=key,
+                shopify_image_id=None,
+                source_url="manual://upload",
+                alt=row.title or None,
+                position=position,
+                local_path=saved["relative_path"],
+                mime_type=archived[1],
+                content_hash=saved["hash"],
+                byte_size=saved["bytes"],
+                last_fetched_at=datetime.now(UTC),
+            )
+            self.db.add(image_row)
+            existing_keys.add(key)
+            position += 1
+            added += 1
+        if added:
+            row.last_images_fetched_at = datetime.now(UTC)
+            self.db.commit()
+        elif not existing:
+            raise ValueError("Could not read those pictures. Use JPEG or PNG files under 8 MB.")
+        card = self.product_picker_card(pid)
+        if not card:
+            raise ValueError("Could not save product pictures")
+        return card
+
+    def clear_product_photos(self, product_id: str) -> dict[str, Any] | None:
+        pid = numeric_shopify_id(product_id)
+        for img in self.listed_images(pid):
+            self.assets.delete_local(img.local_path)
+            self.db.delete(img)
+        row = self.get_product_row(pid)
+        if row:
+            row.last_images_fetched_at = None
+        self.db.commit()
+        return self.product_picker_card(pid)
 
     async def ensure_product_images(
         self,
@@ -363,7 +451,7 @@ class ShopifyProductCatalog:
 
         if identity:
             for key, old in existing_rows.items():
-                if key in wanted_keys:
+                if key in wanted_keys or str(key).startswith("manual_"):
                     continue
                 self.assets.delete_local(old.local_path)
                 self.db.delete(old)
@@ -385,7 +473,7 @@ class ShopifyProductCatalog:
             payloads = product_image_payloads(raw)
             fingerprint = image_fingerprint(payloads)
             pid = numeric_shopify_id(raw.get("id"))
-            if self.cached_ready(pid, fingerprint):
+            if self.cached_identity_bytes(pid, limit=1):
                 continue
             try:
                 await self.ensure_product_images(raw)

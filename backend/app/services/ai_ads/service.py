@@ -267,6 +267,35 @@ class AIAdsService:
         enqueue_catalog_sync(store.id)
         return catalog.list_picker_cards()
 
+    def upload_product_photos(
+        self,
+        db: Session,
+        user: User,
+        store_id: str,
+        product_id: str,
+        blobs: list[bytes],
+    ) -> dict:
+        store = self.ensure_store(db, user, store_id)
+        catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
+        try:
+            card = catalog.store_manual_photos(product_id, blobs)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        if not card.get("photos_cached"):
+            raise HTTPException(
+                status_code=400,
+                detail="Could not read those pictures. Use JPEG or PNG files under 8 MB.",
+            )
+        return card
+
+    def clear_product_photos(self, db: Session, user: User, store_id: str, product_id: str) -> dict:
+        store = self.ensure_store(db, user, store_id)
+        catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
+        card = catalog.clear_product_photos(product_id)
+        if not card:
+            raise HTTPException(status_code=404, detail="Product not found")
+        return card
+
     async def sync_meta(self, db: Session, user: User, store_id: str) -> dict:
         store = self.ensure_store(db, user, store_id)
         orch = self._orch(db, user, store)
@@ -307,7 +336,7 @@ class AIAdsService:
         return _strategy_card(row) if row else None
 
     def create_generation_job(self, db: Session, user: User, store_id: str, body: dict) -> dict:
-        self.ensure_store(db, user, store_id)
+        store = self.ensure_store(db, user, store_id)
         if not resolve_openai_api_key(user):
             raise HTTPException(
                 status_code=400,
@@ -316,6 +345,12 @@ class AIAdsService:
         product_id = str(body.get("product_id") or "")
         if not product_id:
             raise HTTPException(status_code=400, detail="product_id is required")
+        catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
+        if not catalog.cached_identity_bytes(product_id, limit=1):
+            raise HTTPException(
+                status_code=400,
+                detail="Add product pictures first. Save them on Generate, then run again.",
+            )
         settings_row = self.get_or_create_settings(db, store_id)
         images, videos = resolve_generation_counts(
             body.get("image_count"),

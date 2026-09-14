@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_verified_user
@@ -33,6 +33,34 @@ async def products(
     db: Session = Depends(get_db),
 ):
     return await _service.list_products(db, user, store_id)
+
+
+@router.post("/stores/{store_id}/products/{product_id}/photos")
+async def upload_product_photos(
+    store_id: str,
+    product_id: str,
+    files: list[UploadFile] = File(...),
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    blobs: list[bytes] = []
+    for item in files[:8]:
+        data = await item.read()
+        if data and len(data) <= 8 * 1024 * 1024:
+            blobs.append(data)
+    if not blobs:
+        raise HTTPException(status_code=400, detail="Choose JPEG or PNG pictures under 8 MB.")
+    return _service.upload_product_photos(db, user, store_id, product_id, blobs)
+
+
+@router.delete("/stores/{store_id}/products/{product_id}/photos")
+def clear_product_photos(
+    store_id: str,
+    product_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.clear_product_photos(db, user, store_id, product_id)
 
 
 @router.post("/stores/{store_id}/sync-meta")
