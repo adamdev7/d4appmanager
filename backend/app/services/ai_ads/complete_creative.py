@@ -14,36 +14,116 @@ from app.services.ai_ads.schemas import (
 MAX_IMAGE_ADS = 8
 MAX_VIDEO_ADS = 4
 
-# Forced unique treatments so a batch of N ads cannot collapse into one catalog retouch.
-IMAGE_SHOT_RECIPES = [
-    "Studio product hero: 3/4 camera, softbox lighting, premium surface, empty top third for overlay.",
-    "Lifestyle in-use: real environment, natural window light, product being worn or used, shallow depth of field.",
-    "Macro craftsmanship: extreme close-up on texture, clasp, or key detail, dramatic but clean light.",
-    "Overhead editorial flat lay: magazine styling, complementary props, generous negative space.",
-    "Handheld UGC: slightly imperfect phone framing, authentic room, product clearly in frame.",
-    "Daylight outdoor: natural setting that fits the product, sun-lit, no studio backdrop.",
-    "Reveal / unboxing: hands presenting the product as it first appears, warm practical light.",
-    "Cinematic luxury: dark background, rim light, single hero object, quiet premium mood.",
-]
+STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
+    "UGC": {
+        "promise": "Authentic phone-shot social proof. Lived-in rooms, imperfect framing, real light.",
+        "forbid": "Studio packshot, white seamless catalog, color-graded listing photo, campaign polish.",
+        "copy": "First-person, specific, like a friend showing what they just got. No invented reviews.",
+        "scenes": [
+            "Bathroom-mirror phone still: messy real counter, warm bulbs, product clearly worn, slight grain.",
+            "Night-out candid: restaurant table clutter, practical lights, product catching the lamp, no celebrity face.",
+            "Commute / desk life: window light, ordinary room, product in use as an everyday detail.",
+            "Getting-ready still: anonymous hands fastening or sliding the piece on, phone-angle, real bedroom.",
+        ],
+        "video": [
+            "Handheld UGC: talking-to-camera energy without a readable face, quick try-on, product hold-up CTA.",
+            "Mirror get-ready clip, then a step-outside beat, end on the product in natural light.",
+        ],
+    },
+    "PRODUCT_DEMO": {
+        "promise": "Prove how it works on a real body. The mechanism is the hero.",
+        "forbid": "Static jewelry-box catalog crop, beauty-only lighting with no action.",
+        "copy": "One concrete feature from product facts (fit, adjust, clasp, wear). No invented specs.",
+        "scenes": [
+            "Macro demo: fingers adjust, clasp, or slide the exact product so the construction is obvious.",
+            "On-body fit: how it sits on a hand, wrist, or neck in a new angle the listing never used.",
+            "Motion still: mid-action of putting it on, fabric and skin for scale, product sharp.",
+            "Detail proof: extreme close-up of the unique hardware while it is being used, not on a void background.",
+        ],
+        "video": [
+            "Open on the problem of putting it on, demonstrate the mechanism, end on a clean wear shot and CTA.",
+            "Three tight angles of the same action, then pull back to the worn product.",
+        ],
+    },
+    "LIFESTYLE": {
+        "promise": "A world the buyer wants. The product is the finishing detail, never a retouched listing.",
+        "forbid": "The catalog backdrop, the same crop as Shopify, empty infinity sweep copied from the site.",
+        "copy": "Aspiration in one line tied to a real product fact.",
+        "scenes": [
+            "Evening out: dinner or city night, product as the last thing you notice, new camera height.",
+            "Daylight street or travel: sun, real architecture, product worn, shallow depth of field.",
+            "Intimate home that is NOT the listing set: morning window, linen, product in a lived scene.",
+            "Editorial lifestyle: magazine styling, complementary props only, product fully recognizable.",
+        ],
+        "video": [
+            "Open on a 1-second product close-up, pull back into a new lifestyle in-use, end on packshot and CTA.",
+            "Editorial montage: four distinct camera angles of the same product in one new environment, music-led.",
+        ],
+    },
+    "PROBLEM_SOLUTION": {
+        "promise": "Show the friction, then the product as the fix — only using claims in the product data.",
+        "forbid": "Pretty packshot with no story. Fake before/after medical or 'miracle' claims.",
+        "copy": "Name a real pain the product addresses (fit, slipping, sizing). Never invent a condition.",
+        "scenes": [
+            "Split-beat still: left side the annoyance (too-tight, fiddly, slipping), right side this exact product solving it.",
+            "Hands struggling with a generic piece, then this SKU going on easily — keep identity locked.",
+            "Everyday 'never take it off' scene: product worn through a real task, built from product facts.",
+            "Close-up of the solving feature (adjustable fit, clasp, construction) in a new setting.",
+        ],
+        "video": [
+            "Problem-to-solution: a relatable friction beat, product appears, after-moment, end card.",
+            "Show the painful alternative, cut to this product on the body, hold, CTA.",
+        ],
+    },
+    "PROMOTIONAL": {
+        "promise": "Offer-ad energy that makes someone buy now. Gift, drop, value — using the REAL price only.",
+        "forbid": "Invented discount percents, fake timers, fake reviews, plain catalog photo with a filter.",
+        "copy": "Offer framing with the real price if provided. Urgency without lying. Empty overlay band for headline.",
+        "scenes": [
+            "Gift-ready still: wrapped table, the exact product as the present being revealed, empty top third for offer type.",
+            "Price-as-hero composition: product on a new surface, huge negative space for a real-price overlay — never bake a fake % off.",
+            "Limited-drop drama: dark rim light, single hero object, urgency crop, overlay-safe margins.",
+            "Unboxing / treat-yourself: hands lifting the exact SKU from tissue, warm practical light, not the website photo.",
+        ],
+        "video": [
+            "Gift-reveal hook, product identity close-up, offer-safe end card with CTA. No fake discounts.",
+            "Drop energy: quick cuts of the product in a new world, freeze on a shoppable packshot.",
+        ],
+    },
+}
 
-VIDEO_STORY_RECIPES = [
-    "Open on a 1-second product close-up hook, pull back to lifestyle in-use, end on a packshot and CTA.",
-    "Problem-to-solution: a relatable friction beat, product appears, after-moment, end card.",
-    "UGC handheld: talking-to-camera energy without a readable face, quick demo, product hold-up CTA.",
-    "Editorial montage: four distinct camera angles of the same product, music-led, no talking head.",
-]
+KNOWN_STYLES = tuple(STYLE_PLAYBOOKS.keys())
+DEFAULT_STYLES = ["UGC", "PRODUCT_DEMO", "LIFESTYLE"]
 
 
 def clamp_generation_counts(images: int, videos: int) -> tuple[int, int]:
     return max(0, min(int(images or 0), MAX_IMAGE_ADS)), max(0, min(int(videos or 0), MAX_VIDEO_ADS))
 
 
-def image_shot_recipe(index: int) -> str:
-    return IMAGE_SHOT_RECIPES[int(index) % len(IMAGE_SHOT_RECIPES)]
+def normalize_styles(styles: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for raw in styles or []:
+        key = str(raw or "").strip().upper().replace(" ", "_")
+        if key in STYLE_PLAYBOOKS and key not in out:
+            out.append(key)
+    return out or list(DEFAULT_STYLES)
 
 
-def video_story_recipe(index: int) -> str:
-    return VIDEO_STORY_RECIPES[int(index) % len(VIDEO_STORY_RECIPES)]
+def style_for_index(styles: list[str] | None, index: int) -> str:
+    keys = normalize_styles(styles)
+    return keys[int(index) % len(keys)]
+
+
+def image_shot_recipe(index: int, styles: list[str] | None = None) -> str:
+    style = style_for_index(styles, index)
+    scenes = STYLE_PLAYBOOKS[style]["scenes"]
+    return f"{style}: {scenes[int(index) % len(scenes)]}"
+
+
+def video_story_recipe(index: int, styles: list[str] | None = None) -> str:
+    style = style_for_index(styles, index)
+    stories = STYLE_PLAYBOOKS[style]["video"]
+    return f"{style}: {stories[int(index) % len(stories)]}"
 
 
 def _token_overlap(a: str, b: str) -> float:
@@ -59,16 +139,20 @@ def diversify_concepts(
     product: ProductContext,
     *,
     media_type: str,
+    styles: list[str] | None = None,
 ) -> list[CreativeConceptModel]:
-    """Guarantee each concept in a batch has a unique visual, even if Astra repeated itself."""
+    """Guarantee each concept follows a selected style and a unique new scene."""
     used: list[str] = []
     kind = (media_type or "IMAGE").upper()
     for i, concept in enumerate(concepts):
+        style = style_for_index(styles, i)
+        concept.style = style
+        play = STYLE_PLAYBOOKS[style]
         if kind == "VIDEO":
-            recipe = video_story_recipe(i)
+            recipe = video_story_recipe(i, styles)
             lock = (
-                f"ORIGINAL VIDEO {i + 1} of {len(concepts)}. Unique storyboard: {recipe} "
-                "Do not recreate an existing Meta ad or catalog clip."
+                f"ORIGINAL VIDEO {i + 1} of {len(concepts)}. Style {style}. Unique storyboard: {recipe} "
+                f"{play['forbid']} Do not recreate an existing Meta ad or catalog clip."
             )
             visuals = " ".join((s.visual or "") for s in (concept.scenes or []))
             base = (concept.visual_direction or visuals or "").strip()
@@ -84,7 +168,7 @@ def diversify_concepts(
                         ),
                         VideoScene(
                             duration=6,
-                            visual=f"Middle: {recipe} Keep {product.title} recognizable in a new setting.",
+                            visual=f"Middle: {recipe} Keep {product.title} recognizable in a brand-new setting.",
                             voiceover=(concept.primary_text or product.description or product.title)[:180],
                             text_overlay=concept.headline or product.title,
                         ),
@@ -98,27 +182,29 @@ def diversify_concepts(
                 else:
                     concept.scenes[0].visual = f"{lock} {concept.scenes[0].visual}".strip()
             else:
-                concept.visual_direction = f"{base} {lock}".strip()
+                concept.visual_direction = f"{style} {base} {lock}".strip()
                 if concept.scenes:
                     concept.scenes[0].visual = f"{lock} {concept.scenes[0].visual}".strip()
             used.append(concept.visual_direction)
             continue
 
-        recipe = image_shot_recipe(i)
+        recipe = image_shot_recipe(i, styles)
         lock = (
-            f"ORIGINAL STILL {i + 1} of {len(concepts)}. Required unique treatment: {recipe} "
+            f"ORIGINAL STILL {i + 1} of {len(concepts)}. STYLE {style}. Required scene: {recipe} "
+            f"{play['promise']} Forbidden: {play['forbid']} "
             f"Show the exact {product.title} from the catalog photos — never a different product. "
-            "Invent a brand-new advertisement scene. Do not reproduce the listing photo or any existing Meta ad."
+            "Invent a brand-new advertisement scene that has never been used on the website or in Meta. "
+            "Do not return a color-graded, cropped, or lightly edited listing photo."
         )
         base = (concept.image_prompt or concept.visual_direction or "").strip()
         similar = any(_token_overlap(base, prev) > 0.7 for prev in used)
         if not base or similar:
             concept.image_prompt = (
-                f"{recipe} Photorealistic new advertisement featuring {product.title}. {lock}"
+                f"{recipe} Photorealistic NEW advertisement featuring {product.title}. {lock}"
             )
             concept.visual_direction = recipe
         else:
-            concept.image_prompt = f"{base}\n{lock}"
+            concept.image_prompt = f"{style} {base}\n{lock}"
             if not (concept.visual_direction or "").strip():
                 concept.visual_direction = recipe
         used.append(concept.image_prompt)
@@ -138,7 +224,7 @@ def compact_product(product: ProductContext) -> dict[str, Any]:
         "appearance": product_appearance_notes(product),
         "appearance_lock": (product.brand_context or {}).get("appearance_lock") or product_appearance_notes(product),
         "restrictions": (product.restrictions or [])[:6],
-        "note": "Catalog photos ARE the product. New ads must show this exact SKU in a new scene — never a different bracelet.",
+        "note": "Catalog photos ARE the product identity only. New ads must show this exact SKU in a brand-new scene — never a different item, and never a retouch of the listing.",
     }
 
 
@@ -240,29 +326,47 @@ def build_image_prompt(
     placement: str = "feed",
     variation_index: int = 0,
     variation_count: int = 1,
+    styles: list[str] | None = None,
 ) -> str:
+    style = style_for_index(styles, variation_index)
+    play = STYLE_PLAYBOOKS[style]
+    recipe = image_shot_recipe(variation_index, styles)
     prompt = (image_prompt or visual_direction or "").strip()
-    recipe = image_shot_recipe(variation_index)
     if not prompt:
-        prompt = f"{recipe} Photorealistic new advertisement of {product.title}."
+        prompt = f"{recipe} Photorealistic NEW advertisement of {product.title}."
     appearance = (product.brand_context or {}).get("appearance_lock") or product_appearance_notes(product)
     extras = [
+        f"Assigned style: {style}. {play['promise']}",
+        f"Required new scene: {recipe}",
+        f"Copy tone: {play['copy']}",
+        f"Forbidden: {play['forbid']}",
         f"Product: {product.title}.",
-        f"IDENTITY LOCK — the reference image(s) ARE this exact SKU. Reproduce it faithfully: {appearance}. "
-        "Same colors, materials, clasp, beads, leather, metal, geometry. "
-        "Do not invent a different bracelet, a different leather band, or generic jewelry.",
-        "Image 1 is the product. Place THIS product into a brand-new advertisement scene. "
-        "Do not return the catalog photo. New camera, lighting, background, and crop.",
-        f"This is unique still {variation_index + 1} of {max(variation_count, 1)}. Required treatment: {recipe}",
-        "Do not invent materials, logos, or packaging details that are not in the product facts.",
+        f"IDENTITY LOCK — the reference image(s) are ONLY for SKU identity: {appearance}. "
+        "Keep colors, materials, clasp, beads, leather, metal, geometry. "
+        "Do not invent a different ring, bracelet, leather band, or generic jewelry.",
+        "The reference is NOT a layout to copy. Do not return the catalog photo, a crop of it, "
+        "a color grade of it, or a Meta ad you have seen. New camera, new lighting, new background, new crop.",
+        f"This is unique still {variation_index + 1} of {max(variation_count, 1)}.",
+        "Do not invent materials, logos, discounts, or packaging details that are not in the product facts.",
     ]
     desc = (product.description or "").strip()
     if desc:
         extras.append(f"Known product facts only: {desc[:240]}")
+    if product.price is not None and style == "PROMOTIONAL":
+        currency = product.currency or ""
+        extras.append(
+            f"PROMOTIONAL offer ad: you may imply value using the real price {currency} {product.price}. "
+            "Leave empty space for an overlay. Never invent a % off, fake timer, or fake review."
+        )
+    elif style == "PROMOTIONAL":
+        extras.append(
+            "PROMOTIONAL offer ad: gift/drop/urgency composition with overlay-safe margins. "
+            "Never invent a discount, fake timer, or fake review."
+        )
     if winning_notes:
         extras.append(
-            f"Borrow only style traits associated with stronger Meta ads (not their exact shots): "
-            f"{winning_notes[:400]}"
+            f"Borrow only STYLE TRAITS from stronger Meta ads (hook energy, setting type) — never their pixels: "
+            f"{winning_notes[:320]}"
         )
     if brand_style:
         extras.append(f"Brand look: {brand_style[:160]}")
@@ -283,6 +387,7 @@ def build_video_prompt(
     winning_notes: str = "",
     variation_index: int = 0,
     variation_count: int = 1,
+    styles: list[str] | None = None,
 ) -> str:
     scenes = []
     for scene in spec.scenes[:6]:
@@ -290,13 +395,16 @@ def build_video_prompt(
         if bit:
             scenes.append(bit[:180])
     shot_list = " Then ".join(scenes) if scenes else (spec.hook or product.title)
-    recipe = video_story_recipe(variation_index)
+    style = style_for_index(styles, variation_index)
+    play = STYLE_PLAYBOOKS[style]
+    recipe = video_story_recipe(variation_index, styles)
     appearance = (product.brand_context or {}).get("appearance_lock") or product_appearance_notes(product)
     parts = [
         f"Brand-new vertical Meta Reels / Stories advertisement. Product is {product.title}.",
-        f"IDENTITY LOCK: show this exact SKU, not a different bracelet: {appearance}.",
+        f"Assigned style: {style}. {play['promise']} Forbidden: {play['forbid']}",
+        f"IDENTITY LOCK: show this exact SKU, not a different piece of jewelry: {appearance}.",
         f"This is unique video {variation_index + 1} of {max(variation_count, 1)}. Required storyboard: {recipe}",
-        "The input reference image is the real product. Keep it recognizable. New shots and setting.",
+        "The input reference image is the real product identity only. New shots, new setting, new camera.",
         "Do not recreate an existing Meta ad or catalog clip.",
         f"Hook: {spec.hook or product.title}.",
         f"Shot list: {shot_list}.",

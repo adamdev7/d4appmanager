@@ -458,8 +458,27 @@ def test_complete_image_prompt_includes_product_and_winners():
     assert "ugc close-up" in prompt
     assert "4:5" in prompt
     assert "identity lock" in prompt.lower()
-    assert "do not invent a different bracelet" in prompt.lower()
+    assert "do not invent a different" in prompt.lower()
     assert "unique still 1 of 5" in prompt.lower()
+    assert "assigned style" in prompt.lower()
+
+
+def test_promotional_style_builds_offer_ad_not_catalog_retouch():
+    from app.services.ai_ads.complete_creative import build_image_prompt
+    from app.services.ai_ads.schemas import ProductContext
+
+    prompt = build_image_prompt(
+        product=ProductContext(product_id="1", title="Courage Bracelet", price=49.0, currency="USD"),
+        visual_direction="",
+        styles=["PROMOTIONAL"],
+        variation_index=0,
+        variation_count=1,
+    )
+    assert "PROMOTIONAL" in prompt
+    assert "offer" in prompt.lower()
+    assert "discount" in prompt.lower()
+    assert "49" in prompt
+    assert "catalog" in prompt.lower() or "listing" in prompt.lower()
 
 
 def test_diversify_concepts_makes_five_distinct_image_prompts():
@@ -476,12 +495,15 @@ def test_diversify_concepts_makes_five_distinct_image_prompts():
         )
         for i in range(5)
     ]
-    out = diversify_concepts(clones, product, media_type="IMAGE")
+    styles = ["PROMOTIONAL", "UGC", "LIFESTYLE"]
+    out = diversify_concepts(clones, product, media_type="IMAGE", styles=styles)
     prompts = [c.image_prompt for c in out]
     assert len(prompts) == 5
     assert len(set(prompts)) == 5
-    assert image_shot_recipe(0) in prompts[0]
-    assert image_shot_recipe(1) in prompts[1]
+    assert image_shot_recipe(0, styles) in prompts[0]
+    assert image_shot_recipe(1, styles) in prompts[1]
+    assert out[0].style == "PROMOTIONAL"
+    assert out[1].style == "UGC"
     assert "ORIGINAL STILL 1 of 5" in prompts[0]
     assert "ORIGINAL STILL 5 of 5" in prompts[4]
 

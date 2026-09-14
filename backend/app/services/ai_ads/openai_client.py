@@ -377,9 +377,8 @@ class AdsOpenAIClient:
         }
         if _is_gpt_image(model):
             form["quality"] = "medium"
-        slug = (model or "").strip().lower()
-        if "gpt-image-1" in slug and "gpt-image-2" not in slug:
-            form["input_fidelity"] = "high"
+            # Low fidelity keeps SKU identity without cloning the catalog crop.
+            form["input_fidelity"] = "low"
         field = "image[]" if _is_gpt_image(model) else "image"
         files = _identity_files(references, field)
         if not files:
@@ -392,6 +391,9 @@ class AdsOpenAIClient:
             if resp.status_code >= 400 and field == "image[]":
                 alt = _identity_files(references, "image")
                 resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=alt)
+            if resp.status_code >= 400 and "input_fidelity" in form:
+                form.pop("input_fidelity", None)
+                resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=files)
         latency = int((time.perf_counter() - started) * 1000)
         if resp.status_code >= 400:
             self._log(

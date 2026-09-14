@@ -213,13 +213,13 @@ export function FinishedJobDetail({
           <p className="text-xs uppercase tracking-wide text-content-subtle mb-2">
             Creatives · {ready.length}/{creatives.length}
           </p>
-          <div className="grid gap-6 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {creatives.map((c) => {
               const ad = previewFromGenerated(c);
               return (
                 <div key={c.id} className="min-w-0">
                   <button type="button" onClick={() => setViewer(c)} className="w-full text-left">
-                    <CreativeFrame ad={ad} />
+                    <CreativeFrame ad={ad} compact />
                   </button>
                   <div className="mt-2 flex items-start justify-between gap-2">
                     <div className="min-w-0">

@@ -307,8 +307,7 @@ class AdsAIOrchestrator:
                 title="Planning brand-new creatives",
                 detail=(
                     f"Drafting {image_count} distinct image scene(s) and {video_count} distinct video storyboard(s) "
-                    f"that feature the real {product.title}. "
-                    "Astra is drafting original ads from your product photos and winning Meta patterns."
+                    f"in styles {', '.join(styles) or 'default'} that feature the real {product.title} in brand-new situations."
                 ),
                 pct=42,
             )
@@ -409,6 +408,7 @@ class AdsAIOrchestrator:
                             winning_notes=winning_notes,
                             variation_index=video_slot,
                             variation_count=max(video_total, 1),
+                            styles=styles,
                         )
                         identity_still: tuple[bytes, str] | None = None
                         try:
@@ -424,6 +424,7 @@ class AdsAIOrchestrator:
                                         placement="stories",
                                         variation_index=video_slot,
                                         variation_count=max(video_total, 1),
+                                        styles=styles,
                                     ),
                                     aspect_ratio="9:16",
                                     placement="stories",
@@ -478,6 +479,7 @@ class AdsAIOrchestrator:
                             placement=placement,
                             variation_index=image_slot,
                             variation_count=max(image_total, 1),
+                            styles=styles,
                         )
                         result = await image_provider.generate(
                             ImageGenerationRequest(

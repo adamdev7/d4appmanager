@@ -9,7 +9,15 @@ import { PageLoader } from "@/components/ui/Loading";
 import { GenerationStudio } from "@/pages/ai-ads/GenerationStudio";
 import { JobHistoryList, isLiveJob } from "@/pages/ai-ads/JobHistory";
 
-const STYLES = ["UGC", "PRODUCT_DEMO", "LIFESTYLE", "PROBLEM_SOLUTION", "PROMOTIONAL"];
+const STYLES = ["UGC", "PRODUCT_DEMO", "LIFESTYLE", "PROBLEM_SOLUTION", "PROMOTIONAL"] as const;
+
+const STYLE_HELP: Record<(typeof STYLES)[number], string> = {
+  UGC: "Phone-shot real life — not a catalog retouch",
+  PRODUCT_DEMO: "Show how the exact product works on a body",
+  LIFESTYLE: "A new world around the product",
+  PROBLEM_SOLUTION: "The pain, then this product as the fix",
+  PROMOTIONAL: "Offer-ad energy using your real price — never a fake discount",
+};
 
 export function GeneratePage() {
   const navigate = useNavigate();
@@ -119,8 +127,9 @@ export function GeneratePage() {
         <CardHeader>
           <CardTitle>Generate creatives</CardTitle>
           <CardDescription>
-            Pick a Shopify product. Astra plans and renders ads from those photos — stills and
-            videos of that exact item in a new scene.
+            Pick a Shopify product. Astra studies how it actually looks, then invents new scenes
+            that make people buy — not a lightly edited website or Meta photo. The styles you tap
+            are required.
           </CardDescription>
         </CardHeader>
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
@@ -194,6 +203,17 @@ export function GeneratePage() {
                 </button>
               ))}
             </div>
+            {styles.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {styles.map((s) => (
+                  <li key={s} className="text-xs text-content-muted">
+                    <span className="font-medium text-content">{s.replace("_", " ")}</span>
+                    {" — "}
+                    {STYLE_HELP[s as (typeof STYLES)[number]]}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
           <Input label="Target audience" value={audience} onChange={(e) => setAudience(e.target.value)} />
           <div className="grid gap-3 sm:grid-cols-3">
@@ -246,7 +266,11 @@ export function GeneratePage() {
               </select>
             </label>
           )}
-          <Button onClick={() => void submit()} isLoading={submitting} disabled={!productId || !!liveJob}>
+          <Button
+            onClick={() => void submit()}
+            isLoading={submitting}
+            disabled={!productId || !!liveJob || styles.length === 0}
+          >
             Generate creatives
           </Button>
         </div>

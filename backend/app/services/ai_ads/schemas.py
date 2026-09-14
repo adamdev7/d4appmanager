@@ -207,6 +207,7 @@ class CreativeConceptModel(BaseModel):
     visual_direction: str = ""
     image_prompt: str = ""
     scenes: list[VideoScene] = Field(default_factory=list)
+    style: str = ""
     voice_direction: str = ""
     music_direction: str = ""
     audience: str = ""

@@ -131,9 +131,11 @@ export function DownloadCreativeButton({
 export function CreativeFrame({
   ad,
   className,
+  compact = false,
 }: {
   ad: AdPreviewModel;
   className?: string;
+  compact?: boolean;
 }) {
   const [broken, setBroken] = useState(false);
   const videoUrl = ad.videoUrl;
@@ -142,8 +144,8 @@ export function CreativeFrame({
   return (
     <div
       className={cn(
-        "relative w-full overflow-hidden rounded-xl border border-border bg-zinc-950",
-        aspectClass(ad),
+        "relative overflow-hidden rounded-lg border border-border bg-zinc-950",
+        compact ? "h-36 w-full" : cn("w-full", aspectClass(ad)),
         className
       )}
     >
@@ -152,7 +154,7 @@ export function CreativeFrame({
           src={videoUrl}
           poster={ad.previewUrl || undefined}
           className="absolute inset-0 h-full w-full object-contain"
-          controls
+          controls={!compact}
           playsInline
           preload="metadata"
         />
@@ -164,9 +166,9 @@ export function CreativeFrame({
           onError={() => setBroken(true)}
         />
       ) : (
-        <div className="absolute inset-0 flex items-center justify-center p-4">
-          <p className="text-sm text-white/70 text-center">
-            {ad.status === "FAILED" ? "This file did not render." : "No file yet."}
+        <div className="absolute inset-0 flex items-center justify-center p-3">
+          <p className="text-xs text-white/70 text-center">
+            {ad.status === "FAILED" ? "Did not render." : "No file yet."}
           </p>
         </div>
       )}

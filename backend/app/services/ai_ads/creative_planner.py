@@ -102,6 +102,7 @@ class CreativePlanner:
         user = (
             "Generate exactly the requested number of DISTINCT concepts. "
             "Assign each concept.portfolio_bucket from the provided list in order. "
+            "Honor payload.styles round-robin. Each concept needs a brand-new scene, not a catalog retouch. "
             f"media_type={media_type}.\n\n{json.dumps(payload, default=str)[:18000]}"
         )
         try:
@@ -122,9 +123,9 @@ class CreativePlanner:
         while len(models) < count:
             i = len(models)
             bucket = buckets[i] if i < len(buckets) else "exploration"
-            models.append(_fallback_concept(product, media_type, bucket, audience, objective, {"winning_ids": report.winning_creatives}, i))
+            models.append(_fallback_concept(product, media_type, bucket, audience, objective, {"winning_ids": report.winning_creatives}, i, styles=styles))
 
-        models = diversify_concepts(models[:count], product, media_type=media_type)
+        models = diversify_concepts(models[:count], product, media_type=media_type, styles=styles)
 
         rows: list[CreativeConcept] = []
         for i, concept in enumerate(models[:count]):
@@ -205,9 +206,14 @@ class CreativePlanner:
         attached = catalog + winning_stills
         user = (
             f"Return {image_count} IMAGE and {video_count} VIDEO brand-new ads. "
-            "The first attached images are the EXACT product SKU — every ad must show that item, never a different bracelet. "
-            "Later attachments (if any) are winning Meta ads: study how the offer looks, then invent NEW scenes. "
-            "Copy is not enough — each IMAGE needs a unique full-frame scene featuring the locked product. "
+            "The first attached images are the EXACT product SKU — every ad must show that item, never a different piece. "
+            "Later attachments (if any) are winning Meta ads: study HOW the offer looks, then invent scenes that have never been shot. "
+            f"Honor these creative styles, round-robin across ads: {json.dumps(styles)}. "
+            "UGC = phone-native real life, not studio. PRODUCT_DEMO = show the mechanism on a body. "
+            "LIFESTYLE = a new world around the product. PROBLEM_SOLUTION = friction then the fix from product facts. "
+            "PROMOTIONAL = offer-ad energy using the real price only — gift, drop, urgency, overlay-safe margins. Never invent a discount. "
+            "Copy is not enough — each IMAGE needs a unique full-frame NEW scene featuring the locked product. "
+            "Do not brief a retouch, crop, or color-grade of the catalog photo.\n"
             "Assign IMAGE portfolio_bucket from image_portfolio_buckets in order, VIDEO from video_portfolio_buckets.\n\n"
             f"{json.dumps(payload, default=str)[:12000]}"
         )
@@ -243,11 +249,11 @@ class CreativePlanner:
         while len(images) < image_count:
             i = len(images)
             bucket = image_buckets[i] if i < len(image_buckets) else "exploration"
-            images.append(_fallback_concept(product, "IMAGE", bucket, audience, objective, brief, i))
+            images.append(_fallback_concept(product, "IMAGE", bucket, audience, objective, brief, i, styles=styles))
         while len(videos) < video_count:
             i = len(videos)
             bucket = video_buckets[i] if i < len(video_buckets) else "exploration"
-            videos.append(_fallback_concept(product, "VIDEO", bucket, audience, objective, brief, i))
+            videos.append(_fallback_concept(product, "VIDEO", bucket, audience, objective, brief, i, styles=styles))
         for i, concept in enumerate(images):
             concept.type = "IMAGE"
             if i < len(image_buckets):
@@ -256,8 +262,8 @@ class CreativePlanner:
             concept.type = "VIDEO"
             if i < len(video_buckets):
                 concept.portfolio_bucket = video_buckets[i]
-        images = diversify_concepts(images, product, media_type="IMAGE")
-        videos = diversify_concepts(videos, product, media_type="VIDEO")
+        images = diversify_concepts(images, product, media_type="IMAGE", styles=styles)
+        videos = diversify_concepts(videos, product, media_type="VIDEO", styles=styles)
 
         strategy_row = AIAdStrategy(
             store_id=self.store_id,
@@ -326,22 +332,25 @@ def _fallback_concept(
     objective: str,
     brief: dict[str, Any],
     index: int,
+    styles: list[str] | None = None,
 ) -> Any:
-    from app.services.ai_ads.complete_creative import image_shot_recipe, video_story_recipe
+    from app.services.ai_ads.complete_creative import image_shot_recipe, style_for_index, video_story_recipe
 
     winners = brief.get("winning_ids") or []
+    style = style_for_index(styles, index)
     if (media_type or "").upper() == "VIDEO":
-        recipe = video_story_recipe(index)
+        recipe = video_story_recipe(index, styles)
         visual = f"{recipe} Product is {product.title}."
         image_prompt = ""
     else:
-        recipe = image_shot_recipe(index)
+        recipe = image_shot_recipe(index, styles)
         visual = recipe
-        image_prompt = f"{recipe} Photorealistic new advertisement featuring {product.title}."
+        image_prompt = f"{recipe} Photorealistic NEW advertisement featuring {product.title}."
     return CreativeConceptModel(
         type=media_type,
-        concept_name=f"{product.title} {bucket.replace('_', ' ')} {index + 1}",
-        angle=bucket,
+        concept_name=f"{product.title} {style.replace('_', ' ')} {index + 1}",
+        angle=style,
+        style=style,
         hook=product.title,
         headline=product.title,
         primary_text=(product.description or product.title)[:200],
@@ -350,7 +359,7 @@ def _fallback_concept(
         image_prompt=image_prompt,
         audience=audience,
         objective=objective,
-        rationale="Fallback complete concept after AI validation failure.",
+        rationale=f"Fallback {style} concept after AI validation failure.",
         source_creative_ids=winners[:2],
         expected_strength="unknown",
         portfolio_bucket=bucket,

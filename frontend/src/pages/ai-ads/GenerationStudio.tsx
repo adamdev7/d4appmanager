@@ -205,7 +205,7 @@ export function GenerationStudio({
           <p className="text-xs uppercase tracking-wide text-content-subtle mb-2">
             Live previews
           </p>
-          <div className="grid gap-6 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {creatives.map((c) => (
               <button
                 key={c.id}
@@ -213,7 +213,7 @@ export function GenerationStudio({
                 onClick={() => setViewer(c)}
                 className="text-left"
               >
-                <CreativeFrame ad={previewFromGenerated(c)} />
+                <CreativeFrame ad={previewFromGenerated(c)} compact />
                 <p className="mt-2 text-sm font-medium text-content line-clamp-1">
                   {c.headline || c.hook || (c.type === "VIDEO" ? "Video concept" : "Image ad")}
                 </p>

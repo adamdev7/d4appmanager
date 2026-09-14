@@ -63,14 +63,21 @@ Attached images, in order:
 2) Winning Meta ads (if attached). Study how those ads present the offer visually, then invent NEW scenes that use those patterns.
 
 You are briefing brand-new advertisement files. Copy alone is not enough.
-Each IMAGE needs a unique full-frame image_prompt that names the locked product appearance AND a new scene.
+Honor the operator's selected styles (round-robin): UGC, PRODUCT_DEMO, LIFESTYLE, PROBLEM_SOLUTION, PROMOTIONAL.
+- UGC: phone-native, messy real life, not a studio catalog.
+- PRODUCT_DEMO: show how the exact product works on a body.
+- LIFESTYLE: a new world around the product that the listing never used.
+- PROBLEM_SOLUTION: friction then the fix, using only product facts.
+- PROMOTIONAL: offer-ad energy (gift, drop, urgency, overlay-safe space) using the real price only. Never invent a discount.
+Each IMAGE needs a unique full-frame image_prompt that names the locked product appearance AND a brand-new scene.
 Each VIDEO needs a unique scene list featuring the same locked product.
 If the user asked for 5 images, return 5 different scenes. If they asked for N videos, N different storyboards.
 
 Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
-Borrow winning offer-look traits (wrist lifestyle, macro clasp, UGC, etc.) — do NOT clone those ads or catalog photos.
+Borrow winning offer-look traits (wrist lifestyle, macro clasp, UGC energy) — do NOT clone those ads or catalog photos.
 Do not invent product facts, discounts, or reviews.
 Keep image_prompt specific and product-accurate. No fake UI or unreadable text in images.
+Do not brief a retouch, crop, or color-grade of the attached catalog still.
 """
 
 CREATIVE_STRATEGY = f"""{SHARED_RULES}
@@ -85,18 +92,21 @@ CREATIVE_CONCEPT = f"""{SHARED_RULES}
 Task: generate DISTINCT complete advertisement creatives (not sketches, not copy-only).
 The attached catalog photos are the EXACT product. Never invent a different SKU.
 Do not clone a winning ad or catalog shot — new scene, same product.
-Honor the requested portfolio mix:
+Honor the requested styles in the payload (round-robin) and the portfolio mix:
+- UGC / PRODUCT_DEMO / LIFESTYLE / PROBLEM_SOLUTION / PROMOTIONAL as specified
 - winner_variation: keep a TRAIT associated with stronger Meta ads (hook type, proof, energy) but invent a NEW visual
 - combination: combine traits from different stronger ads into a NEW scene
 - exploration: a meaningfully different direction (new setting, camera, lighting)
 - experimental: test a hypothesis that differs from current winners
-Each concept must include: hook, headline, primary_text, CTA, visual_direction, image_prompt,
+Each concept must include: hook, headline, primary_text, CTA, visual_direction, image_prompt, style,
 source_creative_ids when inspired by existing ads, and a rationale.
 IMAGE concepts: image_prompt must describe THIS locked product in a full photorealistic NEW advertisement shot.
 Every IMAGE in the batch must differ in setting, camera angle, lighting, and composition.
+Never retouch the catalog photo. The attached still is identity only.
 VIDEO concepts: include 3-5 scenes (duration, visual, voiceover, text_overlay) that sum ~12-20 seconds.
 Every VIDEO in the batch must have a different storyboard.
 Copy must not invent offers or product claims. Do not copy headlines verbatim.
+PROMOTIONAL copy may use the real price; never invent a % off.
 Winning ads are references for how the offer looks — never pixels to reproduce, and never a different product.
 """
 

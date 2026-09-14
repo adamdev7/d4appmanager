@@ -164,13 +164,13 @@ export function CreativesPage() {
           <div>
             <h2 className="text-lg font-semibold text-content">Generated creatives</h2>
             <p className="text-sm text-content-muted">
-              Full stills and MP4s. Open one to inspect, or download the file.
+              Open a tile for the full file, or download it.
             </p>
           </div>
           {generated.length === 0 ? (
             <Empty text="No generated creatives yet. Open Generate to create a batch." />
           ) : (
-            <div className="grid gap-6 lg:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {generated.map((c) => (
                 <GeneratedCard
                   key={c.id}
@@ -197,7 +197,7 @@ export function CreativesPage() {
           {meta.length === 0 ? (
             <Empty text="No Meta creatives imported yet. Sync Meta ads from Overview." />
           ) : (
-            <div className="grid gap-6 lg:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {meta.map((c) => (
                 <MetaCard key={c.id} creative={c} onOpen={() => setViewer(previewFromMeta(c))} />
               ))}
@@ -280,7 +280,7 @@ function MetaCard({
   return (
     <Card padding="sm" className="flex flex-col gap-3">
       <button type="button" onClick={onOpen} className="text-left">
-        <CreativeFrame ad={ad} />
+        <CreativeFrame ad={ad} compact />
       </button>
       <div className="flex items-start justify-between gap-2">
         <CardTitle className="text-base leading-snug">{creative.ad_name || "Untitled ad"}</CardTitle>
@@ -332,7 +332,7 @@ function GeneratedCard({
   return (
     <Card padding="sm" className="flex flex-col gap-3">
       <button type="button" onClick={onOpen} className="text-left">
-        <CreativeFrame ad={ad} />
+        <CreativeFrame ad={ad} compact />
       </button>
       <div className="flex items-start justify-between gap-2">
         <CardTitle className="text-base leading-snug">
