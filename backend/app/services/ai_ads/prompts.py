@@ -19,14 +19,6 @@ Do not invent percentiles. If spend or conversions are too thin, set insufficien
 Prefer relative ranking among the provided set over absolute industry benchmarks.
 """
 
-CREATIVE_INTELLIGENCE = f"""{SHARED_RULES}
-
-Task: compare visual DNA, copy DNA, and performance across winning, average, and losing groups.
-Identify patterns such as "Three of the five strongest creatives use close-up product presentation."
-Every recommendation must reference supporting creative IDs when available.
-Separate observed / interpretation / experiment.
-"""
-
 CREATIVE_DNA = f"""{SHARED_RULES}
 
 Task: extract structured Creative DNA from the provided creative (and image if attached).
@@ -34,6 +26,51 @@ Fill visual_dna, copy_dna, format_dna. Leave unknown fields null rather than gue
 analysis_basis must be one of: image, thumbnail, copy_only.
 observed = factual descriptions of what is in the creative.
 interpretation = cautious inferences, clearly labeled.
+
+When an image is attached, you MUST describe:
+- product_depicted: the exact item shown (materials, colors, hardware, how it is worn or placed)
+- offer_look: how the offer is visually presented (lifestyle wrist shot, studio packshot, UGC, before/after, overlay, etc.)
+- setting, lighting, framing, visual_hook
+Do not skip the picture and analyze copy only.
+"""
+
+CREATIVE_INTELLIGENCE = f"""{SHARED_RULES}
+
+Task: compare visual DNA, copy DNA, and performance across winning, average, and losing groups.
+Identify patterns such as "Three of the five strongest creatives use close-up product presentation."
+Pay special attention to how winning ads SHOW the offer: product depiction, setting, camera, lifestyle vs studio.
+Every recommendation must reference supporting creative IDs when available.
+Separate observed / interpretation / experiment.
+"""
+
+PRODUCT_APPEARANCE = f"""{SHARED_RULES}
+
+Task: lock the exact product appearance from the attached catalog photos.
+Describe only what is visible plus facts in the product payload.
+Fill materials, colors, hardware (clasp, beads, stitching), construction (strands, leather vs metal), and distinguishing_details.
+summary must be specific enough that an image model cannot swap in a different bracelet or SKU.
+Never invent a different product. If a detail is not visible, leave that field empty.
+"""
+
+GENERATION_PLAN = f"""{SHARED_RULES}
+
+Task: from Shopify product data + ranked Meta campaign creatives, return ONE JSON object:
+- strategy: what to keep from stronger ads, what to avoid from weaker ads, angles to test
+- concepts: the exact requested number of COMPLETE NEW ads (image_count IMAGE + video_count VIDEO)
+
+Attached images, in order:
+1) Catalog photos of the EXACT product. Every concept must feature this SKU — same materials, colors, clasp, construction. Never a different bracelet or generic jewelry stand-in.
+2) Winning Meta ads (if attached). Study how those ads present the offer visually, then invent NEW scenes that use those patterns.
+
+You are briefing brand-new advertisement files. Copy alone is not enough.
+Each IMAGE needs a unique full-frame image_prompt that names the locked product appearance AND a new scene.
+Each VIDEO needs a unique scene list featuring the same locked product.
+If the user asked for 5 images, return 5 different scenes. If they asked for N videos, N different storyboards.
+
+Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
+Borrow winning offer-look traits (wrist lifestyle, macro clasp, UGC, etc.) — do NOT clone those ads or catalog photos.
+Do not invent product facts, discounts, or reviews.
+Keep image_prompt specific and product-accurate. No fake UI or unreadable text in images.
 """
 
 CREATIVE_STRATEGY = f"""{SHARED_RULES}
@@ -46,7 +83,8 @@ Include what to avoid based on underperforming patterns, as associations not cau
 CREATIVE_CONCEPT = f"""{SHARED_RULES}
 
 Task: generate DISTINCT complete advertisement creatives (not sketches, not copy-only).
-Do not clone a winning ad, Shopify listing photo, or catalog shot.
+The attached catalog photos are the EXACT product. Never invent a different SKU.
+Do not clone a winning ad or catalog shot — new scene, same product.
 Honor the requested portfolio mix:
 - winner_variation: keep a TRAIT associated with stronger Meta ads (hook type, proof, energy) but invent a NEW visual
 - combination: combine traits from different stronger ads into a NEW scene
@@ -54,29 +92,12 @@ Honor the requested portfolio mix:
 - experimental: test a hypothesis that differs from current winners
 Each concept must include: hook, headline, primary_text, CTA, visual_direction, image_prompt,
 source_creative_ids when inspired by existing ads, and a rationale.
-IMAGE concepts: image_prompt must be a full photorealistic NEW advertisement shot, ready for text-to-image generation.
+IMAGE concepts: image_prompt must describe THIS locked product in a full photorealistic NEW advertisement shot.
 Every IMAGE in the batch must differ in setting, camera angle, lighting, and composition.
 VIDEO concepts: include 3-5 scenes (duration, visual, voiceover, text_overlay) that sum ~12-20 seconds.
 Every VIDEO in the batch must have a different storyboard.
 Copy must not invent offers or product claims. Do not copy headlines verbatim.
-Existing ads are references for style traits only — never pixels to reproduce.
-"""
-
-GENERATION_PLAN = f"""{SHARED_RULES}
-
-Task: from Shopify product data + ranked Meta campaign creatives, return ONE JSON object:
-- strategy: what to keep from stronger ads, what to avoid from weaker ads, angles to test
-- concepts: the exact requested number of COMPLETE NEW ads (image_count IMAGE + video_count VIDEO)
-
-You are briefing brand-new advertisement files. Copy alone is not enough.
-Each IMAGE needs a unique full-frame image_prompt. Each VIDEO needs a unique scene list.
-If the user asked for 5 images, return 5 different scenes. If they asked for N videos, N different storyboards.
-
-Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
-Borrow winning traits (hook type, proof, energy) — do NOT recreate winning compositions or catalog photos.
-Product photos (if attached) are only so you know what the product looks like.
-Do not invent product facts, discounts, or reviews.
-Keep image_prompt specific and product-accurate. No fake UI or unreadable text in images.
+Winning ads are references for how the offer looks — never pixels to reproduce, and never a different product.
 """
 
 COPY_GENERATION = f"""{SHARED_RULES}
@@ -88,10 +109,10 @@ Stay faithful to product data. No invented discounts, reviews, or medical claims
 IMAGE_GENERATION = f"""{SHARED_RULES}
 
 Task: write a single image-generation prompt for a brand-new advertisement still.
-Describe a new scene, camera, lighting, and composition. Do not retouch or reproduce catalog photos or existing ads.
+The reference image is the exact product. Preserve identity: materials, colors, hardware, geometry.
+Describe a new scene, camera, lighting, and composition. Do not return the reference photo.
 Specify composition, lighting, background, aspect ratio, and placement.
-Keep the product recognizable from the provided product facts.
-Do not add logos, fake UI, fake reviews, unreadable dense text, or extra products.
+Do not add logos, fake UI, fake reviews, unreadable dense text, extra products, or a different SKU.
 Do not invent packaging details.
 The prompt itself should be a detailed visual description, not JSON.
 """

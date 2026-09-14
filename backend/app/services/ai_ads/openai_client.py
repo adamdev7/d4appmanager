@@ -256,22 +256,23 @@ class AdsOpenAIClient:
         size: str = "1024x1024",
         operation: str = "image_generate",
         references: list[tuple[bytes, str]] | None = None,
-        edit: bool = False,
+        edit: bool | None = None,
     ) -> tuple[bytes, str]:
-        # Ad creatives must be generated from scratch. Passing a catalog/Meta photo
-        # into /images/edits returns that same picture with tiny changes.
-        if edit and references:
+        # Product photos go through /images/edits as IDENTITY references so the
+        # model cannot invent a different SKU. The prompt must demand a new scene.
+        use_edit = bool(references) if edit is None else bool(edit and references)
+        if use_edit and references:
             try:
                 return await self._image_edits(
                     prompt=prompt,
                     model=model,
                     size=size,
                     references=references,
-                    operation=f"{operation}_edit",
+                    operation=f"{operation}_identity",
                 )
             except Exception as exc:
                 logger.warning(
-                    "ai_ads image edit fallback to generate store_id=%s err=%s",
+                    "ai_ads image identity edit fallback to generate store_id=%s err=%s",
                     self._store_id,
                     str(exc)[:200],
                 )
@@ -370,8 +371,6 @@ class AdsOpenAIClient:
     ) -> tuple[bytes, str]:
         request_id = str(uuid.uuid4())
         started = time.perf_counter()
-        raw, mime = references[0]
-        ext = "png" if "png" in mime else "jpg"
         headers = {"Authorization": f"Bearer {self._api_key}"}
         form: dict[str, str] = {
             "model": model,
@@ -381,7 +380,21 @@ class AdsOpenAIClient:
         }
         if _is_gpt_image(model):
             form["quality"] = "medium"
-        files = {"image": (f"product.{ext}", raw, mime)}
+        slug = (model or "").strip().lower()
+        if "gpt-image-1" in slug and "gpt-image-2" not in slug:
+            form["input_fidelity"] = "high"
+        files = []
+        for i, (raw, mime) in enumerate(references[:4]):
+            if not raw:
+                continue
+            mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
+            ext = "png" if "png" in mime else "jpg"
+            files.append(("image", (f"product-{i}.{ext}", raw, mime)))
+        if not files:
+            raise OpenAIServiceError(
+                user_message="No product reference image was available.",
+                stop_autopilot=False,
+            )
         async with httpx.AsyncClient(timeout=180) as client:
             resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=files)
         latency = int((time.perf_counter() - started) * 1000)
@@ -418,6 +431,7 @@ class AdsOpenAIClient:
         size: str = "720x1280",
         seconds: str = "8",
         operation: str = "video_create",
+        input_reference: tuple[bytes, str] | None = None,
     ) -> dict[str, Any]:
         request_id = str(uuid.uuid4())
         started = time.perf_counter()
@@ -428,9 +442,24 @@ class AdsOpenAIClient:
             "size": size,
             "seconds": str(seconds),
         }
+        files = None
+        if input_reference and input_reference[0]:
+            raw, mime = input_reference
+            mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
+            ext = "png" if "png" in mime else "jpg"
+            files = {"input_reference": (f"product.{ext}", raw, mime)}
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form)
+            resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form, files=files)
         latency = int((time.perf_counter() - started) * 1000)
+        if resp.status_code >= 400 and files:
+            logger.warning(
+                "ai_ads video input_reference rejected store_id=%s err=%s",
+                self._store_id,
+                (resp.text or "")[:200],
+            )
+            async with httpx.AsyncClient(timeout=120) as client:
+                resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form)
+            latency = int((time.perf_counter() - started) * 1000)
         if resp.status_code >= 400:
             self._log(
                 request_id=request_id,

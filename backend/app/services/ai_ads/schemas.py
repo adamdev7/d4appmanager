@@ -95,6 +95,9 @@ class VisualDNA(BaseModel):
     ugc_characteristics: bool | None = None
     visual_hook: str | None = None
     overall_style: str | None = None
+    offer_look: str | None = None
+    product_depicted: str | None = None
+    setting: str | None = None
     notes: str | None = None
 
 
@@ -250,6 +253,17 @@ class AICreativeScore(BaseModel):
     breakdown: AIScoreBreakdown = Field(default_factory=AIScoreBreakdown)
     label: str = "AI Creative Evaluation"
     disclaimer: str = "This is an evaluation of creative quality and alignment, not a guaranteed ROAS or performance prediction."
+
+
+class ProductAppearanceLock(BaseModel):
+    """Exact SKU appearance so image/video models cannot invent a different product."""
+
+    summary: str = ""
+    materials: str = ""
+    colors: str = ""
+    hardware: str = ""
+    construction: str = ""
+    distinguishing_details: str = ""
 
 
 class ImageGenerationRequest(BaseModel):

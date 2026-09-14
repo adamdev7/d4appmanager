@@ -79,7 +79,12 @@ class CreativeIntelligenceAnalyzer:
             if data_url:
                 images.append({"url": data_url})
                 basis = "thumbnail" if creative.format == "VIDEO" and not creative.local_asset_path else "image"
-        elif creative.format == "VIDEO":
+        if allow_vision and not images:
+            remote = (creative.image_url or creative.thumbnail_url or creative.video_thumbnail or "").strip()
+            if remote.startswith("http"):
+                images.append({"url": remote})
+                basis = "thumbnail" if creative.format == "VIDEO" else "image"
+        if not images and creative.format == "VIDEO":
             basis = "thumbnail" if (creative.video_thumbnail or creative.thumbnail_url) else "copy_only"
 
         percentiles = {}
@@ -101,7 +106,9 @@ class CreativeIntelligenceAnalyzer:
             "performance_percentiles": percentiles or None,
         }
         user = (
-            "Analyze this Meta creative. If an image is attached, describe what is actually visible. "
+            "Analyze this Meta creative. If an image is attached, look at it first: "
+            "describe the product shown, how the offer looks, setting, camera, and lighting. "
+            "Do not analyze copy only when an image is present. "
             f"If analysis_basis_hint is thumbnail, you only have a still/thumbnail.\n\n{json.dumps(payload, default=str)[:8000]}"
         )
         try:
@@ -267,6 +274,9 @@ class CreativeIntelligenceAnalyzer:
                         "format": json.loads(dna.format_dna_json) if dna else {},
                     },
                     "has_dna": dna is not None,
+                    "analysis_basis": dna.analysis_basis if dna else None,
+                    "image_url": c.image_url or c.thumbnail_url or c.video_thumbnail,
+                    "local_preview": c.local_asset_path or c.local_thumbnail_path,
                     "performance": _snap_dict(snap),
                 }
             )
@@ -300,12 +310,36 @@ class CreativeIntelligenceAnalyzer:
         for item in ordered:
             row = item.get("row")
             cid = item.get("id")
-            if not row or cid in seen or item.get("has_dna"):
+            basis = str(item.get("analysis_basis") or "")
+            needs_vision = (not item.get("has_dna")) or basis in ("", "copy_only")
+            if not row or cid in seen or not needs_vision:
                 continue
             seen.add(cid)
             out.append(row)
             if len(out) >= limit:
                 break
+        return out
+
+    def winning_preview_images(self, db: Session, *, limit: int = 2) -> list[dict[str, str]]:
+        """Attach winning Meta ad stills so Astra can see how the offer looks."""
+        items = self.listed_creatives(db)
+        groups = split_performance_groups(items)
+        out: list[dict[str, str]] = []
+        for item in (groups.get("winning") or items)[:8]:
+            if len(out) >= limit:
+                break
+            row = item.get("row")
+            path = None
+            if row:
+                path = row.local_asset_path or row.local_thumbnail_path
+            if path:
+                data_url = self.assets.file_to_data_url(path)
+                if data_url:
+                    out.append({"url": data_url})
+                    continue
+            remote = str(item.get("image_url") or "").strip()
+            if remote.startswith("http"):
+                out.append({"url": remote})
         return out
 
 

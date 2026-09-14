@@ -27,7 +27,11 @@ from app.services.ai_ads.complete_creative import (
     build_image_prompt,
     build_video_prompt,
     clamp_generation_counts,
+    compact_product,
+    format_appearance_lock,
     heuristic_score,
+    product_appearance_notes,
+    product_reference_urls,
     video_spec_from_concept,
     winning_style_notes,
 )
@@ -43,10 +47,17 @@ from app.services.ai_ads.job_progress import append_job_progress
 from app.services.ai_ads.meta_importer import MetaCreativeImporter
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.product_context import normalize_product
-from app.services.ai_ads.providers.openai_image import OpenAIImageProvider
+from app.services.ai_ads.prompts import PRODUCT_APPEARANCE
+from app.services.ai_ads.providers.openai_image import OpenAIImageProvider, download_reference_images
 from app.services.ai_ads.providers.openai_video import OpenAIVideoProvider
 from app.services.ai_ads.recommendation_engine import RecommendationEngine
-from app.services.ai_ads.schemas import CreativeIntelligenceReport, ImageGenerationRequest, ProductContext, VideoSpec
+from app.services.ai_ads.schemas import (
+    CreativeIntelligenceReport,
+    ImageGenerationRequest,
+    ProductAppearanceLock,
+    ProductContext,
+    VideoSpec,
+)
 from app.services.ai_ads.strategy import CreativeStrategyEngine
 from app.services.ai_ads.asset_store import CreativeAssetStore
 
@@ -118,7 +129,7 @@ class AdsAIOrchestrator:
         perf = analyzer.latest_performance_map(self.db)
         for c in missing:
             try:
-                await analyzer.analyze_one(self.db, c, perf.get(c.id))
+                await analyzer.analyze_one(self.db, c, perf.get(c.id), force=True)
             except Exception as exc:
                 logger.warning("ai_ads analyze one failed store_id=%s id=%s err=%s", self.store.id, c.id, exc)
         report = await analyzer.build_report(self.db, limit=40)
@@ -184,9 +195,25 @@ class AdsAIOrchestrator:
             job.total_items = image_count + video_count
             self._progress(
                 job,
+                step="product",
+                title="Locking the real product look",
+                detail=f"Studying Shopify photos of {product.title} so generated ads show this SKU, not a stand-in.",
+                pct=12,
+            )
+            appearance_lock = await self._lock_product_appearance(product)
+            self._progress(
+                job,
+                step="product",
+                title="Product look locked",
+                detail=f"Ads must show this exact item: {appearance_lock[:220] or product.title}.",
+                pct=14,
+            )
+
+            self._progress(
+                job,
                 step="learn",
                 title="Analyzing Meta campaign performance",
-                detail=f"Loaded {product.title}. Ranking existing ads by ROAS and CTR to see which styles are associated with stronger results.",
+                detail="Ranking existing ads by ROAS and CTR, then looking at the actual creatives to see how the offer is shown.",
                 pct=18,
             )
 
@@ -217,16 +244,39 @@ class AdsAIOrchestrator:
                     )
 
             analyzer = CreativeIntelligenceAnalyzer(self.client, self.store.id)
+            listed = analyzer.listed_creatives(self.db, limit=80)
+            missing = analyzer.creatives_missing_dna(listed, limit=8)
+            perf = analyzer.latest_performance_map(self.db)
+            if missing:
+                self._progress(
+                    job,
+                    step="learn",
+                    title="Looking at winning Meta ads",
+                    detail=f"Reading {len(missing)} ad image(s) to see how the offer is framed — product, setting, camera — not just the copy.",
+                    pct=26,
+                )
+                for creative in missing:
+                    self._raise_if_cancelled(job)
+                    try:
+                        await analyzer.analyze_one(self.db, creative, perf.get(creative.id), force=True)
+                    except Exception as exc:
+                        logger.warning(
+                            "ai_ads job dna skipped store_id=%s id=%s err=%s",
+                            self.store.id,
+                            creative.id,
+                            exc,
+                        )
             brief = analyzer.campaign_brief(self.db)
+            brief["winning_images"] = analyzer.winning_preview_images(self.db, limit=2)
             winning_notes = winning_style_notes(brief.get("winning") or [])
             winners = brief.get("winning") or []
             losers = brief.get("losing") or []
             learn_detail = (
                 f"Found {len(winners)} stronger ads and {len(losers)} weaker ads. "
                 + (
-                    f"Improving styles like: {winning_notes[:180]}."
+                    f"Offer look associated with stronger ads: {winning_notes[:220]}."
                     if winning_notes
-                    else "Not enough spend/ROAS split yet — using product facts and your selected styles."
+                    else "Not enough spend/ROAS split yet — using product photos and your selected styles."
                 )
             )
             self._progress(job, step="learn", title="Learning from winning Meta ads", detail=learn_detail, pct=32)
@@ -242,8 +292,9 @@ class AdsAIOrchestrator:
                 step="plan",
                 title="Planning brand-new creatives",
                 detail=(
-                    f"Drafting {image_count} distinct image scene(s) and {video_count} distinct video storyboard(s). "
-                    "Astra briefs original ads — not copy-only and not retouches of ads you already ran."
+                    f"Drafting {image_count} distinct image scene(s) and {video_count} distinct video storyboard(s) "
+                    f"that feature the real {product.title}. "
+                    "Studying how winning Meta ads present the offer, then inventing new scenes."
                 ),
                 pct=42,
             )
@@ -274,6 +325,8 @@ class AdsAIOrchestrator:
 
             image_provider = OpenAIImageProvider(self.client, self.assets)
             video_provider = OpenAIVideoProvider(self.client, self.assets)
+            catalog_urls = product_reference_urls(product)
+            product_refs = await download_reference_images(catalog_urls)
             total = max(len(paired), 1)
             image_total = sum(1 for c, _ in paired if (c.type or "IMAGE").upper() != "VIDEO")
             video_total = sum(1 for c, _ in paired if (c.type or "").upper() == "VIDEO")
@@ -294,8 +347,8 @@ class AdsAIOrchestrator:
                         step="video",
                         title=f"Rendering original video {video_slot + 1} of {max(video_total, 1)}",
                         detail=(
-                            f"Sora is generating a brand-new MP4 for "
-                            f"“{concept.concept_name or concept.hook}” — not a remix of an existing ad."
+                            f"Sora is generating a brand-new MP4 of the real {product.title} for "
+                            f"“{concept.concept_name or concept.hook}”."
                         ),
                         pct=pct,
                     )
@@ -307,8 +360,8 @@ class AdsAIOrchestrator:
                         step="image",
                         title=f"Rendering original image {image_slot + 1} of {max(image_total, 1)}",
                         detail=(
-                            f"Generating a new Meta still for "
-                            f"“{concept.concept_name or concept.hook}” — new scene, not your catalog photo."
+                            f"Placing the real {product.title} into a new Meta still for "
+                            f"“{concept.concept_name or concept.hook}”."
                         ),
                         pct=pct,
                     )
@@ -347,6 +400,8 @@ class AdsAIOrchestrator:
                         )
                         payload = spec.model_dump()
                         payload["prompt"] = prompt
+                        if product_refs:
+                            payload["input_reference"] = product_refs[0]
                         try:
                             rendered = await video_provider.generate_video(
                                 payload,
@@ -362,6 +417,7 @@ class AdsAIOrchestrator:
                                 image_provider,
                                 variation_index=video_slot,
                                 variation_count=max(video_total, 1),
+                                reference_image_urls=catalog_urls,
                             )
                             asset.video_spec_json = json.dumps(
                                 {"spec": spec.model_dump(), "provider": rendered, "rendered": True}
@@ -402,6 +458,7 @@ class AdsAIOrchestrator:
                                     ),
                                     aspect_ratio=asset.aspect_ratio or "4:5",
                                     placement=placement,
+                                    reference_image_urls=catalog_urls,
                                 )
                             )
                             asset.local_path = image_result.local_path
@@ -426,6 +483,7 @@ class AdsAIOrchestrator:
                                 prompt=prompt,
                                 aspect_ratio=aspect,
                                 placement=placement,
+                                reference_image_urls=catalog_urls,
                             )
                         )
                         asset.local_path = result.local_path
@@ -556,6 +614,33 @@ class AdsAIOrchestrator:
         append_job_progress(job, step=step, title=title, detail=detail, pct=pct)
         self.db.commit()
 
+    async def _lock_product_appearance(self, product: ProductContext) -> str:
+        """Vision-lock the Shopify catalog photos so later renders cannot invent a different SKU."""
+        fallback = product_appearance_notes(product)
+        urls = product_reference_urls(product)
+        text = fallback
+        if urls:
+            try:
+                lock = await self.client.complete_json(
+                    system=PRODUCT_APPEARANCE,
+                    user=(
+                        "Describe the exact product in the attached photos. "
+                        "This lock must prevent an image model from generating a different bracelet or SKU.\n"
+                        f"{json.dumps(compact_product(product), default=str)[:4000]}"
+                    ),
+                    schema=ProductAppearanceLock,
+                    model=settings.resolved_ai_analysis_model,
+                    images=[{"url": src} for src in urls[:3]],
+                    operation="product_appearance",
+                )
+                text = format_appearance_lock(lock) or fallback
+            except Exception as exc:
+                logger.warning("ai_ads product appearance lock failed store_id=%s err=%s", self.store.id, exc)
+                text = fallback
+        product.brand_context = dict(product.brand_context or {})
+        product.brand_context["appearance_lock"] = text
+        return text
+
     async def _attach_video_poster(
         self,
         asset: CreativeAsset,
@@ -565,6 +650,7 @@ class AdsAIOrchestrator:
         *,
         variation_index: int = 0,
         variation_count: int = 1,
+        reference_image_urls: list[str] | None = None,
     ) -> None:
         """Save a thumbnail still so Library and Meta have a poster frame."""
         first = spec.scenes[0] if spec.scenes else None
@@ -584,6 +670,7 @@ class AdsAIOrchestrator:
                     prompt=prompt,
                     aspect_ratio="9:16",
                     placement="stories",
+                    reference_image_urls=reference_image_urls or product_reference_urls(product),
                 )
             )
             asset.preview_url = result.preview_url or result.local_path

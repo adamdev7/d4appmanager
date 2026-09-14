@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+import httpx
+
 from app.config import settings
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.exceptions import ImageGenerationError
@@ -55,12 +57,13 @@ class OpenAIImageProvider(ImageGenerationProvider):
                 width, height = int(w_s), int(h_s)
             except ValueError:
                 pass
-        # Never send catalog/Meta photos to /images/edits — that path clones the source.
+        references = await download_reference_images(request.reference_image_urls)
         try:
             raw, mime = await self._client.generate_image_b64(
                 prompt=request.prompt,
                 model=self._model,
                 size=size,
+                references=references or None,
             )
         except Exception as exc:
             fallback = "dall-e-3"
@@ -73,6 +76,8 @@ class OpenAIImageProvider(ImageGenerationProvider):
                     prompt=request.prompt,
                     model=fallback,
                     size=size,
+                    references=None,
+                    edit=False,
                 )
             except Exception as second:
                 raise ImageGenerationError(str(second), retryable=True) from second
@@ -87,3 +92,25 @@ class OpenAIImageProvider(ImageGenerationProvider):
             height=height,
             mime_type=mime,
         )
+
+
+async def download_reference_images(urls: list[str] | None, *, limit: int = 3) -> list[tuple[bytes, str]]:
+    out: list[tuple[bytes, str]] = []
+    for url in (urls or [])[:limit]:
+        src = (url or "").strip()
+        if not src.startswith("http"):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(src)
+                resp.raise_for_status()
+            data = resp.content
+            if not data or len(data) < 32:
+                continue
+            mime = (resp.headers.get("content-type") or "image/jpeg").split(";")[0].strip()
+            if "image" not in mime:
+                mime = "image/jpeg"
+            out.append((data, mime))
+        except Exception as exc:
+            logger.info("ai_ads product reference download skipped url=%s err=%s", src[:120], exc)
+    return out

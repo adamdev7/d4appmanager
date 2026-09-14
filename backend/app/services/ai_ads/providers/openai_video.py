@@ -58,12 +58,16 @@ class OpenAIVideoProvider(VideoGenerationProvider):
             raise VideoProviderError("Video prompt is empty")
         size, width, height = resolve_video_size(str(spec.get("format") or spec.get("aspect_ratio") or "9:16"))
         seconds = clamp_video_seconds(spec.get("duration") or spec.get("seconds"))
+        reference = spec.get("input_reference")
+        if not (isinstance(reference, tuple) and reference and reference[0]):
+            reference = None
         try:
             created = await self._client.create_video(
                 prompt=prompt,
                 model=self._model,
                 size=size,
                 seconds=seconds,
+                input_reference=reference,
             )
         except Exception as exc:
             raise VideoProviderError(str(exc), retryable=True) from exc

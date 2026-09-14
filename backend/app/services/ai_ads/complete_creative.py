@@ -107,8 +107,8 @@ def diversify_concepts(
         recipe = image_shot_recipe(i)
         lock = (
             f"ORIGINAL STILL {i + 1} of {len(concepts)}. Required unique treatment: {recipe} "
-            "Invent a brand-new advertisement. Do not reproduce Shopify listing photos, "
-            "catalog photography, or any existing Meta ad."
+            f"Show the exact {product.title} from the catalog photos — never a different product. "
+            "Invent a brand-new advertisement scene. Do not reproduce the listing photo or any existing Meta ad."
         )
         base = (concept.image_prompt or concept.visual_direction or "").strip()
         similar = any(_token_overlap(base, prev) > 0.7 for prev in used)
@@ -136,8 +136,9 @@ def compact_product(product: ProductContext) -> dict[str, Any]:
         "image": images[0] if images else None,
         "catalog_photos": images,
         "appearance": product_appearance_notes(product),
+        "appearance_lock": (product.brand_context or {}).get("appearance_lock") or product_appearance_notes(product),
         "restrictions": (product.restrictions or [])[:6],
-        "note": "Catalog photos show product appearance only. Do not recreate those photos as ads.",
+        "note": "Catalog photos ARE the product. New ads must show this exact SKU in a new scene — never a different bracelet.",
     }
 
 
@@ -156,6 +157,14 @@ def compact_meta_item(item: dict[str, Any]) -> dict[str, Any]:
         "cta": copy.get("cta") or item.get("cta"),
         "style": visual.get("style") or visual.get("overall_style"),
         "composition": visual.get("composition"),
+        "offer_look": visual.get("offer_look") or copy_dna.get("offer_presentation"),
+        "product_in_ad": visual.get("product_depicted"),
+        "setting": visual.get("setting") or visual.get("background"),
+        "lighting": visual.get("lighting"),
+        "framing": visual.get("framing"),
+        "visual_hook": visual.get("visual_hook"),
+        "human_presence": visual.get("human_presence"),
+        "product_visibility": visual.get("product_visibility"),
         "hook_type": copy_dna.get("hook_type"),
         "tone": copy_dna.get("tone"),
         "roas": perf.get("roas"),
@@ -167,7 +176,7 @@ def compact_meta_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def product_reference_urls(product: ProductContext) -> list[str]:
-    """Catalog photo URLs for planner context only — never as image-edit sources."""
+    """Shopify catalog photos used as identity references for generation."""
     return [img.src for img in (product.images or []) if getattr(img, "src", None)][:3]
 
 
@@ -182,14 +191,42 @@ def product_appearance_notes(product: ProductContext) -> str:
     return " ".join(bits)[:280]
 
 
+def format_appearance_lock(lock: Any) -> str:
+    if lock is None:
+        return ""
+    if isinstance(lock, str):
+        return lock.strip()
+    parts = [
+        getattr(lock, "summary", "") or "",
+        getattr(lock, "materials", "") or "",
+        getattr(lock, "colors", "") or "",
+        getattr(lock, "hardware", "") or "",
+        getattr(lock, "construction", "") or "",
+        getattr(lock, "distinguishing_details", "") or "",
+    ]
+    if hasattr(lock, "model_dump"):
+        data = lock.model_dump()
+        parts = [str(data.get(k) or "") for k in ("summary", "materials", "colors", "hardware", "construction", "distinguishing_details")]
+    return " ".join(p for p in parts if p).strip()[:700]
+
+
 def winning_style_notes(winners: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for item in winners[:6]:
-        for key in ("style", "composition", "hook_type", "headline"):
+        for key in (
+            "offer_look",
+            "product_in_ad",
+            "setting",
+            "visual_hook",
+            "style",
+            "composition",
+            "hook_type",
+            "headline",
+        ):
             value = item.get(key)
             if value and str(value) not in parts:
-                parts.append(str(value)[:120])
-    return "; ".join(parts[:8])
+                parts.append(str(value)[:140])
+    return "; ".join(parts[:10])
 
 
 def build_image_prompt(
@@ -208,11 +245,14 @@ def build_image_prompt(
     recipe = image_shot_recipe(variation_index)
     if not prompt:
         prompt = f"{recipe} Photorealistic new advertisement of {product.title}."
+    appearance = (product.brand_context or {}).get("appearance_lock") or product_appearance_notes(product)
     extras = [
         f"Product: {product.title}.",
-        f"Product appearance to keep recognizable: {product_appearance_notes(product)}.",
-        "This is a brand-new advertisement still. Do not retouch, crop, or reproduce a catalog photo "
-        "or any existing ad. New scene, new camera, new lighting, new composition.",
+        f"IDENTITY LOCK — the reference image(s) ARE this exact SKU. Reproduce it faithfully: {appearance}. "
+        "Same colors, materials, clasp, beads, leather, metal, geometry. "
+        "Do not invent a different bracelet, a different leather band, or generic jewelry.",
+        "Image 1 is the product. Place THIS product into a brand-new advertisement scene. "
+        "Do not return the catalog photo. New camera, lighting, background, and crop.",
         f"This is unique still {variation_index + 1} of {max(variation_count, 1)}. Required treatment: {recipe}",
         "Do not invent materials, logos, or packaging details that are not in the product facts.",
     ]
@@ -251,10 +291,13 @@ def build_video_prompt(
             scenes.append(bit[:180])
     shot_list = " Then ".join(scenes) if scenes else (spec.hook or product.title)
     recipe = video_story_recipe(variation_index)
+    appearance = (product.brand_context or {}).get("appearance_lock") or product_appearance_notes(product)
     parts = [
         f"Brand-new vertical Meta Reels / Stories advertisement. Product is {product.title}.",
+        f"IDENTITY LOCK: show this exact SKU, not a different bracelet: {appearance}.",
         f"This is unique video {variation_index + 1} of {max(variation_count, 1)}. Required storyboard: {recipe}",
-        "Do not recreate an existing Meta ad, catalog clip, or listing photo. New shots and setting.",
+        "The input reference image is the real product. Keep it recognizable. New shots and setting.",
+        "Do not recreate an existing Meta ad or catalog clip.",
         f"Hook: {spec.hook or product.title}.",
         f"Shot list: {shot_list}.",
         f"Keep {product.title} recognizable. Smooth camera, no fake UI, no watermarks.",

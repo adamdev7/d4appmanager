@@ -444,8 +444,8 @@ def test_complete_image_prompt_includes_product_and_winners():
     assert "Courage Bracelet" in prompt
     assert "ugc close-up" in prompt
     assert "4:5" in prompt
-    assert "brand-new advertisement" in prompt.lower() or "new advertisement" in prompt.lower()
-    assert "do not retouch" in prompt.lower()
+    assert "identity lock" in prompt.lower()
+    assert "do not invent a different bracelet" in prompt.lower()
     assert "unique still 1 of 5" in prompt.lower()
 
 
@@ -506,7 +506,27 @@ def test_video_prompt_demands_original_storyboard():
     assert "do not recreate" in prompt.lower()
 
 
-def test_generate_image_b64_does_not_edit_catalog_photos():
+def test_generate_image_b64_uses_product_photos_as_identity():
+    import asyncio
+
+    from app.services.ai_ads.openai_client import AdsOpenAIClient
+
+    client = AdsOpenAIClient("sk-test", store_id="s")
+    with patch.object(client, "_image_edits", new=AsyncMock(return_value=(b"e", "image/png"))) as edits:
+        with patch.object(client, "_image_generations", new=AsyncMock()) as gen:
+            out = asyncio.run(
+                client.generate_image_b64(
+                    prompt="new ad with exact product",
+                    model="gpt-image-2",
+                    references=[(b"abc", "image/jpeg")],
+                )
+            )
+    assert out == (b"e", "image/png")
+    edits.assert_awaited()
+    gen.assert_not_awaited()
+
+
+def test_generate_image_b64_skips_edits_without_references():
     import asyncio
 
     from app.services.ai_ads.openai_client import AdsOpenAIClient
@@ -518,33 +538,11 @@ def test_generate_image_b64_does_not_edit_catalog_photos():
                 client.generate_image_b64(
                     prompt="new ad",
                     model="gpt-image-2",
-                    references=[(b"abc", "image/jpeg")],
                 )
             )
     assert out == (b"x", "image/png")
     edits.assert_not_awaited()
     gen.assert_awaited()
-
-
-def test_generate_image_b64_edits_only_when_explicit():
-    import asyncio
-
-    from app.services.ai_ads.openai_client import AdsOpenAIClient
-
-    client = AdsOpenAIClient("sk-test", store_id="s")
-    with patch.object(client, "_image_edits", new=AsyncMock(return_value=(b"e", "image/png"))) as edits:
-        with patch.object(client, "_image_generations", new=AsyncMock()) as gen:
-            out = asyncio.run(
-                client.generate_image_b64(
-                    prompt="retouch",
-                    model="gpt-image-2",
-                    references=[(b"abc", "image/jpeg")],
-                    edit=True,
-                )
-            )
-    assert out == (b"e", "image/png")
-    edits.assert_awaited()
-    gen.assert_not_awaited()
 
 
 def test_video_spec_built_without_openai():
@@ -639,7 +637,50 @@ def test_preview_url_normalizes_local_paths():
     assert _preview(None, "https://cdn.example/p.jpg") == "https://cdn.example/p.jpg"
 
 
-def test_product_reference_urls_uses_catalog_photos_for_planner_only():
+def test_compact_meta_item_includes_offer_look():
+    from app.services.ai_ads.complete_creative import compact_meta_item, winning_style_notes
+
+    item = compact_meta_item(
+        {
+            "id": "c1",
+            "ad_name": "Wrist lifestyle",
+            "copy": {"headline": "Feel the courage", "primary_text": "Everyday wear"},
+            "dna": {
+                "visual": {
+                    "offer_look": "lifestyle wrist close-up",
+                    "product_depicted": "black leather wrap with silver clasp",
+                    "setting": "window light indoor",
+                    "visual_hook": "hand at chin",
+                },
+                "copy": {"hook_type": "identity"},
+            },
+            "performance": {"roas": 2.1, "ctr": 1.4},
+        }
+    )
+    assert item["offer_look"] == "lifestyle wrist close-up"
+    assert "silver clasp" in item["product_in_ad"]
+    notes = winning_style_notes([item])
+    assert "lifestyle wrist close-up" in notes
+
+
+def test_appearance_lock_formats_vision_output():
+    from app.services.ai_ads.complete_creative import format_appearance_lock
+    from app.services.ai_ads.schemas import ProductAppearanceLock
+
+    lock = ProductAppearanceLock(
+        summary="Black leather wrap bracelet",
+        materials="leather",
+        colors="black with silver hardware",
+        hardware="brushed silver magnetic clasp",
+        construction="double wrap",
+        distinguishing_details="contrast stitching",
+    )
+    text = format_appearance_lock(lock)
+    assert "leather" in text
+    assert "magnetic clasp" in text
+
+
+def test_product_reference_urls_uses_catalog_photos():
     from app.services.ai_ads.complete_creative import product_reference_urls
     from app.services.ai_ads.schemas import ProductContext, ProductImage
 

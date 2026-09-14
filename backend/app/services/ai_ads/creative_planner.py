@@ -200,12 +200,14 @@ class CreativePlanner:
                 "description": avatar.description,
                 "usage_rules": avatar.usage_rules,
             }
-        catalog = [{"url": src} for src in product_reference_urls(product)[:2]]
+        catalog = [{"url": src} for src in product_reference_urls(product)[:3]]
+        winning_stills = list(brief.get("winning_images") or [])[:2]
+        attached = catalog + winning_stills
         user = (
             f"Return {image_count} IMAGE and {video_count} VIDEO brand-new ads. "
-            "Copy is not enough — each IMAGE needs a unique full-frame scene, each VIDEO a unique storyboard. "
-            "Catalog photos (if attached) are only for product appearance. "
-            "Do NOT recreate those photos or existing Meta ads. "
+            "The first attached images are the EXACT product SKU — every ad must show that item, never a different bracelet. "
+            "Later attachments (if any) are winning Meta ads: study how the offer looks, then invent NEW scenes. "
+            "Copy is not enough — each IMAGE needs a unique full-frame scene featuring the locked product. "
             "Assign IMAGE portfolio_bucket from image_portfolio_buckets in order, VIDEO from video_portfolio_buckets.\n\n"
             f"{json.dumps(payload, default=str)[:12000]}"
         )
@@ -215,7 +217,7 @@ class CreativePlanner:
                 user=user,
                 schema=GenerationPlan,
                 model=self.model,
-                images=catalog or None,
+                images=attached or None,
                 operation="generation_plan",
             )
             assert isinstance(plan, GenerationPlan)
