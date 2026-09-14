@@ -13,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_response
 from app.config import settings
 from app.services.ai_ads.exceptions import InvalidAIOutput
+from app.services.ai_ads.media_io import fit_references
 
 logger = logging.getLogger(__name__)
 
@@ -262,20 +263,16 @@ class AdsOpenAIClient:
         # model cannot invent a different SKU. The prompt must demand a new scene.
         use_edit = bool(references) if edit is None else bool(edit and references)
         if use_edit and references:
-            try:
-                return await self._image_edits(
-                    prompt=prompt,
-                    model=model,
-                    size=size,
-                    references=references,
-                    operation=f"{operation}_identity",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "ai_ads image identity edit fallback to generate store_id=%s err=%s",
-                    self._store_id,
-                    str(exc)[:200],
-                )
+            # Identity edits must use stills that already match `size`. OpenAI
+            # rejects product photos at the catalog aspect ("Inpaint image must
+            # match the requested width and height").
+            return await self._image_edits(
+                prompt=prompt,
+                model=model,
+                size=size,
+                references=fit_references(references, size, fmt="PNG"),
+                operation=f"{operation}_identity",
+            )
         return await self._image_generations(
             prompt=prompt, model=model, size=size, operation=operation
         )
@@ -443,6 +440,9 @@ class AdsOpenAIClient:
         files = None
         if input_reference and input_reference[0]:
             raw, mime = input_reference
+            fitted = fit_references([(raw, mime)], size, fmt="JPEG")
+            if fitted:
+                raw, mime = fitted[0]
             mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
             ext = "png" if "png" in mime else "jpg"
             files = {"input_reference": (f"product.{ext}", raw, mime)}

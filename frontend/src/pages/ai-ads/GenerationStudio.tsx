@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { cn } from "@/lib/cn";
 import {
-  AdPlacementMockup,
+  CreativeFrame,
   CreativeViewer,
   previewFromGenerated,
 } from "@/pages/ai-ads/CreativeViewer";
@@ -205,7 +205,7 @@ export function GenerationStudio({
           <p className="text-xs uppercase tracking-wide text-content-subtle mb-2">
             Live previews
           </p>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-6 sm:grid-cols-2">
             {creatives.map((c) => (
               <button
                 key={c.id}
@@ -213,7 +213,7 @@ export function GenerationStudio({
                 onClick={() => setViewer(c)}
                 className="text-left"
               >
-                <AdPlacementMockup ad={previewFromGenerated(c)} compact />
+                <CreativeFrame ad={previewFromGenerated(c)} />
                 <p className="mt-2 text-sm font-medium text-content line-clamp-1">
                   {c.headline || c.hook || (c.type === "VIDEO" ? "Video concept" : "Image ad")}
                 </p>

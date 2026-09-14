@@ -944,6 +944,26 @@ def test_is_mp4_detects_ftyp():
     assert not is_mp4(b"")
 
 
+def test_fit_image_bytes_matches_requested_size():
+    from io import BytesIO
+
+    from PIL import Image
+
+    from app.services.ai_ads.media_io import fit_image_bytes, fit_references
+
+    img = Image.new("RGB", (1200, 400), (200, 40, 40))
+    src = BytesIO()
+    img.save(src, format="JPEG")
+    out, mime = fit_image_bytes(src.getvalue(), 1024, 1536, fmt="PNG")
+    assert mime == "image/png"
+    fitted = Image.open(BytesIO(out))
+    assert fitted.size == (1024, 1536)
+
+    refs = fit_references([(src.getvalue(), "image/jpeg")], "1024x1536", fmt="PNG")
+    assert len(refs) == 1
+    assert Image.open(BytesIO(refs[0][0])).size == (1024, 1536)
+
+
 def test_video_provider_rejects_non_mp4_download():
     import asyncio
 

@@ -1,20 +1,21 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useStore } from "@/context/StoreContext";
 import { api, type AIAdsAdset, type AIAdsGeneratedCreative, type AIAdsLibrary, type AIAdsMetaCreative } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
-import { Input } from "@/components/ui/Input";
 import { PageLoader } from "@/components/ui/Loading";
 import {
-  AdPlacementMockup,
+  CreativeFrame,
   CreativeViewer,
+  DownloadCreativeButton,
   previewFromGenerated,
   previewFromMeta,
   type AdPreviewModel,
 } from "@/pages/ai-ads/CreativeViewer";
+import { cn } from "@/lib/cn";
 
-type SourceFilter = "all" | "meta" | "generated";
+type SourceFilter = "generated" | "meta" | "all";
 
 export function CreativesPage() {
   const { activeStore, stores } = useStore();
@@ -22,7 +23,7 @@ export function CreativesPage() {
   const [lib, setLib] = useState<AIAdsLibrary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [source, setSource] = useState<SourceFilter>("all");
+  const [source, setSource] = useState<SourceFilter>("generated");
   const [status, setStatus] = useState("");
   const [busyId, setBusyId] = useState("");
   const [viewer, setViewer] = useState<AdPreviewModel | null>(null);
@@ -119,46 +120,57 @@ export function CreativesPage() {
   if (loading) return <PageLoader label="Loading creative library" />;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap gap-2 items-end">
-        <select
-          value={source}
-          onChange={(e) => setSource(e.target.value as SourceFilter)}
-          className="h-10 rounded-lg border border-border bg-surface px-3 text-sm"
-        >
-          <option value="all">All sources</option>
-          <option value="meta">Existing Meta</option>
-          <option value="generated">AI generated</option>
-        </select>
-        <Input
-          placeholder="Filter generated status (READY, APPROVED…)"
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          className="max-w-xs"
-        />
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-center gap-2">
+        {(
+          [
+            ["generated", "Generated"],
+            ["meta", "From Meta"],
+            ["all", "All"],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => setSource(id)}
+            className={cn(
+              "rounded-full border px-3 py-1.5 text-sm font-medium",
+              source === id
+                ? "border-brand-500 bg-brand-500/10 text-brand-700 dark:text-brand-400"
+                : "border-border text-content-muted hover:text-content"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+        {source !== "meta" && (
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="ml-auto h-9 rounded-lg border border-border bg-surface px-3 text-sm"
+          >
+            <option value="">All statuses</option>
+            <option value="READY">Ready</option>
+            <option value="APPROVED">Approved</option>
+            <option value="FAILED">Failed</option>
+            <option value="REJECTED">Rejected</option>
+            <option value="PUBLISHED">Published</option>
+          </select>
+        )}
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
-      {source !== "generated" && (
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold text-content">Existing Meta creatives</h2>
-          {meta.length === 0 ? (
-            <Empty text="No Meta creatives imported yet. Sync Meta ads from Overview." />
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {meta.map((c) => (
-                <MetaCard key={c.id} creative={c} onOpen={() => setViewer(previewFromMeta(c))} />
-              ))}
-            </div>
-          )}
-        </section>
-      )}
       {source !== "meta" && (
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold text-content">AI generated creatives</h2>
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-content">Generated creatives</h2>
+            <p className="text-sm text-content-muted">
+              Full stills and MP4s. Open one to inspect, or download the file.
+            </p>
+          </div>
           {generated.length === 0 ? (
             <Empty text="No generated creatives yet. Open Generate to create a batch." />
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="grid gap-6 lg:grid-cols-2">
               {generated.map((c) => (
                 <GeneratedCard
                   key={c.id}
@@ -171,6 +183,23 @@ export function CreativesPage() {
                   onDelete={() => void act(c.id, "delete")}
                   onPublish={() => void openPublish(c)}
                 />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      {source !== "generated" && (
+        <section className="space-y-4">
+          <div>
+            <h2 className="text-lg font-semibold text-content">Existing Meta ads</h2>
+            <p className="text-sm text-content-muted">Imported from your ad account.</p>
+          </div>
+          {meta.length === 0 ? (
+            <Empty text="No Meta creatives imported yet. Sync Meta ads from Overview." />
+          ) : (
+            <div className="grid gap-6 lg:grid-cols-2">
+              {meta.map((c) => (
+                <MetaCard key={c.id} creative={c} onOpen={() => setViewer(previewFromMeta(c))} />
               ))}
             </div>
           )}
@@ -246,38 +275,29 @@ function MetaCard({
   creative: AIAdsMetaCreative;
   onOpen: () => void;
 }) {
-  const dna = creative.dna?.visual as Record<string, unknown> | undefined;
+  const ad = previewFromMeta(creative);
   const perf = creative.performance;
   return (
     <Card padding="sm" className="flex flex-col gap-3">
       <button type="button" onClick={onOpen} className="text-left">
-        <AdPlacementMockup ad={previewFromMeta(creative)} compact />
+        <CreativeFrame ad={ad} />
       </button>
-      <div>
-        <div className="flex items-start justify-between gap-2">
-          <CardTitle className="text-sm">{creative.ad_name || "Untitled ad"}</CardTitle>
-          <Badge>{creative.format}</Badge>
-        </div>
-        <CardDescription className="line-clamp-2">{creative.campaign_name}</CardDescription>
+      <div className="flex items-start justify-between gap-2">
+        <CardTitle className="text-base leading-snug">{creative.ad_name || "Untitled ad"}</CardTitle>
+        <Badge>{creative.format}</Badge>
       </div>
-      <p className="text-sm text-content line-clamp-3">{creative.primary_text || creative.headline}</p>
-      <div className="text-xs text-content-muted space-y-1">
-        {perf?.insufficient_data ? (
-          <p>Performance: insufficient data</p>
-        ) : (
-          <p>
-            CTR {fmtPct(perf?.ctr)} · ROAS {fmtNum(perf?.roas)} · CPA {fmtNum(perf?.cpa)} · Spend{" "}
-            {fmtNum(perf?.spend)}
-          </p>
-        )}
-        {dna?.style ? <p>DNA: {String(dna.style)} · {String(dna.composition || "")}</p> : <p>DNA: not analyzed yet</p>}
-        {creative.dna?.analysis_basis && (
-          <p>Analysis basis: {creative.dna.analysis_basis}</p>
-        )}
+      <p className="text-sm text-content-muted line-clamp-2">{creative.primary_text || creative.headline}</p>
+      <p className="text-xs text-content-subtle">
+        {perf?.insufficient_data
+          ? "Performance: insufficient data"
+          : `CTR ${fmtPct(perf?.ctr)} · ROAS ${fmtNum(perf?.roas)} · Spend ${fmtNum(perf?.spend)}`}
+      </p>
+      <div className="flex flex-wrap gap-2 mt-auto">
+        <DownloadCreativeButton ad={ad} />
+        <Button size="sm" variant="outline" onClick={onOpen}>
+          Open
+        </Button>
       </div>
-      <Button size="sm" variant="outline" onClick={onOpen}>
-        View ad
-      </Button>
     </Card>
   );
 }
@@ -301,53 +321,53 @@ function GeneratedCard({
   onDelete: () => void;
   onPublish: () => void;
 }) {
-  const sources = useMemo(() => creative.source_creative_ids ?? [], [creative.source_creative_ids]);
+  const ad = previewFromGenerated(creative);
   const canApprove = creative.status === "READY";
   const canRegen = creative.status === "READY" || creative.status === "FAILED" || creative.status === "REJECTED";
+  const fileLabel = creative.video_url
+    ? "MP4 ready"
+    : creative.preview_url
+      ? "Image ready"
+      : "No file";
   return (
     <Card padding="sm" className="flex flex-col gap-3">
       <button type="button" onClick={onOpen} className="text-left">
-        <AdPlacementMockup ad={previewFromGenerated(creative)} compact />
+        <CreativeFrame ad={ad} />
       </button>
       <div className="flex items-start justify-between gap-2">
-        <CardTitle className="text-sm">{creative.headline || creative.hook || "Untitled"}</CardTitle>
+        <CardTitle className="text-base leading-snug">
+          {creative.headline || creative.hook || "Untitled"}
+        </CardTitle>
         <Badge variant={statusVariant(creative.status)}>{creative.status}</Badge>
       </div>
-      <p className="text-sm text-content-muted line-clamp-3">{creative.hook}</p>
-      <p className="text-xs text-content-subtle">
-        {creative.video_url
-          ? "Rendered MP4 ready for Meta"
-          : creative.has_rendered_media || creative.preview_url
-            ? "Rendered image ready for Meta"
-            : "No rendered file"}
-        {creative.meta_ad_id ? ` · Meta ad ${creative.meta_ad_id}` : ""}
-      </p>
-      <p className="text-xs text-content-subtle">
-        AI Creative Evaluation: {creative.ai_score ?? "—"}/100 — not a guaranteed ROAS
-      </p>
-      {creative.rationale && (
-        <p className="text-xs text-content-muted">Why: {creative.rationale}</p>
+      {creative.hook && creative.hook !== creative.headline && (
+        <p className="text-sm text-content-muted line-clamp-2">{creative.hook}</p>
       )}
-      {sources.length > 0 && (
-        <p className="text-xs text-content-subtle">Inspired by Meta creatives: {sources.join(", ")}</p>
+      <p className="text-xs text-content-subtle">
+        {fileLabel}
+        {creative.ai_score != null ? ` · AI score ${creative.ai_score}/100` : ""}
+      </p>
+      {creative.failure_reason && (
+        <p className="text-sm text-red-600">{creative.failure_reason}</p>
       )}
       <div className="flex flex-wrap gap-2 mt-auto">
+        <DownloadCreativeButton ad={ad} />
         <Button size="sm" variant="outline" onClick={onOpen}>
-          View ad
+          Open
         </Button>
         {canApprove && (
           <>
             <Button size="sm" onClick={onApprove} isLoading={busy}>
               Approve
             </Button>
-            <Button size="sm" variant="outline" onClick={onReject} disabled={busy}>
+            <Button size="sm" variant="ghost" onClick={onReject} disabled={busy}>
               Reject
             </Button>
           </>
         )}
         {creative.status === "APPROVED" && (creative.has_rendered_media || creative.preview_url || creative.video_url) && (
           <Button size="sm" onClick={onPublish} disabled={busy}>
-            Publish to Meta
+            Publish
           </Button>
         )}
         {canRegen && (
@@ -356,12 +376,9 @@ function GeneratedCard({
           </Button>
         )}
         <Button size="sm" variant="danger" onClick={onDelete} disabled={busy}>
-          Delete permanently
+          Delete
         </Button>
       </div>
-      {creative.failure_reason && (
-        <p className="text-xs text-red-600">{creative.failure_reason}</p>
-      )}
     </Card>
   );
 }

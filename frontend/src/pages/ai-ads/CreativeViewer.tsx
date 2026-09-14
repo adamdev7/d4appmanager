@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pause, Play, SkipBack, SkipForward, X } from "lucide-react";
+import { Download, Pause, Play, SkipBack, SkipForward, X } from "lucide-react";
 import type { AIAdsGeneratedCreative, AIAdsMetaCreative } from "@/lib/aiAdsTypes";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
@@ -55,6 +55,128 @@ export function previewFromMeta(c: AIAdsMetaCreative): AdPreviewModel {
   };
 }
 
+export function aspectClass(ad: AdPreviewModel) {
+  if (ad.type === "VIDEO" || ad.aspectRatio === "9:16") return "aspect-[9/16]";
+  if (ad.aspectRatio === "1:1") return "aspect-square";
+  if (ad.aspectRatio === "16:9") return "aspect-video";
+  return "aspect-[4/5]";
+}
+
+export function mediaUrl(ad: AdPreviewModel) {
+  return ad.videoUrl || ad.previewUrl;
+}
+
+export function mediaFilename(ad: AdPreviewModel) {
+  const stem =
+    (ad.headline || "creative")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 60) || "creative";
+  if (ad.videoUrl) return `${stem}.mp4`;
+  const url = ad.previewUrl || "";
+  if (/\.png(\?|$)/i.test(url)) return `${stem}.png`;
+  if (/\.webp(\?|$)/i.test(url)) return `${stem}.webp`;
+  return `${stem}.jpg`;
+}
+
+export async function downloadCreative(ad: AdPreviewModel) {
+  const url = mediaUrl(ad);
+  if (!url) return;
+  const name = mediaFilename(ad);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("download failed");
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(href);
+  } catch {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+}
+
+export function DownloadCreativeButton({
+  ad,
+  size = "sm",
+}: {
+  ad: AdPreviewModel;
+  size?: "sm" | "md";
+}) {
+  const [busy, setBusy] = useState(false);
+  if (!mediaUrl(ad)) return null;
+  return (
+    <Button
+      size={size}
+      variant="outline"
+      disabled={busy}
+      isLoading={busy}
+      onClick={(e) => {
+        e.stopPropagation();
+        setBusy(true);
+        void downloadCreative(ad).finally(() => setBusy(false));
+      }}
+    >
+      <Download className="h-3.5 w-3.5" />
+      Download
+    </Button>
+  );
+}
+
+export function CreativeFrame({
+  ad,
+  className,
+}: {
+  ad: AdPreviewModel;
+  className?: string;
+}) {
+  const [broken, setBroken] = useState(false);
+  const videoUrl = ad.videoUrl;
+  const imageUrl = !broken ? ad.previewUrl : null;
+
+  return (
+    <div
+      className={cn(
+        "relative w-full overflow-hidden rounded-xl border border-border bg-zinc-950",
+        aspectClass(ad),
+        className
+      )}
+    >
+      {videoUrl ? (
+        <video
+          src={videoUrl}
+          poster={ad.previewUrl || undefined}
+          className="absolute inset-0 h-full w-full object-contain"
+          controls
+          playsInline
+          preload="metadata"
+        />
+      ) : imageUrl ? (
+        <img
+          src={imageUrl}
+          alt={ad.headline}
+          className="absolute inset-0 h-full w-full object-contain"
+          onError={() => setBroken(true)}
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center p-4">
+          <p className="text-sm text-white/70 text-center">
+            {ad.status === "FAILED" ? "This file did not render." : "No file yet."}
+          </p>
+        </div>
+      )}
+      <span className="absolute top-2 left-2 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+        {ad.type === "VIDEO" ? "Video" : "Image"}
+      </span>
+    </div>
+  );
+}
+
 export function AdPlacementMockup({
   ad,
   compact = false,
@@ -102,14 +224,15 @@ function CreativeStage({ ad, compact }: { ad: AdPreviewModel; compact: boolean }
   const [broken, setBroken] = useState(false);
   const videoUrl = ad.videoUrl;
   const showImage = Boolean(ad.previewUrl) && !broken && !videoUrl;
+  const box = compact ? "h-44" : "h-80 sm:h-[28rem]";
 
   if (videoUrl) {
     return (
-      <div className={cn("relative bg-black", compact ? "h-[7.5rem]" : "h-64 sm:h-80")}>
+      <div className={cn("relative bg-black", box)}>
         <video
           src={videoUrl}
           poster={ad.previewUrl || undefined}
-          className="h-full w-full object-cover"
+          className="h-full w-full object-contain"
           controls={!compact}
           muted
           playsInline
@@ -122,11 +245,11 @@ function CreativeStage({ ad, compact }: { ad: AdPreviewModel; compact: boolean }
 
   if (showImage) {
     return (
-      <div className={cn("relative bg-black", compact ? "h-[7.5rem]" : "h-64 sm:h-80")}>
+      <div className={cn("relative bg-black", box)}>
         <img
           src={ad.previewUrl!}
           alt=""
-          className="h-full w-full object-cover"
+          className="h-full w-full object-contain"
           onError={() => setBroken(true)}
         />
       </div>
@@ -177,18 +300,18 @@ export function CreativeViewer({
         role="dialog"
         aria-modal="true"
         aria-labelledby="creative-viewer-title"
-        className="relative w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl border border-border bg-surface p-5 shadow-elevated"
+        className="relative w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-xl border border-border bg-surface p-5 shadow-elevated"
       >
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
             <h2 id="creative-viewer-title" className="text-lg font-semibold text-content">
-              Ad preview
+              {ad.headline}
             </h2>
             <p className="text-sm text-content-muted mt-0.5">
               {ad.videoUrl
-                ? "Rendered MP4 — this is the file Meta will receive when you publish."
+                ? "Full MP4 — download this file or publish it to Meta."
                 : ad.previewUrl
-                  ? "Rendered image — this is the file Meta will receive when you publish."
+                  ? "Full rendered image — download this file or publish it to Meta."
                   : "No rendered file yet. Generate again before publishing."}
             </p>
           </div>
@@ -202,7 +325,18 @@ export function CreativeViewer({
           </button>
         </div>
 
-        <AdPlacementMockup ad={ad} />
+        <div
+          className={cn(
+            "mx-auto w-full",
+            ad.type === "VIDEO" || ad.aspectRatio === "9:16"
+              ? "max-w-sm"
+              : ad.aspectRatio === "16:9"
+                ? "max-w-3xl"
+                : "max-w-md"
+          )}
+        >
+          <CreativeFrame ad={ad} />
+        </div>
 
         {ad.type === "VIDEO" && !ad.videoUrl && ad.storyboard?.scenes?.length ? (
           <StoryboardPlayer storyboard={ad.storyboard} previewUrl={ad.previewUrl} />
@@ -223,7 +357,8 @@ export function CreativeViewer({
           )}
         </dl>
 
-        <div className="mt-5 flex justify-end">
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <DownloadCreativeButton ad={ad} size="md" />
           <Button variant="secondary" onClick={onClose}>
             Close
           </Button>

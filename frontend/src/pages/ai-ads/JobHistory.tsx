@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { cn } from "@/lib/cn";
 import {
-  AdPlacementMockup,
+  CreativeFrame,
   CreativeViewer,
+  DownloadCreativeButton,
   previewFromGenerated,
 } from "@/pages/ai-ads/CreativeViewer";
 
@@ -212,19 +213,29 @@ export function FinishedJobDetail({
           <p className="text-xs uppercase tracking-wide text-content-subtle mb-2">
             Creatives · {ready.length}/{creatives.length}
           </p>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {creatives.map((c) => (
-              <button key={c.id} type="button" onClick={() => setViewer(c)} className="text-left">
-                <AdPlacementMockup ad={previewFromGenerated(c)} compact />
-                <p className="mt-2 text-sm font-medium text-content line-clamp-1">
-                  {c.headline || c.hook || (c.type === "VIDEO" ? "Video" : "Image ad")}
-                </p>
-                <p className="text-xs text-content-subtle">
-                  {c.status}
-                  {c.video_url ? " · MP4 ready" : c.type === "VIDEO" ? " · video" : ""}
-                </p>
-              </button>
-            ))}
+          <div className="grid gap-6 sm:grid-cols-2">
+            {creatives.map((c) => {
+              const ad = previewFromGenerated(c);
+              return (
+                <div key={c.id} className="min-w-0">
+                  <button type="button" onClick={() => setViewer(c)} className="w-full text-left">
+                    <CreativeFrame ad={ad} />
+                  </button>
+                  <div className="mt-2 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-content line-clamp-2">
+                        {c.headline || c.hook || (c.type === "VIDEO" ? "Video" : "Image ad")}
+                      </p>
+                      <p className="text-xs text-content-subtle mt-0.5">
+                        {c.status}
+                        {c.video_url ? " · MP4" : c.preview_url ? " · image" : ""}
+                      </p>
+                    </div>
+                    <DownloadCreativeButton ad={ad} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       ) : (

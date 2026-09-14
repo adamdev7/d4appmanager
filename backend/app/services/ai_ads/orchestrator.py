@@ -410,35 +410,49 @@ class AdsAIOrchestrator:
                             variation_index=video_slot,
                             variation_count=max(video_total, 1),
                         )
-                        frame = await image_provider.generate(
-                            ImageGenerationRequest(
-                                prompt=build_image_prompt(
-                                    product=product,
-                                    visual_direction=concept.visual_direction,
-                                    image_prompt=getattr(brief_model, "image_prompt", "") or spec.hook,
-                                    brand_style=brand_style,
-                                    winning_notes=winning_notes,
+                        identity_still: tuple[bytes, str] | None = None
+                        try:
+                            frame = await image_provider.generate(
+                                ImageGenerationRequest(
+                                    prompt=build_image_prompt(
+                                        product=product,
+                                        visual_direction=concept.visual_direction,
+                                        image_prompt=getattr(brief_model, "image_prompt", "") or spec.hook,
+                                        brand_style=brand_style,
+                                        winning_notes=winning_notes,
+                                        aspect_ratio="9:16",
+                                        placement="stories",
+                                        variation_index=video_slot,
+                                        variation_count=max(video_total, 1),
+                                    ),
                                     aspect_ratio="9:16",
                                     placement="stories",
-                                    variation_index=video_slot,
-                                    variation_count=max(video_total, 1),
                                 ),
-                                aspect_ratio="9:16",
-                                placement="stories",
-                            ),
-                            identity_images=product_refs,
-                        )
-                        asset.preview_url = frame.preview_url
-                        frame_file = self.assets.read_bytes(frame.local_path)
+                                identity_images=product_refs,
+                            )
+                            asset.preview_url = frame.preview_url
+                            identity_still = self.assets.read_bytes(frame.local_path)
+                        except ImageGenerationError as exc:
+                            logger.warning(
+                                "ai_ads video first frame failed store_id=%s err=%s",
+                                self.store.id,
+                                str(exc)[:220],
+                            )
                         payload = spec.model_dump()
                         payload["prompt"] = prompt
-                        if frame_file:
+                        if identity_still and identity_still[0]:
                             try:
-                                payload["input_reference"] = fit_image_bytes(frame_file[0], 720, 1280)
+                                payload["input_reference"] = fit_image_bytes(identity_still[0], 720, 1280)
                             except Exception:
-                                payload["input_reference"] = frame_file
+                                payload["input_reference"] = identity_still
                         else:
-                            payload["input_reference"] = product_refs[0]
+                            payload["input_reference"] = fit_image_bytes(product_refs[0][0], 720, 1280)
+                            poster = self.assets.save_bytes(
+                                payload["input_reference"][0],
+                                mime_type=payload["input_reference"][1],
+                                prefix="poster",
+                            )
+                            asset.preview_url = poster["public_url"]
                         rendered = await video_provider.generate_video(
                             payload,
                             cancel_check=lambda: self._raise_if_cancelled(job),
