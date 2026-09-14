@@ -58,6 +58,28 @@ class CreativeAssetStore:
             "ext": ext,
         }
 
+    def resolve_path(self, relative_or_abs: str | None) -> Path | None:
+        if not relative_or_abs:
+            return None
+        path = Path(relative_or_abs)
+        if path.is_file():
+            return path
+        uploads_root = _BACKEND_ROOT / "data" / "uploads"
+        cleaned = relative_or_abs.lstrip("/").removeprefix("uploads/")
+        for candidate in (uploads_root / cleaned, self.dir / Path(relative_or_abs).name):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def read_bytes(self, relative_or_abs: str | None) -> tuple[bytes, str] | None:
+        path = self.resolve_path(relative_or_abs)
+        if not path:
+            return None
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if path.suffix.lower() == ".mp4":
+            mime = "video/mp4"
+        return path.read_bytes(), mime
+
     def delete_local(self, relative_or_abs: str | None) -> bool:
         """Permanently remove a generated file if it belongs to this store's upload folder."""
         if not relative_or_abs:
@@ -114,6 +136,8 @@ def _ext_for_mime(mime: str | None, data: bytes) -> str:
         return "jpg"
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
+    if data[4:8] == b"ftyp":
+        return "mp4"
     return "bin"
 
 

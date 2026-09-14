@@ -96,6 +96,9 @@ export type AIAdsGeneratedCreative = {
   primary_text?: string | null;
   cta?: string | null;
   preview_url?: string | null;
+  video_url?: string | null;
+  has_rendered_media?: boolean;
+  meta_ad_id?: string | null;
   ai_score?: number | null;
   score_label?: string;
   score_breakdown?: Record<string, number>;
@@ -204,6 +207,14 @@ export type AIAdsSettings = {
   analysis_model: string;
   creative_model: string;
   image_model: string;
+  video_model?: string;
+};
+
+export type AIAdsAdset = {
+  id: string;
+  name: string;
+  status?: string | null;
+  campaign_id?: string | null;
 };
 
 export type AIAdsAvatar = {

@@ -219,7 +219,7 @@ export function GenerationStudio({
                 </p>
                 <p className="text-xs text-content-subtle">
                   {c.status}
-                  {c.type === "VIDEO" ? " · video still" : ""}
+                  {c.video_url ? " · MP4 ready" : c.type === "VIDEO" ? " · video" : ""}
                   {!c.preview_url && c.status === "GENERATING" ? " · rendering…" : ""}
                 </p>
               </button>

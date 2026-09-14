@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations"
 OPENAI_IMAGE_EDITS_URL = "https://api.openai.com/v1/images/edits"
+OPENAI_VIDEOS_URL = "https://api.openai.com/v1/videos"
 
 # Newer OpenAI models reject custom temperature (only the default is allowed).
 _NO_CUSTOM_TEMPERATURE_PREFIXES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
@@ -405,6 +406,74 @@ class AdsOpenAIClient:
                 stop_autopilot=False,
             )
         return decoded
+
+    async def create_video(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        size: str = "720x1280",
+        seconds: str = "8",
+        operation: str = "video_create",
+    ) -> dict[str, Any]:
+        request_id = str(uuid.uuid4())
+        started = time.perf_counter()
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        form = {
+            "model": model,
+            "prompt": prompt[:4000],
+            "size": size,
+            "seconds": str(seconds),
+        }
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form)
+        latency = int((time.perf_counter() - started) * 1000)
+        if resp.status_code >= 400:
+            self._log(
+                request_id=request_id,
+                operation=operation,
+                model=model,
+                status="error",
+                latency_ms=latency,
+                error=resp.text[:240],
+            )
+            raise openai_error_from_response(resp)
+        data = resp.json() if resp.content else {}
+        self._log(
+            request_id=request_id,
+            operation=operation,
+            model=model,
+            status=str((data or {}).get("status") or "ok"),
+            latency_ms=latency,
+        )
+        if not isinstance(data, dict) or not data.get("id"):
+            raise OpenAIServiceError(
+                user_message="Video generation did not return a job id.",
+                stop_autopilot=False,
+            )
+        return data
+
+    async def get_video(self, video_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(f"{OPENAI_VIDEOS_URL}/{video_id}", headers=self._headers())
+        if resp.status_code >= 400:
+            raise openai_error_from_response(resp)
+        data = resp.json() if resp.content else {}
+        return data if isinstance(data, dict) else {}
+
+    async def download_video_bytes(self, video_id: str) -> bytes:
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.get(f"{OPENAI_VIDEOS_URL}/{video_id}/content", headers=headers)
+        if resp.status_code >= 400:
+            raise openai_error_from_response(resp)
+        raw = resp.content or b""
+        if len(raw) < 32:
+            raise OpenAIServiceError(
+                user_message="Video download returned an empty file.",
+                stop_autopilot=False,
+            )
+        return raw
 
 
 def _is_gpt_image(model: str) -> bool:

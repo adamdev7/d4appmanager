@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStore } from "@/context/StoreContext";
-import { api, type AIAdsGeneratedCreative, type AIAdsLibrary, type AIAdsMetaCreative } from "@/lib/api";
+import { api, type AIAdsAdset, type AIAdsGeneratedCreative, type AIAdsLibrary, type AIAdsMetaCreative } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
@@ -26,6 +26,11 @@ export function CreativesPage() {
   const [status, setStatus] = useState("");
   const [busyId, setBusyId] = useState("");
   const [viewer, setViewer] = useState<AdPreviewModel | null>(null);
+  const [publishFor, setPublishFor] = useState<AIAdsGeneratedCreative | null>(null);
+  const [adsets, setAdsets] = useState<AIAdsAdset[]>([]);
+  const [adsetId, setAdsetId] = useState("");
+  const [activate, setActivate] = useState(false);
+  const [publishing, setPublishing] = useState(false);
 
   const load = useCallback(async () => {
     if (!storeId) return;
@@ -52,7 +57,7 @@ export function CreativesPage() {
     if (!storeId) return;
     if (kind === "delete") {
       const ok = window.confirm(
-        "Delete this creative permanently? The image or video still and its database row will be removed from your account."
+        "Delete this creative permanently? The rendered image or MP4 and its database row will be removed."
       );
       if (!ok) return;
     }
@@ -70,6 +75,40 @@ export function CreativesPage() {
       setError(e instanceof Error ? e.message : "Action failed");
     } finally {
       setBusyId("");
+    }
+  }
+
+  async function openPublish(creative: AIAdsGeneratedCreative) {
+    if (!storeId) return;
+    setPublishFor(creative);
+    setActivate(false);
+    setError("");
+    try {
+      const rows = await api.aiAds.listAdsets(storeId);
+      setAdsets(rows);
+      setAdsetId(rows[0]?.id || "");
+    } catch (e) {
+      setAdsets([]);
+      setAdsetId("");
+      setError(e instanceof Error ? e.message : "Could not load ad sets");
+    }
+  }
+
+  async function publish() {
+    if (!storeId || !publishFor || !adsetId) return;
+    if (activate && !window.confirm("This will create an ACTIVE Meta ad and start spending on that ad set. Continue?")) {
+      return;
+    }
+    setPublishing(true);
+    setError("");
+    try {
+      await api.aiAds.publishCreative(storeId, publishFor.id, { adset_id: adsetId, activate });
+      setPublishFor(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Publish failed");
+    } finally {
+      setPublishing(false);
     }
   }
 
@@ -130,6 +169,7 @@ export function CreativesPage() {
                   onReject={() => void act(c.id, "reject")}
                   onRegen={() => void act(c.id, "regenerate")}
                   onDelete={() => void act(c.id, "delete")}
+                  onPublish={() => void openPublish(c)}
                 />
               ))}
             </div>
@@ -137,6 +177,56 @@ export function CreativesPage() {
         </section>
       )}
       {viewer && <CreativeViewer ad={viewer} onClose={() => setViewer(null)} />}
+      {publishFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/50"
+            aria-label="Close publish"
+            onClick={() => setPublishFor(null)}
+          />
+          <Card className="relative w-full max-w-md z-10">
+            <CardTitle>Publish to Meta</CardTitle>
+            <CardDescription className="mt-1 mb-4">
+              Uploads the rendered {publishFor.video_url ? "MP4" : "image"} into your ad account, then
+              creates the ad in the selected ad set.
+            </CardDescription>
+            <label className="block text-sm font-medium text-content mb-3">
+              Ad set
+              <select
+                value={adsetId}
+                onChange={(e) => setAdsetId(e.target.value)}
+                className="mt-1.5 flex h-10 w-full rounded-lg border border-border bg-surface px-3 text-sm"
+              >
+                {adsets.length === 0 && <option value="">No ad sets found</option>}
+                {adsets.map((set) => (
+                  <option key={set.id} value={set.id}>
+                    {set.name}
+                    {set.status ? ` · ${set.status}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-start gap-2 text-sm text-content mb-4">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={activate}
+                onChange={(e) => setActivate(e.target.checked)}
+              />
+              <span>Turn the ad on now and start spending. Leave unchecked to create it paused.</span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button onClick={() => void publish()} isLoading={publishing} disabled={!adsetId}>
+                {activate ? "Publish and spend" : "Publish paused"}
+              </Button>
+              <Button variant="outline" onClick={() => setPublishFor(null)} disabled={publishing}>
+                Cancel
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
@@ -200,6 +290,7 @@ function GeneratedCard({
   onReject,
   onRegen,
   onDelete,
+  onPublish,
 }: {
   creative: AIAdsGeneratedCreative;
   busy: boolean;
@@ -208,6 +299,7 @@ function GeneratedCard({
   onReject: () => void;
   onRegen: () => void;
   onDelete: () => void;
+  onPublish: () => void;
 }) {
   const sources = useMemo(() => creative.source_creative_ids ?? [], [creative.source_creative_ids]);
   const canApprove = creative.status === "READY";
@@ -222,6 +314,14 @@ function GeneratedCard({
         <Badge variant={statusVariant(creative.status)}>{creative.status}</Badge>
       </div>
       <p className="text-sm text-content-muted line-clamp-3">{creative.hook}</p>
+      <p className="text-xs text-content-subtle">
+        {creative.video_url
+          ? "Rendered MP4 ready for Meta"
+          : creative.has_rendered_media || creative.preview_url
+            ? "Rendered image ready for Meta"
+            : "No rendered file"}
+        {creative.meta_ad_id ? ` · Meta ad ${creative.meta_ad_id}` : ""}
+      </p>
       <p className="text-xs text-content-subtle">
         AI Creative Evaluation: {creative.ai_score ?? "—"}/100 — not a guaranteed ROAS
       </p>
@@ -244,6 +344,11 @@ function GeneratedCard({
               Reject
             </Button>
           </>
+        )}
+        {creative.status === "APPROVED" && (creative.has_rendered_media || creative.preview_url || creative.video_url) && (
+          <Button size="sm" onClick={onPublish} disabled={busy}>
+            Publish to Meta
+          </Button>
         )}
         {canRegen && (
           <Button size="sm" variant="ghost" onClick={onRegen} disabled={busy}>

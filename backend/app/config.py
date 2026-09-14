@@ -113,10 +113,12 @@ class Settings(BaseSettings):
 
     # AI Ads engine — models are env-configurable; never hard-code in call sites
     openai_image_model: str = "gpt-image-2"
+    openai_video_model: str = "sora-2"
     ai_strategy_model: str = "gpt-6-astra"
     ai_analysis_model: str = "gpt-6-astra"
     ai_creative_model: str = "gpt-6-astra"
     ai_image_model: str = ""
+    ai_video_model: str = ""
     ai_ad_generation_enabled: bool = False
     ai_ad_generation_day: str = "monday"
     ai_ad_image_count: int = 3
@@ -191,6 +193,10 @@ class Settings(BaseSettings):
     @property
     def resolved_ai_image_model(self) -> str:
         return (self.ai_image_model or self.openai_image_model or "gpt-image-2").strip()
+
+    @property
+    def resolved_ai_video_model(self) -> str:
+        return (self.ai_video_model or self.openai_video_model or "sora-2").strip()
 
 
 settings = Settings()

@@ -727,3 +727,77 @@ def test_generation_cancelled_is_not_retryable():
     err = GenerationCancelled()
     assert err.retryable is False
     assert err.code == "CANCELLED"
+
+
+def test_video_size_and_seconds_for_meta_reels():
+    from app.services.ai_ads.providers.openai_video import clamp_video_seconds, resolve_video_size
+
+    assert resolve_video_size("9:16")[0] == "720x1280"
+    assert resolve_video_size("16:9")[0] == "1280x720"
+    assert clamp_video_seconds(15) == "12"
+    assert clamp_video_seconds(8) == "8"
+
+
+def test_build_video_prompt_is_product_faithful():
+    from app.services.ai_ads.complete_creative import build_video_prompt, video_spec_from_concept
+    from app.services.ai_ads.schemas import CreativeConceptModel, ProductContext
+
+    product = ProductContext(product_id="1", title="Courage Bracelet")
+    spec = video_spec_from_concept(
+        CreativeConceptModel(concept_name="UGC", hook="Feel the courage", headline="Courage Bracelet"),
+        product,
+    )
+    prompt = build_video_prompt(product=product, spec=spec)
+    assert "Courage Bracelet" in prompt
+    assert "Meta" in prompt
+
+
+def test_openai_video_provider_saves_mp4():
+    import asyncio
+
+    from app.services.ai_ads.providers.openai_video import OpenAIVideoProvider
+
+    client = SimpleNamespace(
+        create_video=AsyncMock(return_value={"id": "video_1", "status": "queued"}),
+        get_video=AsyncMock(return_value={"id": "video_1", "status": "completed"}),
+        download_video_bytes=AsyncMock(return_value=b"\x00\x00\x00\x18ftypisom" + b"x" * 40),
+    )
+    store = MagicMock()
+    store.save_bytes.return_value = {
+        "relative_path": "ai-ads/s/vid.mp4",
+        "public_url": "/uploads/ai-ads/s/vid.mp4",
+    }
+    provider = OpenAIVideoProvider(client, store, model="sora-2")
+    result = asyncio.run(provider.generate_video({"prompt": "product hero", "format": "9:16", "duration": 8}))
+    assert result["status"] == "completed"
+    assert result["local_path"].endswith(".mp4")
+    client.create_video.assert_awaited()
+    store.save_bytes.assert_called_once()
+
+
+def test_publisher_story_uses_uploaded_image_hash():
+    from app.services.ai_ads.publisher import MetaCreativePublisher
+
+    publisher = MetaCreativePublisher(MagicMock(), "store-1")
+    asset = SimpleNamespace(headline="Glow", hook="Glow now", primary_text="Shop the serum", cta="SHOP_NOW")
+    story = publisher._story_spec(
+        asset,
+        page="page1",
+        link="https://shop.example",
+        media={"image_hash": "abc123"},
+    )
+    assert story["link_data"]["image_hash"] == "abc123"
+    assert story["link_data"]["link"] == "https://shop.example"
+
+
+def test_asset_card_exposes_rendered_video_url():
+    from app.db.models import CreativeAsset
+    from app.services.ai_ads.service import _asset_card
+
+    asset = CreativeAsset(store_id="s", user_id="u", type="VIDEO", status="READY")
+    asset.local_path = "ai-ads/s/vid.mp4"
+    asset.preview_url = "ai-ads/s/poster.png"
+    card = _asset_card(asset)
+    assert card["video_url"] == "/uploads/ai-ads/s/vid.mp4"
+    assert card["preview_url"] == "/uploads/ai-ads/s/poster.png"
+    assert card["has_rendered_media"] is True

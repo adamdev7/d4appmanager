@@ -29,9 +29,8 @@ export function AIAdsLayout() {
         <p className="text-xs font-medium uppercase tracking-wider text-content-subtle">Apps</p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-content">AI Ads</h1>
         <p className="mt-1 text-sm text-content-muted max-w-2xl">
-          Learn from your real Meta campaigns, then generate complete image ads and video
-          storyboards that you approve before anything is published. Generation stays small to
-          limit OpenAI usage.
+          Learn from your real Meta campaigns, then render complete image ads and short videos
+          you approve before anything is published or starts spending.
         </p>
       </div>
       <nav className="flex flex-wrap gap-1 border-b border-border pb-px">

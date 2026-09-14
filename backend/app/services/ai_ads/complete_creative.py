@@ -96,10 +96,46 @@ def build_image_prompt(
     if brand_style:
         extras.append(f"Brand look: {brand_style[:160]}")
     extras.append(
-        f"Aspect {aspect_ratio} for {placement}. Single product, photorealistic, no fake UI, "
-        "no fake reviews, no unreadable text overlays, no extra products."
+        f"Finished Meta {placement} advertisement still, aspect {aspect_ratio}. "
+        "Photorealistic product hero, generous safe margins for headline overlay, "
+        "single product, no fake UI, no fake reviews, no watermarks, no extra logos, "
+        "no unreadable text baked into the image."
     )
     return f"{prompt}\n\n" + " ".join(extras)
+
+
+def build_video_prompt(
+    *,
+    product: ProductContext,
+    spec: VideoSpec,
+    brand_style: str = "",
+    winning_notes: str = "",
+) -> str:
+    scenes = []
+    for scene in spec.scenes[:6]:
+        bit = (scene.visual or "").strip()
+        if bit:
+            scenes.append(bit[:180])
+    shot_list = " Then ".join(scenes) if scenes else (spec.hook or product.title)
+    parts = [
+        f"Vertical Meta Reels / Stories advertisement, photorealistic, product is {product.title}.",
+        f"Hook: {spec.hook or product.title}.",
+        f"Shot list: {shot_list}.",
+        "Keep the real product recognizable. Smooth camera, natural light, no fake UI, no watermarks.",
+        f"End on a clear product shot and the call to action {(spec.cta or 'SHOP NOW').replace('_', ' ')}.",
+    ]
+    desc = (product.description or "").strip()
+    if desc:
+        parts.append(f"Known product facts only: {desc[:220]}")
+    if winning_notes:
+        parts.append(f"Match stronger Meta ad styles: {winning_notes[:240]}")
+    if brand_style:
+        parts.append(f"Brand look: {brand_style[:140]}")
+    if spec.voice_direction:
+        parts.append(f"Voice: {spec.voice_direction[:120]}")
+    if spec.music_direction:
+        parts.append(f"Music: {spec.music_direction[:120]}")
+    return " ".join(parts)
 
 
 def video_spec_from_concept(

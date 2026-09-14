@@ -21,6 +21,7 @@ import type {
   MetaCapiStats,
 } from "@/lib/metaCapiTypes";
 import type {
+  AIAdsAdset,
   AIAdsAvatar,
   AIAdsGeneratedCreative,
   AIAdsJob,
@@ -40,6 +41,7 @@ export type { ManualInvestment, ManualInvestmentsResponse };
 export type { AdsAiReport, AdsDashboard, AdsPeriod, AdsSettings };
 export type { MetaCapiEvent, MetaCapiEventsResponse, MetaCapiSettings, MetaCapiStats };
 export type {
+  AIAdsAdset,
   AIAdsAvatar,
   AIAdsGeneratedCreative,
   AIAdsJob,
@@ -1088,6 +1090,17 @@ export const api = {
       request<{ ok: boolean; deleted_id: string }>(
         `/ai-ads/stores/${storeId}/creatives/${creativeId}`,
         { method: "DELETE" }
+      ),
+    listAdsets: (storeId: string) =>
+      request<AIAdsAdset[]>(`/ai-ads/stores/${storeId}/adsets`),
+    publishCreative: (
+      storeId: string,
+      creativeId: string,
+      data: { adset_id: string; page_id?: string; activate?: boolean }
+    ) =>
+      request<{ ok: boolean; activated?: boolean; meta: Record<string, unknown>; creative: AIAdsGeneratedCreative }>(
+        `/ai-ads/stores/${storeId}/creatives/${creativeId}/publish`,
+        { method: "POST", body: JSON.stringify(data) }
       ),
     getPerformance: (storeId: string) =>
       request<{ snapshots: AIAdsPerformance[]; count: number }>(

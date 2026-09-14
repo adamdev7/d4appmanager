@@ -216,6 +216,15 @@ async def delete_creative(
     return _service.delete_creative(db, user, store_id, creative_id)
 
 
+@router.get("/stores/{store_id}/adsets")
+async def list_adsets(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return await _service.list_adsets(db, user, store_id)
+
+
 @router.post("/stores/{store_id}/creatives/{creative_id}/publish")
 async def publish_creative(
     store_id: str,

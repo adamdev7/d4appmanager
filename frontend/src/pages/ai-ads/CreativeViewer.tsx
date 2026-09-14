@@ -12,10 +12,12 @@ export type AdPreviewModel = {
   hook: string;
   cta: string;
   previewUrl: string | null;
+  videoUrl: string | null;
   visualDirection: string;
   aspectRatio: string;
   storyboard: AIAdsGeneratedCreative["storyboard"];
   status?: string;
+  hasRenderedMedia?: boolean;
 };
 
 export function previewFromGenerated(c: AIAdsGeneratedCreative): AdPreviewModel {
@@ -27,10 +29,12 @@ export function previewFromGenerated(c: AIAdsGeneratedCreative): AdPreviewModel 
     hook: c.hook || "",
     cta: (c.cta || "SHOP NOW").replace(/_/g, " "),
     previewUrl: c.preview_url || null,
+    videoUrl: c.video_url || null,
     visualDirection: c.visual_direction || "",
     aspectRatio: c.aspect_ratio || c.storyboard?.format || "4:5",
     storyboard: c.storyboard,
     status: c.status,
+    hasRenderedMedia: Boolean(c.has_rendered_media || c.video_url || c.preview_url),
   };
 }
 
@@ -43,9 +47,11 @@ export function previewFromMeta(c: AIAdsMetaCreative): AdPreviewModel {
     hook: c.primary_text || "",
     cta: (c.cta || "SHOP NOW").replace(/_/g, " "),
     previewUrl: c.preview_url || null,
+    videoUrl: null,
     visualDirection: "",
     aspectRatio: "4:5",
     storyboard: null,
+    hasRenderedMedia: Boolean(c.preview_url),
   };
 }
 
@@ -94,7 +100,25 @@ export function AdPlacementMockup({
 
 function CreativeStage({ ad, compact }: { ad: AdPreviewModel; compact: boolean }) {
   const [broken, setBroken] = useState(false);
-  const showImage = Boolean(ad.previewUrl) && !broken;
+  const videoUrl = ad.videoUrl;
+  const showImage = Boolean(ad.previewUrl) && !broken && !videoUrl;
+
+  if (videoUrl) {
+    return (
+      <div className={cn("relative bg-black", compact ? "h-[7.5rem]" : "h-64 sm:h-80")}>
+        <video
+          src={videoUrl}
+          poster={ad.previewUrl || undefined}
+          className="h-full w-full object-cover"
+          controls={!compact}
+          muted
+          playsInline
+          loop={compact}
+          autoPlay={compact}
+        />
+      </div>
+    );
+  }
 
   if (showImage) {
     return (
@@ -105,21 +129,14 @@ function CreativeStage({ ad, compact }: { ad: AdPreviewModel; compact: boolean }
           className="h-full w-full object-cover"
           onError={() => setBroken(true)}
         />
-        {ad.type === "VIDEO" && (
-          <span className="absolute inset-0 flex items-center justify-center">
-            <span className="rounded-full bg-black/55 p-3">
-              <Play className="h-6 w-6 fill-white text-white" />
-            </span>
-          </span>
-        )}
       </div>
     );
   }
 
   const scene = ad.storyboard?.scenes?.[0];
   const body = scene?.visual || ad.visualDirection || (ad.status === "FAILED"
-    ? "Image was not generated for this concept."
-    : "No media file yet.");
+    ? "Media was not rendered for this concept."
+    : "No rendered file yet.");
 
   return (
     <div
@@ -128,11 +145,6 @@ function CreativeStage({ ad, compact }: { ad: AdPreviewModel; compact: boolean }
         compact ? "h-[7.5rem]" : "h-64 sm:h-80"
       )}
     >
-      {ad.type === "VIDEO" && (
-        <p className="mb-1 text-[10px] uppercase tracking-wide text-white/45">
-          Storyboard still · not a rendered video
-        </p>
-      )}
       <p className={cn("text-white/85 line-clamp-5", compact ? "text-[11px]" : "text-sm")}>{body}</p>
     </div>
   );
@@ -173,11 +185,11 @@ export function CreativeViewer({
               Ad preview
             </h2>
             <p className="text-sm text-content-muted mt-0.5">
-              {ad.type === "VIDEO"
-                ? "Planned video shown as a storyboard. A playable MP4 is not generated yet."
+              {ad.videoUrl
+                ? "Rendered MP4 — this is the file Meta will receive when you publish."
                 : ad.previewUrl
-                  ? "How this image ad would appear in feed."
-                  : "Copy and visual direction — the image file was not generated."}
+                  ? "Rendered image — this is the file Meta will receive when you publish."
+                  : "No rendered file yet. Generate again before publishing."}
             </p>
           </div>
           <button
@@ -192,7 +204,7 @@ export function CreativeViewer({
 
         <AdPlacementMockup ad={ad} />
 
-        {ad.type === "VIDEO" && ad.storyboard?.scenes?.length ? (
+        {ad.type === "VIDEO" && !ad.videoUrl && ad.storyboard?.scenes?.length ? (
           <StoryboardPlayer storyboard={ad.storyboard} previewUrl={ad.previewUrl} />
         ) : null}
 

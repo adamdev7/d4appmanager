@@ -125,6 +125,7 @@ class AIAdsService:
             "analysis_model": settings.resolved_ai_analysis_model,
             "creative_model": settings.resolved_ai_creative_model,
             "image_model": settings.resolved_ai_image_model,
+            "video_model": settings.resolved_ai_video_model,
         }
 
     def update_settings(self, db: Session, user: User, store_id: str, body: dict) -> dict:
@@ -680,11 +681,16 @@ class AIAdsService:
         meta = orch.meta_client()
         if not meta:
             raise HTTPException(status_code=400, detail="Connect Meta Ads first")
-        publisher = MetaCreativePublisher(meta)
+        if not asset.local_path and not asset.preview_url:
+            raise HTTPException(
+                status_code=400,
+                detail="This creative has no rendered image or video. Generate again before publishing.",
+            )
+        publisher = MetaCreativePublisher(meta, store_id)
         adset_id = str(body.get("adset_id") or "")
         if not adset_id:
             raise HTTPException(status_code=400, detail="adset_id is required")
-        activate = bool(body.get("activate")) and bool(settings.ai_ad_auto_publish) and settings_row.auto_publish
+        activate = bool(body.get("activate"))
         destination = _store_destination_url(store)
         try:
             created = await publisher.publish_ad(
@@ -698,9 +704,34 @@ class AIAdsService:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)[:400]) from exc
         asset.meta_ad_id = str(created.get("id") or "") or None
+        asset.meta_published_creative_id = str(created.get("creative_id") or "") or None
         asset.status = "PUBLISHED" if activate else "PAUSED"
         db.commit()
-        return {"ok": True, "meta": created, "creative": _asset_card(asset)}
+        return {"ok": True, "activated": activate, "meta": created, "creative": _asset_card(asset)}
+
+    async def list_adsets(self, db: Session, user: User, store_id: str) -> list[dict]:
+        store = self.ensure_store(db, user, store_id)
+        orch = self._orch(db, user, store)
+        meta = orch.meta_client()
+        if not meta:
+            raise HTTPException(status_code=400, detail="Connect Meta Ads first")
+        try:
+            rows = await meta.list_adsets()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:400]) from exc
+        out = []
+        for row in rows:
+            if not row.get("id"):
+                continue
+            out.append(
+                {
+                    "id": row.get("id"),
+                    "name": row.get("name") or row.get("id"),
+                    "status": row.get("effective_status") or row.get("status"),
+                    "campaign_id": row.get("campaign_id"),
+                }
+            )
+        return out
 
 
 def _latest_perf_by_meta(db: Session, store_id: str) -> dict[str, CreativePerformanceSnapshot]:
@@ -748,6 +779,10 @@ def _normalize_preview(raw: str | None) -> str | None:
 
 def _preview(path: str | None, fallback: str | None = None) -> str | None:
     return _normalize_preview(path) or _normalize_preview(fallback)
+
+
+def _is_video_file(path: str | None) -> bool:
+    return bool(path) and str(path).lower().endswith((".mp4", ".mov", ".webm"))
 
 
 def _storyboard_preview(a: CreativeAsset) -> dict | None:
@@ -830,7 +865,9 @@ def _asset_card(a: CreativeAsset | None, detail: bool = False) -> dict:
         "headline": a.headline,
         "primary_text": a.primary_text,
         "cta": a.cta,
-        "preview_url": _preview(a.local_path, a.preview_url),
+        "preview_url": _preview(None if _is_video_file(a.local_path) else a.local_path, a.preview_url),
+        "video_url": _preview(a.local_path) if _is_video_file(a.local_path) else None,
+        "has_rendered_media": bool(a.local_path or a.preview_url),
         "ai_score": a.ai_score,
         "score_label": "AI Creative Evaluation",
         "score_breakdown": json.loads(a.score_breakdown_json or "{}"),
@@ -844,6 +881,7 @@ def _asset_card(a: CreativeAsset | None, detail: bool = False) -> dict:
         "height": a.height,
         "storyboard": _storyboard_preview(a),
         "failure_reason": a.failure_reason,
+        "meta_ad_id": a.meta_ad_id,
         "created_at": a.created_at.isoformat() if a.created_at else None,
     }
     if detail:

@@ -78,6 +78,7 @@ export function AIAdsSettingsPage() {
           <li>OpenAI: {settings.openai_configured ? settings.openai_key_masked || "Configured" : "Missing"}</li>
           <li>Strategy model: {settings.strategy_model}</li>
           <li>Image model: {settings.image_model}</li>
+          <li>Video model: {settings.video_model || "sora-2"}</li>
         </ul>
       </Card>
       <Card>
@@ -85,7 +86,7 @@ export function AIAdsSettingsPage() {
           <CardTitle>Weekly automation</CardTitle>
           <CardDescription>
             Syncs Meta, then queues a small generation job from winning ad styles. Ads are never
-            auto-published. Keep counts low — each image still spends image-model credits.
+            auto-published. Keep counts low — each image or video render spends model credits.
           </CardDescription>
         </CardHeader>
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}

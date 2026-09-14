@@ -22,7 +22,7 @@ export function GeneratePage() {
   const [avatars, setAvatars] = useState<AIAdsAvatar[]>([]);
   const [productId, setProductId] = useState("");
   const [imageCount, setImageCount] = useState(3);
-  const [videoCount, setVideoCount] = useState(2);
+  const [videoCount, setVideoCount] = useState(1);
   const [styles, setStyles] = useState<string[]>(["UGC", "PRODUCT_DEMO", "LIFESTYLE"]);
   const [audience, setAudience] = useState("");
   const [objective, setObjective] = useState("conversions");
@@ -119,9 +119,9 @@ export function GeneratePage() {
         <CardHeader>
           <CardTitle>Generate creatives</CardTitle>
           <CardDescription>
-            Learns from your stronger Meta ads (ROAS/CTR), then generates a small batch of complete
-            image ads and video storyboards. Counts stay low to limit OpenAI usage. You will see
-            every step on the live progress page.
+            Astra writes the copy and brief from your stronger Meta ads, then the image and video
+            models render real files you can approve and publish. Counts stay low because each
+            render spends OpenAI credits.
           </CardDescription>
         </CardHeader>
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}

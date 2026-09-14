@@ -25,13 +25,19 @@ from app.integrations.meta.client import MetaAdsClient
 from app.integrations.shopify.client import ShopifyClient
 from app.services.ai_ads.complete_creative import (
     build_image_prompt,
+    build_video_prompt,
     clamp_generation_counts,
     heuristic_score,
     product_reference_urls,
     video_spec_from_concept,
     winning_style_notes,
 )
-from app.services.ai_ads.exceptions import AIAdsError, GenerationCancelled, ImageGenerationError
+from app.services.ai_ads.exceptions import (
+    AIAdsError,
+    GenerationCancelled,
+    ImageGenerationError,
+    VideoProviderError,
+)
 from app.services.ai_ads.creative_intelligence import CreativeIntelligenceAnalyzer
 from app.services.ai_ads.creative_planner import CreativePlanner
 from app.services.ai_ads.job_progress import append_job_progress
@@ -39,7 +45,7 @@ from app.services.ai_ads.meta_importer import MetaCreativeImporter
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.product_context import normalize_product
 from app.services.ai_ads.providers.openai_image import OpenAIImageProvider
-from app.services.ai_ads.providers.video_provider import UnconfiguredVideoProvider
+from app.services.ai_ads.providers.openai_video import OpenAIVideoProvider
 from app.services.ai_ads.recommendation_engine import RecommendationEngine
 from app.services.ai_ads.schemas import CreativeIntelligenceReport, ImageGenerationRequest, ProductContext, VideoSpec
 from app.services.ai_ads.strategy import CreativeStrategyEngine
@@ -268,7 +274,7 @@ class AdsAIOrchestrator:
             )
 
             image_provider = OpenAIImageProvider(self.client, self.assets)
-            video_provider = UnconfiguredVideoProvider()
+            video_provider = OpenAIVideoProvider(self.client, self.assets)
             total = max(len(paired), 1)
 
             for index, (concept, brief_model) in enumerate(paired):
@@ -278,14 +284,13 @@ class AdsAIOrchestrator:
                 span = 40
                 pct = base + int((index / total) * span)
                 if kind == "VIDEO":
-                    scenes = getattr(brief_model, "scenes", None) or []
                     self._progress(
                         job,
                         step="video",
-                        title=f"Building video storyboard {index + 1} of {total}",
+                        title=f"Rendering video {index + 1} of {total}",
                         detail=(
-                            f"Working on “{concept.concept_name or concept.hook}”: "
-                            f"{len(scenes) or 3} scenes (hook → product → CTA), then a still frame."
+                            f"Astra wrote the brief. Sora is now rendering an MP4 for "
+                            f"“{concept.concept_name or concept.hook}”."
                         ),
                         pct=pct,
                     )
@@ -293,10 +298,10 @@ class AdsAIOrchestrator:
                     self._progress(
                         job,
                         step="image",
-                        title=f"Generating image {index + 1} of {total}",
+                        title=f"Rendering image ad {index + 1} of {total}",
                         detail=(
-                            f"Rendering “{concept.concept_name or concept.hook}”. "
-                            f"{(concept.visual_direction or concept.hook or '')[:180]}"
+                            f"Astra wrote the copy. Now generating a Meta-ready still for "
+                            f"“{concept.concept_name or concept.hook}”."
                         ),
                         pct=pct,
                     )
@@ -325,21 +330,68 @@ class AdsAIOrchestrator:
                 try:
                     if kind == "VIDEO":
                         spec = video_spec_from_concept(brief_model, product, aspect_ratio="9:16")
-                        provider_result = await video_provider.generate_video(spec.model_dump())
-                        asset.video_spec_json = json.dumps(
-                            {"spec": spec.model_dump(), "provider": provider_result}
+                        prompt = build_video_prompt(
+                            product=product,
+                            spec=spec,
+                            brand_style=brand_style,
+                            winning_notes=winning_notes,
                         )
-                        self._progress(
-                            job,
-                            step="video",
-                            title=f"Rendering video still {index + 1} of {total}",
-                            detail="Storyboard is set. Generating a preview still for the first scene.",
-                            pct=min(94, pct + 4),
-                        )
-                        await self._attach_video_poster(asset, product, spec, image_provider)
-                        if not asset.preview_url:
+                        payload = spec.model_dump()
+                        payload["prompt"] = prompt
+                        try:
+                            rendered = await video_provider.generate_video(
+                                payload,
+                                cancel_check=lambda: self._raise_if_cancelled(job),
+                            )
+                            asset.local_path = rendered.get("local_path")
+                            asset.width = rendered.get("width")
+                            asset.height = rendered.get("height")
                             await self._attach_video_poster(asset, product, spec, image_provider)
-                        has_media = bool(asset.preview_url)
+                            asset.video_spec_json = json.dumps(
+                                {"spec": spec.model_dump(), "provider": rendered, "rendered": True}
+                            )
+                            has_media = bool(asset.local_path)
+                        except VideoProviderError as exc:
+                            self._progress(
+                                job,
+                                step="video",
+                                title=f"Video render unavailable — making an image ad {index + 1} of {total}",
+                                detail=(
+                                    "Sora did not return an MP4. Rendering a Meta-ready still from the same brief "
+                                    f"so you still have something to publish. ({exc.message[:160]})"
+                                ),
+                                pct=min(94, pct + 4),
+                            )
+                            asset.type = "IMAGE"
+                            asset.aspect_ratio = aspect or "4:5"
+                            asset.video_spec_json = json.dumps(
+                                {
+                                    "spec": spec.model_dump(),
+                                    "provider": {"status": "failed", "message": exc.message},
+                                    "rendered": False,
+                                }
+                            )
+                            image_result = await image_provider.generate(
+                                ImageGenerationRequest(
+                                    prompt=build_image_prompt(
+                                        product=product,
+                                        visual_direction=concept.visual_direction,
+                                        image_prompt=getattr(brief_model, "image_prompt", "") or prompt,
+                                        brand_style=brand_style,
+                                        winning_notes=winning_notes,
+                                        aspect_ratio=asset.aspect_ratio or "4:5",
+                                        placement=placement,
+                                    ),
+                                    aspect_ratio=asset.aspect_ratio or "4:5",
+                                    placement=placement,
+                                    reference_image_urls=product_reference_urls(product),
+                                )
+                            )
+                            asset.local_path = image_result.local_path
+                            asset.preview_url = image_result.preview_url
+                            asset.width = image_result.width
+                            asset.height = image_result.height
+                            has_media = bool(image_result.preview_url or image_result.local_path)
                     else:
                         prompt = build_image_prompt(
                             product=product,
@@ -379,7 +431,7 @@ class AdsAIOrchestrator:
                     asset.score_breakdown_json = score.breakdown.model_dump_json()
                     if not has_media:
                         raise ImageGenerationError(
-                            "Complete creative requires a generated image or video still"
+                            "Complete creative requires a rendered image or MP4 — text-only concepts are not saved as ready ads."
                         )
                     asset.status = "READY"
                     concept.status = "READY"
@@ -493,7 +545,7 @@ class AdsAIOrchestrator:
         spec: VideoSpec,
         image_provider: OpenAIImageProvider,
     ) -> None:
-        """Save a still frame so Library can preview video concepts (no rendered MP4)."""
+        """Save a thumbnail still so Library and Meta have a poster frame."""
         first = spec.scenes[0] if spec.scenes else None
         visual = (first.visual if first else "") or spec.hook or product.title
         prompt = build_image_prompt(
@@ -512,9 +564,12 @@ class AdsAIOrchestrator:
                     reference_image_urls=product_reference_urls(product),
                 )
             )
-            asset.local_path = result.local_path
-            asset.preview_url = result.preview_url
-            asset.width = result.width
-            asset.height = result.height
+            asset.preview_url = result.preview_url or result.local_path
+            if not asset.local_path:
+                asset.local_path = result.local_path
+            if not asset.width:
+                asset.width = result.width
+            if not asset.height:
+                asset.height = result.height
         except Exception as exc:
             logger.info("ai_ads video poster failed store_id=%s err=%s", self.store.id, exc)

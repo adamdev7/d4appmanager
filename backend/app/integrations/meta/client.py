@@ -176,6 +176,66 @@ class MetaAdsClient:
         except Exception:
             return None
 
+    async def upload_ad_image(self, data: bytes, filename: str = "creative.png") -> dict:
+        """Upload image bytes and return {hash, url, name}."""
+        import base64
+
+        if not data:
+            raise ValueError("Empty image upload")
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{META_GRAPH_BASE}/{self.ad_account_id}/adimages",
+                params={"access_token": self.access_token},
+                data={"bytes": base64.b64encode(data).decode("ascii"), "name": filename},
+            )
+        payload = _meta_json(resp)
+        images = payload.get("images") if isinstance(payload.get("images"), dict) else {}
+        first = next(iter(images.values()), None) if images else None
+        if not isinstance(first, dict) or not first.get("hash"):
+            raise RuntimeError(payload.get("error", {}).get("message") or "Meta image upload returned no hash")
+        return {
+            "hash": first.get("hash"),
+            "url": first.get("url"),
+            "name": next(iter(images.keys()), filename),
+        }
+
+    async def upload_ad_video(self, data: bytes, filename: str = "creative.mp4") -> dict:
+        """Upload an MP4 and return {id}."""
+        if not data:
+            raise ValueError("Empty video upload")
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.post(
+                f"{META_GRAPH_BASE}/{self.ad_account_id}/advideos",
+                params={"access_token": self.access_token},
+                files={"source": (filename, data, "video/mp4")},
+            )
+        payload = _meta_json(resp)
+        video_id = payload.get("id")
+        if not video_id:
+            raise RuntimeError(payload.get("error", {}).get("message") or "Meta video upload returned no id")
+        return {"id": str(video_id)}
+
+    async def wait_for_video(self, video_id: str, *, timeout_seconds: int = 180) -> dict:
+        import asyncio
+
+        elapsed = 0
+        last: dict = {}
+        while elapsed <= timeout_seconds:
+            last = await self.get_object(video_id, "id,status,picture,title,length")
+            status = last.get("status")
+            video_status = ""
+            if isinstance(status, dict):
+                video_status = str(status.get("video_status") or status.get("processing_phase") or "")
+            elif status:
+                video_status = str(status)
+            if video_status.lower() in ("ready", "complete", "completed") or last.get("picture"):
+                return last
+            if video_status.lower() in ("error", "failed"):
+                raise RuntimeError(f"Meta video processing failed ({video_status})")
+            await asyncio.sleep(4)
+            elapsed += 4
+        return last
+
     async def create_ad_creative(self, payload: dict) -> dict:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
@@ -183,8 +243,7 @@ class MetaAdsClient:
                 params={"access_token": self.access_token},
                 json=payload,
             )
-            resp.raise_for_status()
-            return resp.json()
+            return _meta_json(resp)
 
     async def create_ad(self, payload: dict) -> dict:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -193,8 +252,7 @@ class MetaAdsClient:
                 params={"access_token": self.access_token},
                 json=payload,
             )
-            resp.raise_for_status()
-            return resp.json()
+            return _meta_json(resp)
 
     async def update_ad_status(self, ad_id: str, status: str) -> dict:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -704,3 +762,17 @@ def hook_rate(video_3s: float, impressions: float) -> float:
     if impressions <= 0:
         return 0.0
     return (video_3s / impressions) * 100
+
+
+def _meta_json(resp: httpx.Response) -> dict:
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {"error": {"message": resp.text[:400]}}
+    if not isinstance(payload, dict):
+        payload = {"error": {"message": str(payload)[:400]}}
+    if resp.status_code >= 400:
+        err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        message = err.get("message") or resp.text[:400] or f"Meta API {resp.status_code}"
+        raise RuntimeError(message)
+    return payload

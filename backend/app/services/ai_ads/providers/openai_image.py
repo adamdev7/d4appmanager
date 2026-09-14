@@ -66,7 +66,20 @@ class OpenAIImageProvider(ImageGenerationProvider):
                 references=references or None,
             )
         except Exception as exc:
-            raise ImageGenerationError(str(exc), retryable=True) from exc
+            fallback = "dall-e-3"
+            if self._model == fallback:
+                raise ImageGenerationError(str(exc), retryable=True) from exc
+            logger.warning("ai_ads image model %s failed, retrying %s: %s", self._model, fallback, exc)
+            size, width, height = resolve_image_size(fallback, request.aspect_ratio)
+            try:
+                raw, mime = await self._client.generate_image_b64(
+                    prompt=request.prompt,
+                    model=fallback,
+                    size=size,
+                    references=None,
+                )
+            except Exception as second:
+                raise ImageGenerationError(str(second), retryable=True) from second
         if not raw:
             raise ImageGenerationError("Image generation returned no file")
         saved = self._store.save_bytes(raw, mime_type=mime, prefix="gen")

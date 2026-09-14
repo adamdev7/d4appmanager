@@ -8,7 +8,7 @@ class VideoGenerationProvider(ABC):
     """Provider-agnostic video adapter. Strategy/planning must not depend on a vendor."""
 
     @abstractmethod
-    async def generate_video(self, spec: dict[str, Any]) -> dict[str, Any]:
+    async def generate_video(self, spec: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -23,7 +23,7 @@ class VideoGenerationProvider(ABC):
 class UnconfiguredVideoProvider(VideoGenerationProvider):
     """Default: video specs are stored; no vendor is called."""
 
-    async def generate_video(self, spec: dict[str, Any]) -> dict[str, Any]:
+    async def generate_video(self, spec: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         return {
             "status": "planned",
             "provider": None,
