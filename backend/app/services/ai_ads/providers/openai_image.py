@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import logging
 
-import httpx
-
 from app.config import settings
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.exceptions import ImageGenerationError
+from app.services.ai_ads.media_io import fetch_product_images
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.providers.image_provider import ImageGenerationProvider
 from app.services.ai_ads.schemas import ImageGenerationRequest, ImageGenerationResult
@@ -48,7 +47,12 @@ class OpenAIImageProvider(ImageGenerationProvider):
         self._store = store
         self._model = model or settings.resolved_ai_image_model
 
-    async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResult:
+    async def generate(
+        self,
+        request: ImageGenerationRequest,
+        *,
+        identity_images: list[tuple[bytes, str]] | None = None,
+    ) -> ImageGenerationResult:
         size, width, height = resolve_image_size(self._model, request.aspect_ratio)
         if request.size:
             size = request.size
@@ -57,30 +61,22 @@ class OpenAIImageProvider(ImageGenerationProvider):
                 width, height = int(w_s), int(h_s)
             except ValueError:
                 pass
-        references = await download_reference_images(request.reference_image_urls)
+        references = list(identity_images or [])
+        if not references:
+            references = await fetch_product_images(request.reference_image_urls)
+        if not references:
+            raise ImageGenerationError(
+                "Shopify product photos could not be loaded. Stopped so we do not invent a different product."
+            )
         try:
             raw, mime = await self._client.generate_image_b64(
                 prompt=request.prompt,
                 model=self._model,
                 size=size,
-                references=references or None,
+                references=references,
             )
         except Exception as exc:
-            fallback = "dall-e-3"
-            if self._model == fallback:
-                raise ImageGenerationError(str(exc), retryable=True) from exc
-            logger.warning("ai_ads image model %s failed, retrying %s: %s", self._model, fallback, exc)
-            size, width, height = resolve_image_size(fallback, request.aspect_ratio)
-            try:
-                raw, mime = await self._client.generate_image_b64(
-                    prompt=request.prompt,
-                    model=fallback,
-                    size=size,
-                    references=None,
-                    edit=False,
-                )
-            except Exception as second:
-                raise ImageGenerationError(str(second), retryable=True) from second
+            raise ImageGenerationError(str(exc), retryable=True) from exc
         if not raw:
             raise ImageGenerationError("Image generation returned no file")
         saved = self._store.save_bytes(raw, mime_type=mime, prefix="gen")
@@ -92,25 +88,3 @@ class OpenAIImageProvider(ImageGenerationProvider):
             height=height,
             mime_type=mime,
         )
-
-
-async def download_reference_images(urls: list[str] | None, *, limit: int = 3) -> list[tuple[bytes, str]]:
-    out: list[tuple[bytes, str]] = []
-    for url in (urls or [])[:limit]:
-        src = (url or "").strip()
-        if not src.startswith("http"):
-            continue
-        try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                resp = await client.get(src)
-                resp.raise_for_status()
-            data = resp.content
-            if not data or len(data) < 32:
-                continue
-            mime = (resp.headers.get("content-type") or "image/jpeg").split(";")[0].strip()
-            if "image" not in mime:
-                mime = "image/jpeg"
-            out.append((data, mime))
-        except Exception as exc:
-            logger.info("ai_ads product reference download skipped url=%s err=%s", src[:120], exc)
-    return out

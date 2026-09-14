@@ -14,10 +14,10 @@ import {
 
 const STAGES = [
   { id: "start", label: "Starting", match: ["queued", "start"] },
-  { id: "product", label: "Loading product", match: ["product"] },
-  { id: "learn", label: "Analyzing Meta ads", match: ["sync", "learn"] },
-  { id: "plan", label: "Planning new creatives", match: ["plan"] },
-  { id: "render", label: "Generating images & video", match: ["image", "video"] },
+  { id: "product", label: "Locking product photos", match: ["product"] },
+  { id: "learn", label: "Astra studying Meta ads", match: ["sync", "learn"] },
+  { id: "plan", label: "Astra planning creatives", match: ["plan"] },
+  { id: "render", label: "Astra rendering files", match: ["image", "video"] },
   { id: "done", label: "Finishing", match: ["done", "error"] },
 ] as const;
 
@@ -107,7 +107,7 @@ export function GenerationStudio({
         )}
         <Link to={`/ai-ads/progress/${job.job_id || job.id}`}>
           <Button variant="outline" size="sm">
-            View progress
+            Open live studio
           </Button>
         </Link>
       </Card>

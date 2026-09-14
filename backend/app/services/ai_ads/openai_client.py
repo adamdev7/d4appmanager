@@ -383,13 +383,8 @@ class AdsOpenAIClient:
         slug = (model or "").strip().lower()
         if "gpt-image-1" in slug and "gpt-image-2" not in slug:
             form["input_fidelity"] = "high"
-        files = []
-        for i, (raw, mime) in enumerate(references[:4]):
-            if not raw:
-                continue
-            mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
-            ext = "png" if "png" in mime else "jpg"
-            files.append(("image", (f"product-{i}.{ext}", raw, mime)))
+        field = "image[]" if _is_gpt_image(model) else "image"
+        files = _identity_files(references, field)
         if not files:
             raise OpenAIServiceError(
                 user_message="No product reference image was available.",
@@ -397,6 +392,9 @@ class AdsOpenAIClient:
             )
         async with httpx.AsyncClient(timeout=180) as client:
             resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=files)
+            if resp.status_code >= 400 and field == "image[]":
+                alt = _identity_files(references, "image")
+                resp = await client.post(OPENAI_IMAGE_EDITS_URL, headers=headers, data=form, files=alt)
         latency = int((time.perf_counter() - started) * 1000)
         if resp.status_code >= 400:
             self._log(
@@ -451,15 +449,6 @@ class AdsOpenAIClient:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form, files=files)
         latency = int((time.perf_counter() - started) * 1000)
-        if resp.status_code >= 400 and files:
-            logger.warning(
-                "ai_ads video input_reference rejected store_id=%s err=%s",
-                self._store_id,
-                (resp.text or "")[:200],
-            )
-            async with httpx.AsyncClient(timeout=120) as client:
-                resp = await client.post(OPENAI_VIDEOS_URL, headers=headers, data=form)
-            latency = int((time.perf_counter() - started) * 1000)
         if resp.status_code >= 400:
             self._log(
                 request_id=request_id,
@@ -510,6 +499,17 @@ class AdsOpenAIClient:
 
 def _is_gpt_image(model: str) -> bool:
     return "gpt-image" in (model or "").strip().lower()
+
+
+def _identity_files(references: list[tuple[bytes, str]], field: str) -> list[tuple[str, tuple[str, bytes, str]]]:
+    files: list[tuple[str, tuple[str, bytes, str]]] = []
+    for i, (raw, mime) in enumerate(references[:4]):
+        if not raw:
+            continue
+        mime = (mime or "image/jpeg").split(";")[0].strip() or "image/jpeg"
+        ext = "png" if "png" in mime else "jpg"
+        files.append((field, (f"product-{i}.{ext}", raw, mime)))
+    return files
 
 
 def _should_fallback_square(body: str) -> bool:

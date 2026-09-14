@@ -214,6 +214,12 @@ class AIAdsService:
         if workplace and workplace.status in ("QUEUED", "RUNNING"):
             self._kick_if_stuck(db, user, workplace)
             db.refresh(workplace)
+        recent = db.scalars(
+            select(CreativeGenerationJob)
+            .where(CreativeGenerationJob.store_id == store_id)
+            .order_by(desc(CreativeGenerationJob.created_at))
+            .limit(8)
+        ).all()
         settings_row = self.get_or_create_settings(db, store_id)
         return {
             "generated_this_week": {"images": images, "videos": videos},
@@ -224,6 +230,7 @@ class AIAdsService:
             "recommendations": [_rec_card(r) for r in recs],
             "active_job": _job_card(running) if running else None,
             "workplace_job": _job_card(workplace) if workplace else None,
+            "recent_jobs": [_job_card(j) for j in recent],
             "last_sync_at": settings_row.last_sync_at.isoformat() if settings_row.last_sync_at else None,
             "last_analyze_at": settings_row.last_analyze_at.isoformat() if settings_row.last_analyze_at else None,
             "openai_configured": is_openai_configured(user),
@@ -376,7 +383,7 @@ class AIAdsService:
             select(CreativeGenerationJob)
             .where(CreativeGenerationJob.store_id == store_id)
             .order_by(desc(CreativeGenerationJob.created_at))
-            .limit(20)
+            .limit(50)
         ).all()
         for j in jobs:
             if j.status in ("QUEUED", "RUNNING"):
@@ -929,6 +936,13 @@ def _job_card(j: CreativeGenerationJob) -> dict:
     pct = int(getattr(j, "progress_pct", 0) or 0)
     if pct <= 0 and j.total_items:
         pct = int(((j.completed_items or 0) / max(j.total_items, 1)) * 100)
+    req: dict = {}
+    try:
+        parsed = json.loads(j.request_json or "{}")
+        if isinstance(parsed, dict):
+            req = parsed
+    except Exception:
+        req = {}
     return {
         "job_id": j.id,
         "id": j.id,
@@ -944,6 +958,10 @@ def _job_card(j: CreativeGenerationJob) -> dict:
         "failed_items": j.failed_items,
         "error_message": j.error_message,
         "strategy_id": j.strategy_id,
+        "image_count": req.get("image_count"),
+        "video_count": req.get("video_count"),
+        "placement": req.get("placement"),
+        "aspect_ratio": req.get("aspect_ratio"),
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "started_at": j.started_at.isoformat() if j.started_at else None,
         "finished_at": j.finished_at.isoformat() if j.finished_at else None,

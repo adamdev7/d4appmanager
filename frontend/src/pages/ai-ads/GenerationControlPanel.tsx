@@ -83,13 +83,7 @@ function badgeVariant(status: string): "brand" | "success" | "warning" | "muted"
 
 export function shouldShowWorkplaceConsole(job: AIAdsJob | null | undefined) {
   if (!job) return false;
-  const status = String(job.status);
-  if (isLive(status) || job.worker_alive) return true;
-  if (["CANCELLED", "FAILED", "PARTIAL"].includes(status)) return true;
-  const stamp = job.finished_at || job.started_at || job.created_at;
-  if (!stamp) return true;
-  const t = new Date(stamp).getTime();
-  return !Number.isNaN(t) && Date.now() - t < 2 * 60 * 60 * 1000;
+  return isLive(String(job.status));
 }
 
 export function GenerationControlPanel({

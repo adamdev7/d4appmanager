@@ -27,6 +27,7 @@ export type AIAdsOverview = {
   recommendations: AIAdsRecommendation[];
   active_job: AIAdsJob | null;
   workplace_job?: AIAdsJob | null;
+  recent_jobs?: AIAdsJob[];
   last_sync_at: string | null;
   last_analyze_at: string | null;
   openai_configured: boolean;
@@ -154,6 +155,10 @@ export type AIAdsJob = {
   worker_alive?: boolean;
   swept_count?: number;
   nudge?: string;
+  image_count?: number | null;
+  video_count?: number | null;
+  placement?: string | null;
+  aspect_ratio?: string | null;
   creatives?: AIAdsGeneratedCreative[];
 };
 

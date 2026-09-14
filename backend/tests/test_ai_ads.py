@@ -278,17 +278,25 @@ def test_image_provider_saves_bytes():
     from app.services.ai_ads.providers.openai_image import OpenAIImageProvider
     from app.services.ai_ads.schemas import ImageGenerationRequest
 
-    client = SimpleNamespace(generate_image_b64=AsyncMock(return_value=(b"\x89PNG\r\n\x1a\n" + b"x" * 20, "image/png")))
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 20
+    client = SimpleNamespace(generate_image_b64=AsyncMock(return_value=(png, "image/png")))
     store = MagicMock()
     store.save_bytes.return_value = {
         "relative_path": "ai-ads/s/gen.png",
         "public_url": "/uploads/ai-ads/s/gen.png",
     }
     provider = OpenAIImageProvider(client, store, model="gpt-image-2")
-    result = asyncio.run(provider.generate(ImageGenerationRequest(prompt="product on marble", aspect_ratio="1:1")))
+    result = asyncio.run(
+        provider.generate(
+            ImageGenerationRequest(prompt="product on marble", aspect_ratio="1:1"),
+            identity_images=[(png, "image/png")],
+        )
+    )
     assert result.status == "completed"
     assert result.preview_url.endswith("gen.png")
     client.generate_image_b64.assert_awaited()
+    kwargs = client.generate_image_b64.await_args.kwargs
+    assert kwargs["references"]
 
 
 def test_image_provider_failure_is_typed():
@@ -300,7 +308,12 @@ def test_image_provider_failure_is_typed():
     client = SimpleNamespace(generate_image_b64=AsyncMock(side_effect=RuntimeError("boom")))
     provider = OpenAIImageProvider(client, MagicMock(), model="x")
     with pytest.raises(ImageGenerationError):
-        asyncio.run(provider.generate(ImageGenerationRequest(prompt="x")))
+        asyncio.run(
+            provider.generate(
+                ImageGenerationRequest(prompt="x"),
+                identity_images=[(b"\x89PNG\r\n\x1a\n" + b"x" * 20, "image/png")],
+            )
+        )
 
 
 def test_meta_importer_skips_unchanged_hash_logic():
@@ -728,6 +741,11 @@ def test_job_card_exposes_progress_fields():
     assert card["thinking"] == "Rendering"
     assert card["progress_log"][0]["title"].startswith("Generating")
     assert "worker_alive" in card
+    job.request_json = json.dumps({"image_count": 3, "video_count": 1, "placement": "feed"})
+    card = _job_card(job)
+    assert card["image_count"] == 3
+    assert card["video_count"] == 1
+    assert card["placement"] == "feed"
 
 
 def _console_job(**kwargs):
@@ -903,6 +921,43 @@ def test_build_video_prompt_is_product_faithful():
     prompt = build_video_prompt(product=product, spec=spec)
     assert "Courage Bracelet" in prompt
     assert "Meta" in prompt
+
+
+def test_image_provider_refuses_to_invent_without_product_photos():
+    import asyncio
+
+    from app.services.ai_ads.providers.openai_image import OpenAIImageProvider
+    from app.services.ai_ads.schemas import ImageGenerationRequest
+
+    client = SimpleNamespace(generate_image_b64=AsyncMock())
+    provider = OpenAIImageProvider(client, MagicMock(), model="gpt-image-2")
+    with pytest.raises(ImageGenerationError, match="product photos"):
+        asyncio.run(provider.generate(ImageGenerationRequest(prompt="fake bracelet")))
+    client.generate_image_b64.assert_not_called()
+
+
+def test_is_mp4_detects_ftyp():
+    from app.services.ai_ads.media_io import is_mp4
+
+    assert is_mp4(b"\x00\x00\x00\x18ftypisom" + b"x" * 20)
+    assert not is_mp4(b"not a video")
+    assert not is_mp4(b"")
+
+
+def test_video_provider_rejects_non_mp4_download():
+    import asyncio
+
+    from app.services.ai_ads.exceptions import VideoProviderError
+    from app.services.ai_ads.providers.openai_video import OpenAIVideoProvider
+
+    client = SimpleNamespace(
+        create_video=AsyncMock(return_value={"id": "video_1", "status": "queued"}),
+        get_video=AsyncMock(return_value={"id": "video_1", "status": "completed"}),
+        download_video_bytes=AsyncMock(return_value=b'{"status":"ok"}'),
+    )
+    provider = OpenAIVideoProvider(client, MagicMock(), model="sora-2")
+    with pytest.raises(VideoProviderError, match="playable MP4"):
+        asyncio.run(provider.generate_video({"prompt": "product hero", "format": "9:16", "duration": 8}))
 
 
 def test_openai_video_provider_saves_mp4():

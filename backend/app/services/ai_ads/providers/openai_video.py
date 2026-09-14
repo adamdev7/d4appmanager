@@ -8,6 +8,7 @@ from typing import Any
 from app.config import settings
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.exceptions import VideoProviderError
+from app.services.ai_ads.media_io import is_mp4
 from app.services.ai_ads.openai_client import AdsOpenAIClient
 from app.services.ai_ads.providers.video_provider import VideoGenerationProvider
 
@@ -83,6 +84,8 @@ class OpenAIVideoProvider(VideoGenerationProvider):
             raw = await self._client.download_video_bytes(video_id)
         except Exception as exc:
             raise VideoProviderError(str(exc), retryable=True) from exc
+        if not is_mp4(raw):
+            raise VideoProviderError("Video download was not a playable MP4")
         saved = self._store.save_bytes(raw, mime_type="video/mp4", prefix="vid")
         return {
             "status": "completed",

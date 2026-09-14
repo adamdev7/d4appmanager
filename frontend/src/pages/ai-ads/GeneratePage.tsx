@@ -1,16 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useStore } from "@/context/StoreContext";
 import { api, type AIAdsAvatar, type AIAdsJob, type AIAdsProduct } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { PageLoader } from "@/components/ui/Loading";
-import {
-  GenerationControlPanel,
-  shouldShowWorkplaceConsole,
-} from "@/pages/ai-ads/GenerationControlPanel";
 import { GenerationStudio } from "@/pages/ai-ads/GenerationStudio";
+import { JobHistoryList, isLiveJob } from "@/pages/ai-ads/JobHistory";
 
 const STYLES = ["UGC", "PRODUCT_DEMO", "LIFESTYLE", "PROBLEM_SOLUTION", "PROMOTIONAL"];
 
@@ -20,6 +17,7 @@ export function GeneratePage() {
   const storeId = activeStore?.id ?? stores[0]?.id ?? null;
   const [products, setProducts] = useState<AIAdsProduct[]>([]);
   const [avatars, setAvatars] = useState<AIAdsAvatar[]>([]);
+  const [jobs, setJobs] = useState<AIAdsJob[]>([]);
   const [productId, setProductId] = useState("");
   const [imageCount, setImageCount] = useState(3);
   const [videoCount, setVideoCount] = useState(1);
@@ -30,23 +28,24 @@ export function GeneratePage() {
   const [aspect, setAspect] = useState("4:5");
   const [avatarId, setAvatarId] = useState("");
   const [brandStyle, setBrandStyle] = useState("");
-  const [job, setJob] = useState<AIAdsJob | null>(null);
+  const [liveJob, setLiveJob] = useState<AIAdsJob | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
     if (!storeId) return;
-    const [prods, avs, jobs] = await Promise.all([
+    const [prods, avs, listed] = await Promise.all([
       api.aiAds.listProducts(storeId),
       api.aiAds.listAvatars(storeId),
       api.aiAds.listGenerationJobs(storeId),
     ]);
     setProducts(prods);
     setAvatars(avs);
+    setJobs(listed);
     if (!productId && prods[0]) setProductId(prods[0].id);
-    const active = jobs.find((j) => j.status === "QUEUED" || j.status === "RUNNING");
-    setJob(active || jobs[0] || null);
+    const active = listed.find((j) => isLiveJob(j)) || null;
+    setLiveJob(active);
   }, [storeId, productId]);
 
   useEffect(() => {
@@ -59,22 +58,23 @@ export function GeneratePage() {
       .finally(() => setLoading(false));
   }, [load, storeId]);
 
-  const running = job && ["QUEUED", "RUNNING"].includes(String(job.status));
-  const liveId =
-    job && (["QUEUED", "RUNNING"].includes(String(job.status)) || job.worker_alive)
-      ? job.job_id || job.id
-      : null;
+  const liveId = liveJob ? liveJob.job_id || liveJob.id : null;
 
   useEffect(() => {
     if (!storeId || !liveId) return;
     const t = window.setInterval(() => {
       api.aiAds
         .getGenerationJob(storeId, liveId)
-        .then(setJob)
+        .then((next) => {
+          setLiveJob(isLiveJob(next) ? next : null);
+          if (!isLiveJob(next)) {
+            void load();
+          }
+        })
         .catch(() => undefined);
     }, 1000);
     return () => window.clearInterval(t);
-  }, [liveId, storeId]);
+  }, [liveId, storeId, load]);
 
   function toggleStyle(s: string) {
     setStyles((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]));
@@ -97,7 +97,7 @@ export function GeneratePage() {
         brand_style: brandStyle,
         avatar_id: avatarId || undefined,
       });
-      setJob(created);
+      setLiveJob(created);
       navigate(`/ai-ads/progress/${created.job_id || created.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start generation");
@@ -109,20 +109,18 @@ export function GeneratePage() {
   if (!storeId) return <p className="text-sm text-content-muted">Select a store first.</p>;
   if (loading) return <PageLoader label="Loading products" />;
 
+  const selectedProduct = products.find((p) => p.id === productId);
+  const recent = jobs.filter((j) => !isLiveJob(j)).slice(0, 6);
+
   return (
     <div className="space-y-6">
-      {job && shouldShowWorkplaceConsole(job) && (
-        <GenerationControlPanel storeId={storeId} job={job} onChanged={setJob} />
-      )}
-      {job && running && <GenerationStudio job={job} />}
+      {liveJob && isLiveJob(liveJob) && <GenerationStudio job={liveJob} compact />}
       <Card>
         <CardHeader>
           <CardTitle>Generate creatives</CardTitle>
           <CardDescription>
-            Astra briefs brand-new ads from your real product photos and stronger Meta patterns.
-            Image and video models must show that exact SKU in a new scene — not a different product
-            and not a retouch of an ad you already ran. Ask for 5 images and you get 5 different
-            scenes. Same for video. Counts stay low because each unique render spends OpenAI credits.
+            Pick a Shopify product. Astra plans and renders ads from those photos — stills and
+            videos of that exact item in a new scene.
           </CardDescription>
         </CardHeader>
         {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
@@ -141,6 +139,22 @@ export function GeneratePage() {
               ))}
             </select>
           </label>
+          {selectedProduct?.image && (
+            <div className="flex items-center gap-3 rounded-lg border border-border bg-surface-muted/40 p-2">
+              <img
+                src={selectedProduct.image}
+                alt=""
+                className="h-16 w-16 rounded-md object-cover border border-border"
+              />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-content truncate">{selectedProduct.title}</p>
+                <p className="text-xs text-content-muted">
+                  Astra uses this Shopify photo as the product. Pick another item above if this is
+                  wrong.
+                </p>
+              </div>
+            </div>
+          )}
           {!products.length && (
             <p className="text-sm text-content-subtle">No Shopify products found for this store.</p>
           )}
@@ -232,11 +246,22 @@ export function GeneratePage() {
               </select>
             </label>
           )}
-          <Button onClick={() => void submit()} isLoading={submitting} disabled={!productId || !!running}>
+          <Button onClick={() => void submit()} isLoading={submitting} disabled={!productId || !!liveJob}>
             Generate creatives
           </Button>
         </div>
       </Card>
+      {recent.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-end justify-between gap-3">
+            <h3 className="text-sm font-semibold text-content">Recent jobs</h3>
+            <Link to="/ai-ads/progress" className="text-sm font-medium text-brand-600">
+              View all
+            </Link>
+          </div>
+          <JobHistoryList jobs={recent} products={products} />
+        </div>
+      )}
     </div>
   );
 }
