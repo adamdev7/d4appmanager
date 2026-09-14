@@ -2,7 +2,18 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -735,7 +746,11 @@ class ShopifyCatalogProduct(Base):
 
 
 class ShopifyCatalogImage(Base):
-    """One Shopify catalog photo stored locally for AI Ads identity locking."""
+    """One Shopify catalog photo for AI Ads identity locking.
+
+    `image_bytes` is the durable copy and the source of truth: app instances do not share a
+    filesystem, so `local_path` is only a per-machine cache that may be absent or stale.
+    """
 
     __tablename__ = "ai_ads_shopify_product_images"
     __table_args__ = (
@@ -753,6 +768,8 @@ class ShopifyCatalogImage(Base):
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     local_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # Deferred: never load megabytes of JPEG when listing rows.
+    image_bytes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)
     mime_type: Mapped[str] = mapped_column(String(64), default="image/jpeg")
     content_hash: Mapped[str] = mapped_column(String(64), default="")
     byte_size: Mapped[int] = mapped_column(Integer, default=0)

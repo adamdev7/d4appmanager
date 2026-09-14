@@ -1542,3 +1542,144 @@ def test_catalog_adopts_orphan_disk_photos(tmp_path):
     ]
     assert catalog.adopt_orphan_disk_photos() == 1
     assert catalog.listed_images("99")
+    adopted = next(iter(catalog.db.images.values()))
+    assert adopted.image_bytes, "adopted photos must be stored durably, not only on disk"
+
+
+def _fake_catalog(tmp_path):
+    """Catalog wired to an in-memory session so photo storage can be tested without Postgres."""
+    from types import SimpleNamespace
+
+    from app.services.ai_ads.asset_store import CreativeAssetStore
+    from app.services.ai_ads.product_catalog import ShopifyProductCatalog
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def where(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class FakeDB:
+        def __init__(self):
+            self.products = {}
+            self.images = {}
+
+        def scalar(self, query):
+            return None
+
+        def scalars(self, query):
+            return FakeQuery(list(self.images.values()))
+
+        def add(self, row):
+            image_key = getattr(row, "image_key", None)
+            if image_key:
+                self.images[image_key] = row
+            pid = getattr(row, "shopify_product_id", None)
+            if pid and hasattr(row, "image_fingerprint"):
+                self.products[pid] = row
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def delete(self, row):
+            key = getattr(row, "image_key", None)
+            if key:
+                self.images.pop(key, None)
+
+    store = SimpleNamespace(id="store-1", shop_domain="d4.myshopify.com", currency="USD", name="D4")
+    assets = CreativeAssetStore("store-1")
+    assets.dir = tmp_path / "uploads"
+    assets.dir.mkdir(parents=True, exist_ok=True)
+    catalog = ShopifyProductCatalog(FakeDB(), store, assets)
+    catalog.get_product_row = lambda product_id: catalog.db.products.get(str(product_id))
+    catalog.listed_images = lambda product_id: [
+        img for img in catalog.db.images.values() if img.shopify_product_id == str(product_id)
+    ]
+    catalog.product_picker_card = lambda pid: {"id": str(pid), "photos": [], "photos_cached": True}
+    return catalog
+
+
+def test_catalog_photos_survive_a_cold_local_cache(tmp_path):
+    """Instances do not share a filesystem: stored photos must not depend on local files."""
+    from PIL import Image
+
+    jpeg = tmp_path / "bracelet.jpg"
+    Image.new("RGB", (90, 90), (10, 90, 60)).save(jpeg, format="JPEG")
+    catalog = _fake_catalog(tmp_path)
+
+    catalog.store_manual_photos("9864947138808", [jpeg.read_bytes()])
+    row = next(iter(catalog.db.images.values()))
+    assert catalog.assets.exists(row.local_path)
+    assert catalog.cached_identity_bytes("9864947138808", limit=1)
+
+    # Simulate another machine / a redeploy: the cache is gone, the database row is not.
+    for path in catalog.assets.dir.iterdir():
+        path.unlink()
+    assert not catalog.assets.exists(row.local_path)
+
+    recovered = catalog.cached_identity_bytes("9864947138808", limit=1)
+    assert recovered, "photo bytes must come back from the database when the cache is cold"
+    assert recovered[0][1] == "image/jpeg"
+    assert catalog.has_usable_photos("9864947138808")
+    assert catalog.assets.exists(row.local_path), "reading should re-warm the local cache"
+
+
+def test_catalog_photo_url_is_served_by_the_api(tmp_path):
+    from PIL import Image
+
+    jpeg = tmp_path / "ring.jpg"
+    Image.new("RGB", (60, 60), (200, 40, 80)).save(jpeg, format="JPEG")
+    catalog = _fake_catalog(tmp_path)
+    catalog.store_manual_photos("42", [jpeg.read_bytes()])
+    row = next(iter(catalog.db.images.values()))
+
+    url = catalog.photo_url(row)
+    assert url.startswith("/api/v1/ai-ads/stores/store-1/products/42/photos/")
+    assert row.image_key in url
+    assert "?v=" in url, "URL needs a content version so browsers refetch retouched photos"
+
+
+def test_catalog_prunes_photos_it_can_never_rebuild(tmp_path):
+    """Rows with no bytes and no Shopify source only ever render as broken thumbnails."""
+    from datetime import UTC, datetime
+
+    from app.db.models import ShopifyCatalogImage
+
+    catalog = _fake_catalog(tmp_path)
+    catalog.db.add(
+        ShopifyCatalogImage(
+            store_id="store-1",
+            shopify_product_id="42",
+            image_key="manual_gone",
+            source_url="manual://upload",
+            local_path="ai-ads/store-1/sku_42_missing.jpg",
+            position=0,
+            last_fetched_at=datetime.now(UTC),
+        )
+    )
+    catalog.db.add(
+        ShopifyCatalogImage(
+            store_id="store-1",
+            shopify_product_id="42",
+            image_key="50514432786680",
+            source_url="https://cdn.shopify.com/s/files/1/x/bracelet.jpg?v=1",
+            local_path="ai-ads/store-1/sku_42_alsomissing.jpg",
+            position=1,
+            last_fetched_at=datetime.now(UTC),
+        )
+    )
+
+    assert catalog.prune_unrecoverable_photos() == 1
+    remaining = list(catalog.db.images)
+    assert remaining == ["50514432786680"], "refetchable Shopify photos must be kept for repair"
+    assert catalog.has_usable_photos("42")

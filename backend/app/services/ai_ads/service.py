@@ -288,6 +288,28 @@ class AIAdsService:
             )
         return card
 
+    async def product_photo(
+        self,
+        db: Session,
+        store_id: str,
+        product_id: str,
+        image_key: str,
+    ) -> tuple[bytes, str]:
+        """Serve one stored product photo, rebuilding it from Shopify if the cache is cold.
+
+        Unauthenticated on purpose: browsers cannot send a bearer token on an <img> tag, and the
+        paths are unguessable (store uuid + Shopify ids). Exposes only the product photos the
+        merchant already publishes on their storefront.
+        """
+        store = db.get(Store, store_id)
+        if not store:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
+        got = await catalog.photo_for_key(product_id, image_key)
+        if not got:
+            raise HTTPException(status_code=404, detail="Photo not found")
+        return got
+
     def clear_product_photos(self, db: Session, user: User, store_id: str, product_id: str) -> dict:
         store = self.ensure_store(db, user, store_id)
         catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
@@ -346,7 +368,8 @@ class AIAdsService:
         if not product_id:
             raise HTTPException(status_code=400, detail="product_id is required")
         catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
-        if not catalog.cached_identity_bytes(product_id, limit=1):
+        # Matches the picker's photos_cached: bytes on hand, or a Shopify source the job can refetch.
+        if not catalog.has_usable_photos(product_id):
             raise HTTPException(
                 status_code=400,
                 detail="Add product pictures first. Save them on Generate, then run again.",

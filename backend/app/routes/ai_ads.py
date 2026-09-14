@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_verified_user
@@ -68,6 +68,20 @@ async def upload_product_photos(
     card = _service.upload_product_photos(db, user, store_id, product_id, blobs)
     db.commit()
     return card
+
+
+@router.get("/stores/{store_id}/products/{product_id}/photos/{image_key}")
+async def get_product_photo(
+    store_id: str,
+    product_id: str,
+    image_key: str,
+    v: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Public image bytes for <img> tags. Self-heals from Shopify when the local cache is cold."""
+    data, mime = await _service.product_photo(db, store_id, product_id, image_key)
+    cache = "public, max-age=31536000, immutable" if v else "public, max-age=300"
+    return Response(content=data, media_type=mime, headers={"Cache-Control": cache})
 
 
 @router.delete("/stores/{store_id}/products/{product_id}/photos")

@@ -42,6 +42,7 @@ export type AIAdsProduct = {
   photos?: string[];
   product_url: string | null;
   photos_cached?: boolean;
+  photos_ready?: number;
 };
 
 export type AIAdsPerformance = {

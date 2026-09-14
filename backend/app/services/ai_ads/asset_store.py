@@ -71,6 +71,10 @@ class CreativeAssetStore:
                 return candidate
         return None
 
+    def exists(self, relative_or_abs: str | None) -> bool:
+        """Cheap presence check. Does not read the file."""
+        return self.resolve_path(relative_or_abs) is not None
+
     def read_bytes(self, relative_or_abs: str | None) -> tuple[bytes, str] | None:
         path = self.resolve_path(relative_or_abs)
         if not path:
