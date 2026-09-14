@@ -1475,3 +1475,70 @@ def test_upload_limits_raise_starlette_part_size():
     assert MultiPartParser.max_part_size == MAX_UPLOAD_PART_BYTES
     default = inspect.signature(Request.form).parameters["max_part_size"].default
     assert default == MAX_UPLOAD_PART_BYTES
+
+
+def test_catalog_adopts_orphan_disk_photos(tmp_path):
+    from types import SimpleNamespace
+
+    from PIL import Image
+
+    from app.services.ai_ads.asset_store import CreativeAssetStore
+    from app.services.ai_ads.product_catalog import ShopifyProductCatalog
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def where(self, *args, **kwargs):
+            return self
+
+        def order_by(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return self._rows
+
+    class FakeDB:
+        def __init__(self):
+            self.products = {}
+            self.images = {}
+
+        def scalar(self, query):
+            return None
+
+        def scalars(self, query):
+            return FakeQuery(list(self.images.values()))
+
+        def add(self, row):
+            image_key = getattr(row, "image_key", None)
+            if image_key:
+                self.images[image_key] = row
+            pid = getattr(row, "shopify_product_id", None)
+            if pid and hasattr(row, "image_fingerprint"):
+                self.products[pid] = row
+
+        def flush(self):
+            return None
+
+        def commit(self):
+            return None
+
+        def delete(self, row):
+            key = getattr(row, "image_key", None)
+            if key:
+                self.images.pop(key, None)
+
+    store = SimpleNamespace(id="store-1", shop_domain="d4.myshopify.com", currency="USD", name="D4")
+    assets = CreativeAssetStore("store-1")
+    assets.dir = tmp_path / "uploads"
+    assets.dir.mkdir(parents=True, exist_ok=True)
+    orphan = assets.dir / "sku_99_orphanhash.jpg"
+    Image.new("RGB", (40, 40), (12, 80, 40)).save(orphan, format="JPEG")
+    catalog = ShopifyProductCatalog(FakeDB(), store, assets)
+    catalog.db.products["99"] = SimpleNamespace(shopify_product_id="99", title="Ring")
+    catalog.get_product_row = lambda product_id: catalog.db.products.get(str(product_id))
+    catalog.listed_images = lambda product_id: [
+        img for img in catalog.db.images.values() if img.shopify_product_id == str(product_id)
+    ]
+    assert catalog.adopt_orphan_disk_photos() == 1
+    assert catalog.listed_images("99")

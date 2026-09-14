@@ -243,8 +243,71 @@ class ShopifyProductCatalog:
             return False
         return bool(self.cached_identity_bytes(product_id, limit=1))
 
+    def adopt_orphan_disk_photos(self) -> int:
+        """Register sku_*.jpg files that were written to disk but never committed."""
+        folder = self.assets.dir
+        if not folder.is_dir():
+            return 0
+        existing = list(
+            self.db.scalars(
+                select(ShopifyCatalogImage).where(ShopifyCatalogImage.store_id == self.store.id)
+            ).all()
+        )
+        seen_paths = {(img.local_path or "").replace("\\", "/") for img in existing}
+        seen_keys = {(img.shopify_product_id, img.image_key) for img in existing}
+        counts: dict[str, int] = {}
+        for img in existing:
+            counts[img.shopify_product_id] = max(counts.get(img.shopify_product_id, 0), img.position + 1)
+        added = 0
+        for path in folder.iterdir():
+            if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+                continue
+            if not path.name.startswith("sku_"):
+                continue
+            pid, sep, _rest = path.name[4:].partition("_")
+            if not sep or not pid.isdigit():
+                continue
+            if not self.get_product_row(pid):
+                continue
+            rel = self.assets.relative(path)
+            if rel in seen_paths:
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            key = f"manual_{digest[:16]}"
+            if (pid, key) in seen_keys:
+                continue
+            mime = (
+                "image/jpeg"
+                if path.suffix.lower() in {".jpg", ".jpeg"}
+                else f"image/{path.suffix.lower().lstrip('.')}"
+            )
+            position = counts.get(pid, 0)
+            self.db.add(
+                ShopifyCatalogImage(
+                    store_id=self.store.id,
+                    shopify_product_id=pid,
+                    image_key=key,
+                    shopify_image_id=None,
+                    source_url="manual://upload",
+                    position=position,
+                    local_path=rel,
+                    mime_type=mime,
+                    content_hash=digest,
+                    byte_size=path.stat().st_size,
+                    last_fetched_at=datetime.now(UTC),
+                )
+            )
+            seen_paths.add(rel)
+            seen_keys.add((pid, key))
+            counts[pid] = position + 1
+            added += 1
+        if added:
+            self.db.commit()
+        return added
+
     def list_picker_cards(self) -> list[dict[str, Any]]:
         """Return saved catalog rows for the Generate picker. No Shopify, no disk reads."""
+        self.adopt_orphan_disk_photos()
         products = list(
             self.db.scalars(
                 select(ShopifyCatalogProduct)
@@ -351,10 +414,9 @@ class ShopifyProductCatalog:
             existing_keys.add(key)
             position += 1
             added += 1
-        if added:
             row.last_images_fetched_at = datetime.now(UTC)
             self.db.commit()
-        elif not existing:
+        if not added and not existing:
             raise ValueError(
                 "Could not use those pictures. The server converts and compresses PNG automatically "
                 "— try a different file if this one is damaged."

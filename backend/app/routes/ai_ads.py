@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_verified_user
+from app.core.upload_limits import MAX_UPLOAD_PART_BYTES
 from app.db.models import User
 from app.db.session import get_db
 from app.models.ai_ads import (
@@ -39,21 +40,34 @@ async def products(
 async def upload_product_photos(
     store_id: str,
     product_id: str,
-    files: list[UploadFile] = File(...),
+    request: Request,
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
+    form = await request.form(max_files=8, max_fields=20, max_part_size=MAX_UPLOAD_PART_BYTES)
     blobs: list[bytes] = []
-    for item in files[:8]:
-        data = await item.read()
-        if data and len(data) <= 32 * 1024 * 1024:
-            blobs.append(data)
+    try:
+        items = form.getlist("files") or list(form.values())
+        for item in items[:8]:
+            data: bytes | None = None
+            if isinstance(item, (bytes, bytearray)):
+                data = bytes(item)
+            elif isinstance(item, str):
+                continue
+            elif hasattr(item, "read"):
+                data = await item.read()
+            if data and len(data) <= MAX_UPLOAD_PART_BYTES:
+                blobs.append(data)
+    finally:
+        await form.close()
     if not blobs:
         raise HTTPException(
             status_code=400,
             detail="Choose a picture under 32 MB. PNG is fine — we convert and compress it here.",
         )
-    return _service.upload_product_photos(db, user, store_id, product_id, blobs)
+    card = _service.upload_product_photos(db, user, store_id, product_id, blobs)
+    db.commit()
+    return card
 
 
 @router.delete("/stores/{store_id}/products/{product_id}/photos")
