@@ -25,6 +25,23 @@ CRAFT = (
     "duplicate clasps, no warped geometry. Single SKU. No fake packaging."
 )
 
+# Angles whose whole job is to close the sale, so real ad copy is rendered into the still.
+SALES_TEXT_STYLES = ("PROMOTIONAL", "PROBLEM_SOLUTION")
+
+TEXT_LAYOUTS: dict[str, str] = {
+    "PROMOTIONAL": (
+        "Layout: the headline runs across the top third on a solid opaque scrim. The product stays "
+        "fully unobstructed in the middle. A rounded solid CTA button sits near the bottom. A small "
+        "solid price badge, when given, sits in one corner."
+    ),
+    "PROBLEM_SOLUTION": (
+        "Layout: one short label near the top names the friction on a solid opaque chip. The product "
+        "is the hero in the middle. A rounded solid CTA button sits near the bottom."
+    ),
+}
+
+_CURRENCY_SYMBOLS = {"USD": "$", "CAD": "$", "AUD": "$", "NZD": "$", "EUR": "\u20ac", "GBP": "\u00a3"}
+
 STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
     "UGC": {
         "promise": "Authentic phone-shot social proof. Lived-in rooms, imperfect framing, real light.",
@@ -76,10 +93,10 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
         "forbid": "Pretty packshot with no story. Fake before/after medical or 'miracle' claims.",
         "copy": "Name a real pain the product addresses (fit, slipping, sizing). Never invent a condition.",
         "scenes": [
-            "Split-beat still: left side the annoyance (too-tight, fiddly, slipping), right side this exact product solving it.",
-            "Hands struggling with a generic piece, then this SKU going on easily — keep identity locked.",
-            "Everyday 'never take it off' scene: product worn through a real task, built from product facts.",
-            "Close-up of the solving feature (adjustable fit, clasp, construction) in a new setting.",
+            "Split-beat still: left side the annoyance (too-tight, fiddly, slipping), right side this exact product solving it. Leave a clean top band and a clean bottom strip for burned-in copy.",
+            "Hands struggling with a generic piece, then this SKU going on easily — keep identity locked. Uncluttered top band for a label, clear bottom strip for a CTA button.",
+            "Everyday 'never take it off' scene: product worn through a real task, built from product facts. Flat, uncluttered top and bottom zones for copy.",
+            "Close-up of the solving feature (adjustable fit, clasp, construction) in a new setting, with calm top and bottom zones reserved for copy.",
         ],
         "video": [
             "Problem-to-solution in pictures only: friction beat, product appears, after-moment. No text.",
@@ -89,12 +106,12 @@ STYLE_PLAYBOOKS: dict[str, dict[str, Any]] = {
     "PROMOTIONAL": {
         "promise": "Offer-ad energy that makes someone buy now. Gift, drop, value — using the REAL price only.",
         "forbid": "Invented discount percents, fake timers, fake reviews, plain catalog photo with a filter.",
-        "copy": "Offer framing with the real price if provided. Urgency without lying. Quiet space for later overlay.",
+        "copy": "Offer framing with the real price if provided. Urgency without lying. Short, punchy, buy-now copy.",
         "scenes": [
-            "Gift-ready still: wrapped table, the exact product as the present being revealed. Quiet top third, no numbers.",
-            "Hero composition: product on a new surface, huge negative space — never bake a fake % off, price, or discount.",
-            "Limited-drop drama: dark rim light, single hero object, urgency crop, blank margins.",
-            "Treat-yourself: hands lifting the exact SKU from tissue, warm practical light, not the website photo.",
+            "Gift-ready still: wrapped table, the exact product as the present being revealed. Keep the top third flat and uncluttered for a headline band and the bottom clear for a CTA button.",
+            "Hero composition: product on a new surface with a deep, even top third for a headline scrim and a clear bottom strip for a CTA button.",
+            "Limited-drop drama: dark rim light, single hero object, urgency crop, with a calm dark top band that a bright headline can sit on.",
+            "Treat-yourself: hands lifting the exact SKU from tissue, warm practical light, uncluttered top and bottom zones reserved for copy.",
         ],
         "video": [
             "Gift-reveal motion, product identity close-up, freeze on a shoppable packshot. No text, no fake discounts.",
@@ -188,6 +205,92 @@ DEFAULT_VOICE = (
 DEFAULT_MUSIC = (
     "Light original instrumental only — no lyrics, no vocals, no named artists, no copyrighted songs."
 )
+
+
+def bakes_sales_text(style: str | None) -> bool:
+    """True when this angle should render closing copy into the frame instead of a clean plate."""
+    return str(style or "").strip().upper() in SALES_TEXT_STYLES
+
+
+def styles_bake_sales_text(styles: list[str] | None) -> bool:
+    return any(bakes_sales_text(s) for s in normalize_styles(styles))
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Short, single-line, no trailing punctuation — image models spell short strings reliably."""
+    line = " ".join((text or "").split()).strip(" .!,;:")
+    if len(line) <= limit:
+        return line
+    cut = line[:limit].rsplit(" ", 1)[0]
+    return (cut or line[:limit]).strip()
+
+
+def format_price(price: Any, currency: str | None = None) -> str:
+    if price is None:
+        return ""
+    try:
+        amount = float(price)
+    except (TypeError, ValueError):
+        return ""
+    text = f"{amount:.0f}" if abs(amount - round(amount)) < 0.005 else f"{amount:.2f}"
+    code = (currency or "").strip().upper()
+    symbol = _CURRENCY_SYMBOLS.get(code)
+    if symbol:
+        return f"{symbol}{text}"
+    return f"{text} {code}".strip()
+
+
+def overlay_copy(
+    style: str,
+    *,
+    product: ProductContext,
+    headline: str = "",
+    hook: str = "",
+    cta: str = "",
+) -> dict[str, str]:
+    """The exact strings the image model must spell into the frame."""
+    out = {
+        "headline": _one_line(headline or hook or product.title, 30),
+        "cta": _one_line((cta or "SHOP NOW").replace("_", " ").title(), 14) or "Shop Now",
+    }
+    if style.strip().upper() == "PROMOTIONAL":
+        price = format_price(product.price, product.currency)
+        if price:
+            out["price"] = price
+    return out
+
+
+def text_overlay_directive(style: str, copy: dict[str, str]) -> str:
+    """Legibility contract for baked-in ad copy. Prevents white-on-white and garbled letterforms."""
+    key = style.strip().upper()
+    lines = [
+        "BAKE THIS AD COPY INTO THE IMAGE. Render each string exactly, character for character:",
+        f'HEADLINE: "{copy["headline"]}"',
+        f'CTA BUTTON: "{copy["cta"]}"',
+    ]
+    if copy.get("price"):
+        lines.append(f'PRICE BADGE: "{copy["price"]}"')
+    lines.append(TEXT_LAYOUTS.get(key, TEXT_LAYOUTS["PROMOTIONAL"]))
+    lines.append(
+        "Typography: one bold, clean, condensed sans-serif for every string. Real letterforms, correct "
+        "spelling, even kerning. No duplicated, mirrored, or half-formed letters, no lorem, no gibberish, "
+        "no extra words beyond the strings above."
+    )
+    lines.append(
+        "CONTRAST IS MANDATORY: every string sits on a solid opaque scrim, band, chip, or button in a colour "
+        "that clearly opposes the text. White text only on a dark scrim; near-black text only on a light "
+        "scrim. Never white text on a light background, never dark text on a dark background, never text "
+        "floating directly over the product or a busy area."
+    )
+    lines.append(
+        "Keep all copy inside the middle 80% of the frame (Meta safe area), clear of the outer 8%. Text must "
+        "never cover, cross, or touch the product."
+    )
+    lines.append(
+        "No other text anywhere: no watermark, no logo, no URL, no star rating, no invented discount percent, "
+        "no fake countdown, no fake review."
+    )
+    return "\n".join(lines)
 
 
 def meta_cta(raw: str | None) -> str:
@@ -499,10 +602,14 @@ def build_image_prompt(
     variation_index: int = 0,
     variation_count: int = 1,
     styles: list[str] | None = None,
+    headline: str = "",
+    hook: str = "",
+    cta: str = "",
 ) -> str:
     style = style_for_index(styles, variation_index)
     play = STYLE_PLAYBOOKS[style]
     recipe = image_shot_recipe(variation_index, styles)
+    overlay = bakes_sales_text(style)
     prompt = (image_prompt or visual_direction or "").strip()
     if not prompt:
         prompt = f"{recipe} Photorealistic NEW advertisement of {product.title}."
@@ -520,23 +627,19 @@ def build_image_prompt(
         "a color grade of it, or a Meta ad you have seen. New camera, new lighting, new background, new crop.",
         f"This is unique still {variation_index + 1} of {max(variation_count, 1)}.",
         CRAFT,
-        CLEAN_PLATE,
         "Do not invent materials, logos, discounts, or packaging details that are not in the product facts.",
     ]
+    if not overlay:
+        extras.insert(-1, CLEAN_PLATE)
     desc = (product.description or "").strip()
     if desc:
         extras.append(f"Known product facts only: {desc[:240]}")
-    if product.price is not None and style == "PROMOTIONAL":
-        currency = product.currency or ""
+    if style == "PROMOTIONAL":
+        price = format_price(product.price, product.currency)
         extras.append(
-            f"PROMOTIONAL offer ad: imply value using the real price {currency} {product.price}. "
-            "Leave quiet negative space. Never invent a % off, fake timer, or fake review. "
-            "Never paint the price, a discount, or any number on the image."
-        )
-    elif style == "PROMOTIONAL":
-        extras.append(
-            "PROMOTIONAL offer ad: gift/drop/urgency composition with quiet margins. "
-            "Never invent a discount, fake timer, or fake review. Never paint numbers on the frame."
+            "PROMOTIONAL offer ad: gift, drop, or value energy that closes the sale. "
+            + (f"Use the real price {price} only. " if price else "")
+            + "Never invent a discount percent, a fake timer, or a fake review."
         )
     if winning_notes:
         extras.append(
@@ -547,10 +650,15 @@ def build_image_prompt(
         extras.append(f"Brand look: {brand_style[:160]}")
     extras.append(
         f"Finished Meta {placement} advertisement still, aspect {aspect_ratio}. "
-        f"{CRAFT} {CLEAN_PLATE} "
-        "Single product, no fake UI, no extra logos."
+        f"{CRAFT} "
+        + ("" if overlay else f"{CLEAN_PLATE} ")
+        + "Single product, no fake UI, no extra logos."
     )
-    return f"{prompt}\n\n" + " ".join(extras)
+    body = f"{prompt}\n\n" + " ".join(extras)
+    if overlay:
+        copy = overlay_copy(style, product=product, headline=headline, hook=hook, cta=cta)
+        body = f"{body}\n\n{text_overlay_directive(style, copy)}"
+    return body
 
 
 def build_video_prompt(

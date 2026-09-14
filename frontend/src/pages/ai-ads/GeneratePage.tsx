@@ -27,13 +27,25 @@ const STYLES = [
   { id: "UGC", label: "UGC", help: "Phone-shot real life — not a catalog retouch" },
   { id: "PRODUCT_DEMO", label: "Product demo", help: "Show how the exact product works on a body" },
   { id: "LIFESTYLE", label: "Lifestyle", help: "Build a world around the product" },
-  { id: "PROBLEM_SOLUTION", label: "Problem / solution", help: "The pain first, then this product as the fix" },
-  { id: "PROMOTIONAL", label: "Promotional", help: "Offer energy on your real price — never a fake discount" },
+  {
+    id: "PROBLEM_SOLUTION",
+    label: "Problem / solution",
+    help: "The pain first, then this product as the fix",
+    salesText: true,
+  },
+  {
+    id: "PROMOTIONAL",
+    label: "Promotional",
+    help: "Offer energy on your real price — never a fake discount",
+    salesText: true,
+  },
   { id: "UNBOXING", label: "Unboxing", help: "First-touch reveal from tissue or a box" },
   { id: "MACRO", label: "Macro", help: "Extreme close-up of materials and hardware" },
   { id: "FLAT_LAY", label: "Flat lay", help: "Editorial overhead — product fully readable" },
   { id: "STREET_STYLE", label: "Street style", help: "Candid outdoor fashion, product worn" },
 ] as const;
+
+const SALES_TEXT_STYLES = STYLES.filter((s) => "salesText" in s && s.salesText).map((s) => s.id);
 
 const MAX_IMAGES = 4;
 const MAX_VIDEOS = 4;
@@ -110,6 +122,8 @@ export function GeneratePage() {
   function toggleStyle(id: string) {
     setStyles((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
+
+  const salesTextOn = styles.some((s) => (SALES_TEXT_STYLES as readonly string[]).includes(s));
 
   function mergeProduct(card: AIAdsProduct) {
     setProducts((prev) => {
@@ -401,7 +415,14 @@ export function GeneratePage() {
                       {on && <Check className="h-3 w-3" />}
                     </span>
                     <span className="min-w-0">
-                      <span className="block text-sm font-medium text-content">{s.label}</span>
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-sm font-medium text-content">{s.label}</span>
+                        {"salesText" in s && s.salesText && (
+                          <span className="rounded border border-brand-500/40 bg-brand-500/10 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-brand-700 dark:text-brand-300">
+                            Sales text
+                          </span>
+                        )}
+                      </span>
                       <span className="mt-0.5 block text-xs leading-snug text-content-muted">
                         {s.help}
                       </span>
@@ -415,11 +436,21 @@ export function GeneratePage() {
                 Pick at least one angle.
               </p>
             )}
+            {salesTextOn && (
+              <p className="mt-2.5 text-xs leading-relaxed text-content-muted">
+                Sales-text angles render a headline, a CTA button, and your real price straight onto the
+                still so it can close on its own. Every other angle stays a clean plate.
+              </p>
+            )}
 
             <div className="mt-5 space-y-4 border-t border-border pt-4">
               <CountRow
                 label="Still images"
-                hint="Feed-ready stills. Clean plates — you add copy later."
+                hint={
+                  salesTextOn
+                    ? "Feed-ready stills. Sales angles come with copy baked in."
+                    : "Feed-ready stills. Clean plates — you add copy later."
+                }
                 value={imageCount}
                 max={MAX_IMAGES}
                 onChange={setImageCount}
@@ -541,8 +572,9 @@ export function GeneratePage() {
               {imageCount && videoCount ? " · " : ""}
               {videoCount ? `9:16 MP4 · ${placement}` : placement}
               {" · "}
-              clean plates with no burned-in text
-              {videoCount ? " or voice" : ""}, so you add captions yourself.
+              {salesTextOn && imageCount
+                ? "sales angles ship with a headline and CTA on the still; the rest stay clean plates."
+                : `clean plates with no burned-in text${videoCount ? " or voice" : ""}, so you add captions yourself.`}
             </CardDescription>
 
             <ul className="mt-4 space-y-2">

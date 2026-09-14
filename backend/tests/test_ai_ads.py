@@ -486,6 +486,74 @@ def test_promotional_style_builds_offer_ad_not_catalog_retouch():
     assert "catalog" in prompt.lower() or "listing" in prompt.lower()
 
 
+def test_promotional_still_bakes_closing_copy_into_the_frame():
+    from app.services.ai_ads.complete_creative import build_image_prompt
+    from app.services.ai_ads.schemas import ProductContext
+
+    prompt = build_image_prompt(
+        product=ProductContext(product_id="1", title="Courage Bracelet", price=49.0, currency="USD"),
+        visual_direction="Gift table reveal",
+        styles=["PROMOTIONAL"],
+        headline="Never take it off.",
+        cta="SHOP_NOW",
+    )
+    assert "BAKE THIS AD COPY INTO THE IMAGE" in prompt
+    assert '"Never take it off"' in prompt
+    assert '"Shop Now"' in prompt
+    assert '"$49"' in prompt
+    assert "CONTRAST IS MANDATORY" in prompt
+    assert "safe area" in prompt.lower()
+    # The clean-plate rule must not fight the overlay it just asked for.
+    assert "CLEAN PLATE" not in prompt
+
+
+def test_problem_solution_still_bakes_copy_but_other_angles_do_not():
+    from app.services.ai_ads.complete_creative import bakes_sales_text, build_image_prompt
+    from app.services.ai_ads.schemas import ProductContext
+
+    assert bakes_sales_text("PROBLEM_SOLUTION")
+    assert bakes_sales_text("promotional")
+    assert not bakes_sales_text("UGC")
+    product = ProductContext(product_id="1", title="Courage Bracelet")
+    baked = build_image_prompt(
+        product=product,
+        visual_direction="Fiddly clasp, then this one",
+        styles=["PROBLEM_SOLUTION"],
+        headline="Stops slipping off",
+        cta="SHOP_NOW",
+    )
+    assert "BAKE THIS AD COPY INTO THE IMAGE" in baked
+    assert '"$' not in baked  # price badge is promotional-only
+    clean = build_image_prompt(
+        product=product,
+        visual_direction="Try-on in the mirror",
+        styles=["UGC"],
+        headline="Stops slipping off",
+        cta="SHOP_NOW",
+    )
+    assert "CLEAN PLATE" in clean
+    assert "BAKE THIS AD COPY" not in clean
+
+
+def test_overlay_headline_is_clamped_for_the_image_model():
+    from app.services.ai_ads.complete_creative import format_price, overlay_copy
+    from app.services.ai_ads.schemas import ProductContext
+
+    product = ProductContext(product_id="1", title="Courage Bracelet", price=49.5, currency="EUR")
+    copy = overlay_copy(
+        "PROMOTIONAL",
+        product=product,
+        headline="This is a very long promotional headline that no image model will ever spell right",
+        cta="LEARN_MORE",
+    )
+    assert len(copy["headline"]) <= 30
+    assert "\n" not in copy["headline"]
+    assert copy["cta"] == "Learn More"
+    assert copy["price"] == "\u20ac49.50"
+    assert format_price(None, "USD") == ""
+    assert format_price(20.0, "SEK") == "20 SEK"
+
+
 def test_image_prompt_is_a_clean_plate_without_baked_text():
     from app.services.ai_ads.complete_creative import KNOWN_STYLES, build_image_prompt
     from app.services.ai_ads.schemas import ProductContext

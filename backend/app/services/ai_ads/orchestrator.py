@@ -34,6 +34,7 @@ from app.services.ai_ads.complete_creative import (
     meta_ready_copy,
     product_appearance_notes,
     product_reference_urls,
+    styles_bake_sales_text,
     video_spec_from_concept,
     winning_style_notes,
 )
@@ -389,7 +390,11 @@ class AdsAIOrchestrator:
                 detail=(
                     f"Drafting {image_count} still(s) and {video_count} 9:16 video(s) "
                     f"in styles {', '.join(styles) or 'default'} featuring the real {product.title}. "
-                    "Clean plates — no on-screen text. You add captions and voice later."
+                    + (
+                        "Selling copy is burned into the promotional stills; everything else is a clean plate."
+                        if styles_bake_sales_text(styles)
+                        else "Clean plates — no on-screen text. You add captions and voice later."
+                    )
                 ),
                 pct=42,
             )
@@ -707,6 +712,9 @@ class AdsAIOrchestrator:
                 variation_index=image_slot,
                 variation_count=max(image_total, 1),
                 styles=styles,
+                headline=asset.headline or "",
+                hook=asset.hook or "",
+                cta=asset.cta or "",
             )
             result = await image_provider.generate(
                 ImageGenerationRequest(

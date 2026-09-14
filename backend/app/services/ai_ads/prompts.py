@@ -68,12 +68,16 @@ Honor the operator's selected styles (round-robin): UGC, PRODUCT_DEMO, LIFESTYLE
 - PRODUCT_DEMO: show how the exact product works on a body.
 - LIFESTYLE: a new world around the product that the listing never used.
 - PROBLEM_SOLUTION: friction then the fix, using only product facts.
-- PROMOTIONAL: offer-ad energy using the real price only. Never invent a discount. Never paint prices.
+- PROMOTIONAL: offer-ad energy using the real price only. Never invent a discount.
 - UNBOXING: first-touch reveal from tissue or box.
 - MACRO: extreme close-up of materials and hardware.
 - FLAT_LAY: editorial overhead, product fully readable.
 - STREET_STYLE: candid outdoor fashion, product worn.
-Each IMAGE needs a unique full-frame NEW scene featuring the locked product. CLEAN PLATE: no on-screen text.
+SELLING TEXT: PROMOTIONAL and PROBLEM_SOLUTION stills get real ad copy burned into the frame, so their
+headline must be a closing line of 30 characters or fewer and the scene must leave a flat, uncluttered top
+band and bottom strip for that copy. Every other style, and every video, stays a CLEAN PLATE with no
+on-screen text.
+Each IMAGE needs a unique full-frame NEW scene featuring the locked product.
 Each VIDEO needs a unique scene list. CLEAN PLATE: 9:16, 4–12 seconds, NO on-screen text, NO spoken voiceover.
 If they asked for N images, N different stills. If they asked for N videos, N different storyboards.
 Do not brief a retouch, crop, or color-grade of the attached catalog still.
@@ -107,7 +111,10 @@ source_creative_ids when inspired by existing ads, and a rationale.
 IMAGE concepts: image_prompt must describe THIS locked product in a full photorealistic NEW advertisement shot.
 Every IMAGE in the batch must differ in setting, camera angle, lighting, and composition.
 Never retouch the catalog photo. The attached still is identity only.
-CLEAN PLATE for images: no letters, numbers, logos, prices, or UI on the frame.
+PROMOTIONAL and PROBLEM_SOLUTION images carry burned-in selling copy: give them a punchy headline of 30
+characters or fewer, and an image_prompt whose top band and bottom strip stay flat and uncluttered so the
+headline and CTA button read clearly. Never write the copy into image_prompt yourself.
+Every other image style is a CLEAN PLATE: no letters, numbers, logos, prices, or UI on the frame.
 VIDEO concepts: include 3-5 scenes (duration, visual) that sum 8-12 seconds.
 Do not fill voiceover or text_overlay — those stay empty. No on-screen words.
 Every VIDEO in the batch must have a different storyboard.
@@ -129,7 +136,10 @@ The reference image is the exact product. Preserve identity: materials, colors, 
 Describe a new scene, camera, lighting, and composition. Do not return the reference photo.
 Specify composition, lighting, background, aspect ratio, and placement.
 Photorealistic craft: sharp product, true materials, correct anatomy, no melted metal.
-CLEAN PLATE: no logos, fake UI, fake reviews, prices, letters, numbers, extra products, or a different SKU.
+For PROMOTIONAL or PROBLEM_SOLUTION, keep the top band and bottom strip flat and uncluttered so burned-in
+copy stays legible, but do not write the copy yourself.
+Otherwise CLEAN PLATE: no logos, fake UI, fake reviews, prices, letters, numbers, extra products, or a
+different SKU.
 Do not invent packaging details.
 The prompt itself should be a detailed visual description, not JSON.
 """
