@@ -22,6 +22,9 @@ class AIEmailAssistantSettingsUpdate(BaseModel):
     sync_only_customer_unread: bool = True
     verify_gmail_thread_before_reply: bool = True
     use_thread_context: bool = True
+    use_order_context: bool = True
+    tracking_button_enabled: bool = True
+    tracking_page_url: str = ""
 
 
 class AIEmailAssistantSettingsResponse(AIEmailAssistantSettingsUpdate):
@@ -33,6 +36,8 @@ class AIEmailAssistantSettingsResponse(AIEmailAssistantSettingsUpdate):
     default_model: str = "gpt-4o-mini"
     automation_last_run_at: str | None = None
     automation_last_error: str | None = None
+    # Falls back to this when tracking_page_url is blank
+    default_tracking_page_url: str = ""
 
 
 class AutomationRunResponse(BaseModel):
@@ -103,6 +108,11 @@ class AIReplyResponse(BaseModel):
     error_message: str | None = None
     created_at: str
     sent_at: str | None = None
+    is_ai_generated: bool = False
+    # Set when a prefilled "Track my order" button is attached to this reply
+    tracking_url: str | None = None
+    tracking_number: str | None = None
+    tracking_carrier: str | None = None
 
 
 class UpdateReplyDraftBody(BaseModel):

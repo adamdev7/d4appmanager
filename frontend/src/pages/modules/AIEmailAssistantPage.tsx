@@ -42,7 +42,7 @@ import {
 import type { GmailAccount } from "@/types";
 
 type Tab = "inbox" | "stats" | "business" | "settings" | "logs";
-type InboxFilter = "all" | "needs_reply" | "drafts" | "replied" | "filtered";
+type InboxFilter = "all" | "needs_reply" | "drafts" | "ai_answered" | "replied" | "filtered";
 
 type PeriodStats = {
   emails_received: number;
@@ -88,6 +88,10 @@ type InboxItem = {
     effective_body: string;
     status: string;
     model_used: string;
+    is_ai_generated: boolean;
+    tracking_url: string | null;
+    tracking_number: string | null;
+    tracking_carrier: string | null;
   } | null;
 };
 
@@ -144,6 +148,10 @@ type Settings = {
   sync_only_customer_unread: boolean;
   verify_gmail_thread_before_reply: boolean;
   use_thread_context: boolean;
+  use_order_context: boolean;
+  tracking_button_enabled: boolean;
+  tracking_page_url: string;
+  default_tracking_page_url: string;
   default_model: string;
 };
 
@@ -395,11 +403,20 @@ function effectiveStatus(item: InboxItem) {
   return item.status;
 }
 
+function wasSent(item: InboxItem) {
+  return item.status === "replied" || item.latest_reply?.status === "sent";
+}
+
+function answeredByAI(item: InboxItem) {
+  return wasSent(item) && item.latest_reply?.is_ai_generated === true;
+}
+
 function matchesInboxFilter(item: InboxItem, filter: InboxFilter) {
   if (filter === "all") return true;
   if (filter === "needs_reply") return item.status === "new";
   if (filter === "drafts") return item.status === "draft_pending" || item.latest_reply?.status === "draft";
-  if (filter === "replied") return item.status === "replied" || item.latest_reply?.status === "sent";
+  if (filter === "ai_answered") return answeredByAI(item);
+  if (filter === "replied") return wasSent(item);
   if (filter === "filtered") return item.status === "skipped";
   return true;
 }
@@ -457,7 +474,8 @@ export function AIEmailAssistantPage() {
     all: inbox.length,
     needs_reply: inbox.filter((i) => i.status === "new").length,
     drafts: inbox.filter((i) => i.status === "draft_pending" || i.latest_reply?.status === "draft").length,
-    replied: inbox.filter((i) => i.status === "replied" || i.latest_reply?.status === "sent").length,
+    ai_answered: inbox.filter(answeredByAI).length,
+    replied: inbox.filter(wasSent).length,
     filtered: inbox.filter((i) => i.status === "skipped").length,
   };
 
@@ -865,6 +883,9 @@ export function AIEmailAssistantPage() {
           sync_only_customer_unread: settings.sync_only_customer_unread,
           verify_gmail_thread_before_reply: settings.verify_gmail_thread_before_reply,
           use_thread_context: settings.use_thread_context,
+          use_order_context: settings.use_order_context,
+          tracking_button_enabled: settings.tracking_button_enabled,
+          tracking_page_url: settings.tracking_page_url,
         },
         storeId
       );
@@ -1142,6 +1163,7 @@ export function AIEmailAssistantPage() {
                     { id: "all", label: "All" },
                     { id: "needs_reply", label: "Open" },
                     { id: "drafts", label: "Drafts" },
+                    { id: "ai_answered", label: "AI replied" },
                     { id: "replied", label: "Sent" },
                     { id: "filtered", label: "Skipped" },
                   ] as const
@@ -1548,6 +1570,30 @@ export function AIEmailAssistantPage() {
                         placeholder="Write your reply…"
                         autoFocus
                       />
+                      {selected.latest_reply?.tracking_url && (
+                        <div className="rounded-lg border border-border bg-surface-muted/60 px-3 py-2.5">
+                          <p className="text-xs font-medium text-content">
+                            A “Track my order” button will be added below this message
+                          </p>
+                          <p className="text-xs text-content-muted mt-1">
+                            Prefilled with the customer’s order number and email
+                            {selected.latest_reply.tracking_number
+                              ? ` · tracking ${selected.latest_reply.tracking_number}`
+                              : ""}
+                            {selected.latest_reply.tracking_carrier
+                              ? ` (${selected.latest_reply.tracking_carrier})`
+                              : ""}
+                          </p>
+                          <a
+                            href={selected.latest_reply.tracking_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs text-brand-600 hover:underline break-all mt-1 inline-block"
+                          >
+                            {selected.latest_reply.tracking_url}
+                          </a>
+                        </div>
+                      )}
                       <div className="flex flex-wrap gap-2">
                         {selected.latest_reply?.status === "draft" ? (
                           <>
@@ -1981,7 +2027,8 @@ export function AIEmailAssistantPage() {
                 OpenAI API key
               </CardTitle>
               <CardDescription>
-                Required for drafting replies. Stored encrypted — billed by OpenAI on your account.
+                Required for drafting replies in this module only. Stored encrypted — billed by
+                OpenAI on your account. AI Ads has its own key under AI Ads → Settings.
               </CardDescription>
             </CardHeader>
             <div className="space-y-4">
@@ -2212,6 +2259,40 @@ export function AIEmailAssistantPage() {
                   </div>
                 </div>
               )}
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Orders &amp; tracking</CardTitle>
+              <CardDescription>
+                Let the assistant answer order questions with real Shopify data instead of asking
+                the customer to repeat themselves.
+              </CardDescription>
+            </CardHeader>
+            <div className="space-y-4">
+              <Switch
+                checked={settings.use_order_context}
+                onChange={(v) => setSettings({ ...settings, use_order_context: v })}
+                label="Use Shopify order data in replies"
+                description="Matches the sender (and any order number in the email) to their orders, then shares status, carrier, tracking number, and the latest shipment update"
+              />
+              <Switch
+                checked={settings.tracking_button_enabled}
+                onChange={(v) => setSettings({ ...settings, tracking_button_enabled: v })}
+                label="Add a “Track my order” button"
+                description="Attached only when the order has shipped and has a tracking number. The link opens your tracking page with the order number and email already filled in."
+              />
+              <Input
+                label="Tracking page URL"
+                hint={`Default: ${settings.default_tracking_page_url || "not set"}`}
+                placeholder={settings.default_tracking_page_url}
+                value={settings.tracking_page_url}
+                onChange={(e) =>
+                  setSettings({ ...settings, tracking_page_url: e.target.value })
+                }
+                disabled={!settings.tracking_button_enabled}
+              />
             </div>
           </Card>
 

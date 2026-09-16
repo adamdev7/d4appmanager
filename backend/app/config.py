@@ -105,11 +105,15 @@ class Settings(BaseSettings):
     # Sign-in / sign-up with Google (no Gmail API scopes)
     google_auth_scopes: str = "openid email profile"
 
-    # OpenAI (AI Email Assistant — server-side only)
+    # OpenAI — each AI module stores its own user key (server-side only)
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
     openai_max_retries: int = 3
     openai_timeout_seconds: int = 60
+
+    # Storefront track-your-order page used for the "Track my order" button in AI replies.
+    # Per-store overrides live in AI Email Assistant settings.
+    default_tracking_page_url: str = "https://luxory.online/pages/track-your-order"
 
     # AI Ads engine — models are env-configurable; never hard-code in call sites
     openai_image_model: str = "gpt-image-2"

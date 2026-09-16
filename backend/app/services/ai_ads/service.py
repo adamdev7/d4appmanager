@@ -11,7 +11,14 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.crypto import decrypt_value
-from app.core.openai_credentials import is_openai_configured, openai_key_status, resolve_openai_api_key
+from app.core.openai_credentials import (
+    OPENAI_MODULE_AI_ADS,
+    clear_module_openai_api_key,
+    is_openai_configured,
+    openai_key_status,
+    resolve_openai_api_key,
+    set_module_openai_api_key,
+)
 from app.db.models import (
     AIAdStrategy,
     AIRecommendation,
@@ -77,13 +84,27 @@ class AIAdsService:
         return row
 
     def _orch(self, db: Session, user: User, store: Store) -> AdsAIOrchestrator:
-        key = resolve_openai_api_key(user)
+        key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_ADS)
         if not key:
             raise HTTPException(
                 status_code=400,
-                detail="Add your OpenAI API key in AI Email Assistant → Business context first",
+                detail="Add your OpenAI API key in AI Ads → Settings first",
             )
         return AdsAIOrchestrator(db, user, store, key)
+
+    def get_openai_key_status(self, db: Session, user: User) -> dict:
+        return openai_key_status(db, user, OPENAI_MODULE_AI_ADS)
+
+    def save_openai_key(self, db: Session, user: User, api_key: str) -> dict:
+        try:
+            set_module_openai_api_key(db, user, OPENAI_MODULE_AI_ADS, api_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return self.get_openai_key_status(db, user)
+
+    def delete_openai_key(self, db: Session, user: User) -> dict:
+        clear_module_openai_api_key(db, user, OPENAI_MODULE_AI_ADS)
+        return self.get_openai_key_status(db, user)
 
     def get_settings(self, db: Session, user: User, store_id: str) -> dict:
         self.ensure_store(db, user, store_id)
@@ -91,7 +112,7 @@ class AIAdsService:
         analytics = db.scalar(
             select(StoreAnalyticsSettings).where(StoreAnalyticsSettings.store_id == store_id)
         )
-        openai = openai_key_status(user)
+        openai = openai_key_status(db, user, OPENAI_MODULE_AI_ADS)
         meta_configured = bool(
             analytics and analytics.meta_access_token_encrypted and analytics.meta_ad_account_id
         )
@@ -124,6 +145,8 @@ class AIAdsService:
             "meta_configured": meta_configured,
             "openai_configured": openai["openai_configured"],
             "openai_key_masked": openai["openai_key_masked"],
+            "openai_key_is_user_owned": openai["openai_key_is_user_owned"],
+            "openai_uses_server_fallback": openai["openai_uses_server_fallback"],
             "strategy_model": settings.resolved_ai_strategy_model,
             "analysis_model": settings.resolved_ai_analysis_model,
             "creative_model": settings.resolved_ai_creative_model,
@@ -236,7 +259,7 @@ class AIAdsService:
             "recent_jobs": [_job_card(j) for j in recent],
             "last_sync_at": settings_row.last_sync_at.isoformat() if settings_row.last_sync_at else None,
             "last_analyze_at": settings_row.last_analyze_at.isoformat() if settings_row.last_analyze_at else None,
-            "openai_configured": is_openai_configured(user),
+            "openai_configured": is_openai_configured(db, user, OPENAI_MODULE_AI_ADS),
         }
 
     async def list_products(self, db: Session, user: User, store_id: str) -> list[dict]:
@@ -361,10 +384,10 @@ class AIAdsService:
 
     def create_generation_job(self, db: Session, user: User, store_id: str, body: dict) -> dict:
         store = self.ensure_store(db, user, store_id)
-        if not resolve_openai_api_key(user):
+        if not resolve_openai_api_key(db, user, OPENAI_MODULE_AI_ADS):
             raise HTTPException(
                 status_code=400,
-                detail="Add your OpenAI API key in AI Email Assistant → Business context first",
+                detail="Add your OpenAI API key in AI Ads → Settings first",
             )
         if not imaging_available():
             raise HTTPException(status_code=503, detail=PILLOW_INSTALL_HINT)
@@ -434,7 +457,7 @@ class AIAdsService:
         db.add(job)
         db.commit()
         db.refresh(job)
-        enqueue_generation_job(job.id, resolve_openai_api_key(user) or "")
+        enqueue_generation_job(job.id, resolve_openai_api_key(db, user, OPENAI_MODULE_AI_ADS) or "")
         return _job_card(job)
 
     def get_job(self, db: Session, user: User, store_id: str, job_id: str) -> dict:
@@ -481,7 +504,7 @@ class AIAdsService:
             job.status = "QUEUED"
             job.error_message = None
             db.commit()
-        enqueue_generation_job(job.id, resolve_openai_api_key(user) or "")
+        enqueue_generation_job(job.id, resolve_openai_api_key(db, user, OPENAI_MODULE_AI_ADS) or "")
 
     def _require_job(self, db: Session, user: User, store_id: str, job_id: str) -> CreativeGenerationJob:
         self.ensure_store(db, user, store_id)
@@ -553,7 +576,7 @@ class AIAdsService:
                 pct=max(job.progress_pct or 0, 4),
             )
             db.commit()
-        enqueue_generation_job(job.id, resolve_openai_api_key(user) or "")
+        enqueue_generation_job(job.id, resolve_openai_api_key(db, user, OPENAI_MODULE_AI_ADS) or "")
         card = _job_card(job)
         card["nudge"] = "enqueued"
         return card

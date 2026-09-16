@@ -5,6 +5,7 @@ from app.auth.dependencies import get_verified_user
 from app.db.models import User
 from app.db.session import get_db
 from app.models.ads import AdsMetaTestRequest, AdsReportGenerateRequest, AdsSettingsUpdate
+from app.models.ai_email_assistant import OpenAIKeyStatusResponse, SetOpenAIKeyBody
 from app.services.ads_service import AdsService
 
 router = APIRouter()
@@ -50,6 +51,31 @@ async def update_ads_settings(
     db: Session = Depends(get_db),
 ):
     return _service.update_settings(db, user, store_id, body.model_dump(exclude_unset=True))
+
+
+@router.get("/openai-key", response_model=OpenAIKeyStatusResponse)
+async def get_ads_openai_key(
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.get_openai_key_status(db, user)
+
+
+@router.put("/openai-key", response_model=OpenAIKeyStatusResponse)
+async def save_ads_openai_key(
+    body: SetOpenAIKeyBody,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.save_openai_key(db, user, body.api_key)
+
+
+@router.delete("/openai-key", response_model=OpenAIKeyStatusResponse)
+async def delete_ads_openai_key(
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.delete_openai_key(db, user)
 
 
 @router.post("/stores/{store_id}/test-meta")

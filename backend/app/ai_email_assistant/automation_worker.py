@@ -11,7 +11,7 @@ from app.ai_email_assistant.automation_control import stop_autopilot
 from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_exception
 from app.ai_email_assistant.services.assistant_service import AIEmailAssistantService
 from app.config import settings
-from app.core.openai_credentials import is_openai_configured
+from app.core.openai_credentials import OPENAI_MODULE_AI_EMAIL, is_openai_configured
 from app.db.models import AIEmailAssistantSettings, User
 from app.db.session import SessionLocal
 
@@ -36,7 +36,7 @@ async def run_automation_for_settings(settings_id: str, *, force: bool = False) 
         if not user or not user.is_active:
             return {"skipped": True, "reason": "user inactive"}
 
-        if not is_openai_configured(user):
+        if not is_openai_configured(db, user, OPENAI_MODULE_AI_EMAIL):
             stop_autopilot(
                 db,
                 settings_row,

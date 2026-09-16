@@ -518,6 +518,10 @@ export const api = {
         sync_only_customer_unread: boolean;
         verify_gmail_thread_before_reply: boolean;
         use_thread_context: boolean;
+        use_order_context: boolean;
+        tracking_button_enabled: boolean;
+        tracking_page_url: string;
+        default_tracking_page_url: string;
         openai_configured: boolean;
         openai_key_masked: string | null;
         openai_key_is_user_owned: boolean;
@@ -556,6 +560,10 @@ export const api = {
             error_message: string | null;
             created_at: string;
             sent_at: string | null;
+            is_ai_generated: boolean;
+            tracking_url: string | null;
+            tracking_number: string | null;
+            tracking_carrier: string | null;
           } | null;
         }>
       >(`/ai-email-assistant/inbox${storeId ? `?store_id=${storeId}` : ""}`),
@@ -586,6 +594,10 @@ export const api = {
             error_message: string | null;
             created_at: string;
             sent_at: string | null;
+            is_ai_generated: boolean;
+            tracking_url: string | null;
+            tracking_number: string | null;
+            tracking_carrier: string | null;
           } | null;
         };
         messages: Array<{
@@ -916,6 +928,23 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
+    saveOpenAIKey: (apiKey: string) =>
+      request<{
+        openai_configured: boolean;
+        openai_key_masked: string | null;
+        openai_key_is_user_owned: boolean;
+        openai_uses_server_fallback: boolean;
+      }>("/ads/openai-key", {
+        method: "PUT",
+        body: JSON.stringify({ api_key: apiKey }),
+      }),
+    deleteOpenAIKey: () =>
+      request<{
+        openai_configured: boolean;
+        openai_key_masked: string | null;
+        openai_key_is_user_owned: boolean;
+        openai_uses_server_fallback: boolean;
+      }>("/ads/openai-key", { method: "DELETE" }),
     testMeta: (storeId: string, data: object) =>
       request<{ ok: boolean; message: string; account_name: string | null }>(
         `/ads/stores/${storeId}/test-meta`,
@@ -1151,6 +1180,23 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
+    saveOpenAIKey: (apiKey: string) =>
+      request<{
+        openai_configured: boolean;
+        openai_key_masked: string | null;
+        openai_key_is_user_owned: boolean;
+        openai_uses_server_fallback: boolean;
+      }>("/ai-ads/openai-key", {
+        method: "PUT",
+        body: JSON.stringify({ api_key: apiKey }),
+      }),
+    deleteOpenAIKey: () =>
+      request<{
+        openai_configured: boolean;
+        openai_key_masked: string | null;
+        openai_key_is_user_owned: boolean;
+        openai_uses_server_fallback: boolean;
+      }>("/ai-ads/openai-key", { method: "DELETE" }),
     listAvatars: (storeId: string) =>
       request<AIAdsAvatar[]>(`/ai-ads/stores/${storeId}/avatars`),
     upsertAvatar: (storeId: string, data: object) =>

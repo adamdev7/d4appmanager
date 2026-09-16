@@ -1,5 +1,6 @@
 import logging
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
@@ -18,16 +19,25 @@ from app.ai_email_assistant.duplicate_guard import (
 )
 from app.ai_email_assistant.email_filter import config_from_settings, evaluate_email_filter
 from app.ai_email_assistant.thread_context import format_customer_relationship
-from app.ai_email_assistant.order_link import extract_order_numbers
+from app.ai_email_assistant.order_context import (
+    MatchedOrder,
+    TrackingLink,
+    find_customer_orders,
+    format_orders_for_prompt,
+    pick_tracking_link,
+    refresh_shipment_tracking,
+)
 from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_exception
 from app.ai_email_assistant.prompt_builder import BusinessContext
+from app.ai_email_assistant.reply_html import render_reply_html, render_reply_text
 from app.config import settings
 from app.core.openai_credentials import (
-    clear_user_openai_api_key,
+    OPENAI_MODULE_AI_EMAIL,
+    clear_module_openai_api_key,
     is_openai_configured,
     openai_key_status,
     resolve_openai_api_key,
-    set_user_openai_api_key,
+    set_module_openai_api_key,
 )
 from app.db.models import (
     AIEmailAssistantSettings,
@@ -62,8 +72,7 @@ from app.models.ai_email_assistant import (
     ThreadMessageResponse,
 )
 from app.services.tracking_service import TrackingService
-from app.tracking.payload_parser import normalize_email, normalize_order_number, order_number_variants
-from app.tracking.track_service import TrackOrderService
+from app.tracking.payload_parser import normalize_email
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +150,8 @@ class AIEmailAssistantService:
             db.refresh(row)
         return row
 
-    def _ai_service(self, user: User, settings_row: AIEmailAssistantSettings) -> AIService:
-        api_key = resolve_openai_api_key(user)
+    def _ai_service(self, db: Session, user: User, settings_row: AIEmailAssistantSettings) -> AIService:
+        api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL)
         if not api_key:
             raise OpenAIServiceError(
                 user_message="Add your OpenAI API key in AI Email Assistant settings before using AI features.",
@@ -158,27 +167,27 @@ class AIEmailAssistantService:
             return status.HTTP_502_BAD_GATEWAY
         return status.HTTP_400_BAD_REQUEST
 
-    def get_openai_key_status(self, user: User) -> OpenAIKeyStatusResponse:
-        data = openai_key_status(user)
+    def get_openai_key_status(self, db: Session, user: User) -> OpenAIKeyStatusResponse:
+        data = openai_key_status(db, user, OPENAI_MODULE_AI_EMAIL)
         return OpenAIKeyStatusResponse(**data)
 
     def save_openai_key(self, db: Session, user: User, body: SetOpenAIKeyBody) -> OpenAIKeyStatusResponse:
         try:
-            set_user_openai_api_key(db, user, body.api_key)
+            set_module_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL, body.api_key)
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return self.get_openai_key_status(user)
+        return self.get_openai_key_status(db, user)
 
     def delete_openai_key(self, db: Session, user: User) -> OpenAIKeyStatusResponse:
-        clear_user_openai_api_key(db, user)
-        return self.get_openai_key_status(user)
+        clear_module_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL)
+        return self.get_openai_key_status(db, user)
 
     def get_settings_response(
         self, db: Session, user: User, store_id: str | None = None
     ) -> AIEmailAssistantSettingsResponse:
         self._ensure_store(db, user, store_id)
         row = self.get_or_create_settings(db, user, store_id)
-        key_info = openai_key_status(user)
+        key_info = openai_key_status(db, user, OPENAI_MODULE_AI_EMAIL)
         return AIEmailAssistantSettingsResponse(
             id=row.id,
             business_name=row.business_name,
@@ -205,6 +214,10 @@ class AIEmailAssistantService:
             sync_only_customer_unread=row.sync_only_customer_unread,
             verify_gmail_thread_before_reply=row.verify_gmail_thread_before_reply,
             use_thread_context=row.use_thread_context,
+            use_order_context=row.use_order_context,
+            tracking_button_enabled=row.tracking_button_enabled,
+            tracking_page_url=row.tracking_page_url or "",
+            default_tracking_page_url=settings.default_tracking_page_url or "",
             default_model=settings.openai_model,
             **key_info,
         )
@@ -250,6 +263,9 @@ class AIEmailAssistantService:
         row.sync_only_customer_unread = data.sync_only_customer_unread
         row.verify_gmail_thread_before_reply = data.verify_gmail_thread_before_reply
         row.use_thread_context = data.use_thread_context
+        row.use_order_context = data.use_order_context
+        row.tracking_button_enabled = data.tracking_button_enabled
+        row.tracking_page_url = self._validated_tracking_page_url(data.tracking_page_url)
         db.commit()
         return self.get_settings_response(db, user, store.id)
 
@@ -288,6 +304,68 @@ class AIEmailAssistantService:
             customer_email=email.sender_email or "",
         )
         return combined or None
+
+    @staticmethod
+    def _validated_tracking_page_url(raw: str | None) -> str:
+        """Blank means "use the server default"; anything set must be a real https page."""
+        url = (raw or "").strip()
+        if not url:
+            return ""
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tracking page URL must be a full link, e.g. https://yourstore.com/pages/track-your-order",
+            )
+        return url[:512]
+
+    @staticmethod
+    def _tracking_page_url(settings_row: AIEmailAssistantSettings) -> str:
+        configured = (settings_row.tracking_page_url or "").strip()
+        return configured or (settings.default_tracking_page_url or "").strip()
+
+    async def _order_reply_context(
+        self,
+        db: Session,
+        settings_row: AIEmailAssistantSettings,
+        email: InboxEmail,
+    ) -> tuple[str | None, TrackingLink | None]:
+        """Shopify order facts for the prompt, plus the tracking button to attach."""
+        if not settings_row.use_order_context or not email.store_id:
+            return None, None
+
+        store = db.get(Store, email.store_id)
+        if not store or store.status != StoreStatus.CONNECTED.value:
+            return None, None
+
+        try:
+            matched: list[MatchedOrder] = await find_customer_orders(
+                db,
+                store,
+                customer_email=email.sender_email,
+                subject=email.subject,
+                body=email.body_text,
+            )
+        except Exception:
+            # Order context is an enhancement — never block a reply on a Shopify hiccup.
+            logger.exception("Order context lookup failed for inbox %s", email.id)
+            return None, None
+
+        if not matched:
+            return None, None
+
+        await refresh_shipment_tracking(db, store, matched)
+
+        page_url = (
+            self._tracking_page_url(settings_row) if settings_row.tracking_button_enabled else ""
+        )
+        tracking_link = pick_tracking_link(
+            matched, page_url=page_url, customer_email=email.sender_email
+        )
+        order_context = format_orders_for_prompt(matched, tracking_link=tracking_link)
+        return order_context or None, tracking_link
 
     async def _duplicate_skip_reason(
         self,
@@ -383,6 +461,28 @@ class AIEmailAssistantService:
             faq=settings_row.faq,
         )
 
+    @staticmethod
+    def _attach_tracking_link(reply: AIEmailReply, link: TrackingLink | None) -> None:
+        reply.tracking_url = link.url if link else None
+        reply.tracking_order_number = link.order_number if link else None
+        reply.tracking_number = link.tracking_number if link else None
+        reply.tracking_carrier = link.carrier if link else None
+
+    @staticmethod
+    def _tracking_link_from_reply(reply: AIEmailReply) -> TrackingLink | None:
+        if not reply.tracking_url:
+            return None
+        return TrackingLink(
+            url=reply.tracking_url,
+            order_number=reply.tracking_order_number or "",
+            tracking_number=reply.tracking_number or "",
+            carrier=reply.tracking_carrier or "",
+        )
+
+    @staticmethod
+    def _is_ai_generated(reply: AIEmailReply) -> bool:
+        return (reply.model_used or "") not in ("", "manual", GENERATING_MODEL_MARKER)
+
     def _serialize_reply(self, reply: AIEmailReply, intent: str | None = None) -> AIReplyResponse:
         effective = reply.edited_body or reply.generated_body
         return AIReplyResponse(
@@ -397,6 +497,10 @@ class AIEmailAssistantService:
             error_message=reply.error_message,
             created_at=reply.created_at.isoformat(),
             sent_at=reply.sent_at.isoformat() if reply.sent_at else None,
+            is_ai_generated=self._is_ai_generated(reply),
+            tracking_url=reply.tracking_url,
+            tracking_number=reply.tracking_number,
+            tracking_carrier=reply.tracking_carrier,
         )
 
     def _serialize_inbox(self, email: InboxEmail) -> InboxEmailResponse:
@@ -428,7 +532,7 @@ class AIEmailAssistantService:
         settings_row: AIEmailAssistantSettings,
     ) -> None:
         """Decide reply vs ignore using full thread history; mark ignored mail as read."""
-        api_key = resolve_openai_api_key(user)
+        api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL)
         ai = AIService(model=settings_row.openai_model, api_key=api_key) if api_key else None
 
         thread_context: str | None = None
@@ -633,76 +737,16 @@ class AIEmailAssistantService:
                 message="Connect this Shopify store to see matching customer orders.",
             )
 
-        mentioned = extract_order_numbers(email.subject, email.body_text)
-        by_id: dict[str, RelatedOrderItem] = {}
-
-        # 1) All local orders for this customer email
-        if customer_email:
-            rows = db.scalars(
-                select(OrderTracking)
-                .where(
-                    OrderTracking.store_id == store.id,
-                    OrderTracking.customer_email == customer_email,
-                )
-                .order_by(OrderTracking.order_placed_at.desc().nullslast())
-                .limit(12)
-            ).all()
-            for row in rows:
-                by_id[row.id] = self._serialize_related_order(row, match_reason="customer_email")
-
-        # 2) Local lookup for order numbers mentioned in the email
-        for number in mentioned:
-            variants = {
-                normalize_order_number(v) for v in order_number_variants(number)
-            }
-            variants.discard("")
-            if not variants:
-                continue
-            row = db.scalar(
-                select(OrderTracking)
-                .where(
-                    OrderTracking.store_id == store.id,
-                    OrderTracking.order_number_normalized.in_(variants),
-                )
-                .order_by(OrderTracking.order_placed_at.desc().nullslast())
-                .limit(1)
-            )
-            if row and row.id not in by_id:
-                reason = (
-                    "customer_email"
-                    if customer_email and row.customer_email == customer_email
-                    else "order_number_in_email"
-                )
-                by_id[row.id] = self._serialize_related_order(row, match_reason=reason)
-
-        # 3) Live Shopify lookup for mentioned numbers still missing (and matching email)
-        missing_numbers = [
-            n
-            for n in mentioned
-            if not any(
-                normalize_order_number(item.order_number) == n
-                or normalize_order_number(item.order_number.lstrip("#")) == n
-                for item in by_id.values()
-            )
+        matched = await find_customer_orders(
+            db,
+            store,
+            customer_email=customer_email,
+            subject=email.subject,
+            body=email.body_text,
+        )
+        orders = [
+            self._serialize_related_order(m.row, match_reason=m.match_reason) for m in matched
         ]
-        if missing_numbers and customer_email:
-            tracker = TrackOrderService(db)
-            for number in missing_numbers[:5]:
-                try:
-                    row = await tracker._fetch_from_shopify(store, number, customer_email)
-                except Exception:
-                    logger.exception("Shopify related-order lookup failed for %s", number)
-                    continue
-                if row and row.id not in by_id:
-                    by_id[row.id] = self._serialize_related_order(
-                        row, match_reason="order_number_in_email"
-                    )
-
-        orders = sorted(
-            by_id.values(),
-            key=lambda o: o.order_placed_at or o.last_updated_at or "",
-            reverse=True,
-        )[:12]
 
         message = None
         if not orders:
@@ -856,7 +900,7 @@ class AIEmailAssistantService:
             raise HTTPException(status_code=404, detail="Gmail account not found")
         if account.status != GmailAccountStatus.CONNECTED.value:
             raise HTTPException(status_code=400, detail="Gmail account is not connected")
-        if not resolve_openai_api_key(user):
+        if not resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL):
             raise HTTPException(
                 status_code=400,
                 detail="Add your OpenAI API key before running a full inbox check.",
@@ -958,7 +1002,7 @@ class AIEmailAssistantService:
             raise HTTPException(status_code=404, detail="Gmail account not found")
         if account.status != GmailAccountStatus.CONNECTED.value:
             raise HTTPException(status_code=400, detail="Gmail account is not connected")
-        if not resolve_openai_api_key(user):
+        if not resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL):
             raise HTTPException(
                 status_code=400,
                 detail="Add your OpenAI API key before running a full inbox check.",
@@ -1121,7 +1165,7 @@ class AIEmailAssistantService:
         limit: int = 10,
     ) -> int:
         """Generate (and optionally send) replies for inbox emails still awaiting a response."""
-        if not resolve_openai_api_key(user):
+        if not resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL):
             return 0
 
         scoped_store_id = store_id or settings_row.store_id
@@ -1225,7 +1269,7 @@ class AIEmailAssistantService:
         from app.ai_email_assistant.automation_worker import run_automation_for_settings
 
         settings_row = self.get_or_create_settings(db, user, store_id)
-        if not resolve_openai_api_key(user):
+        if not resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL):
             raise HTTPException(
                 status_code=400,
                 detail="Configure your OpenAI API key before running autopilot.",
@@ -1351,14 +1395,18 @@ class AIEmailAssistantService:
                 db, settings_row, account, email, force=True
             )
 
+        order_context, tracking_link = await self._order_reply_context(db, settings_row, email)
+
         try:
-            ai = self._ai_service(user, settings_row)
+            ai = self._ai_service(db, user, settings_row)
             result = await ai.generate_reply(
                 sender=email.sender,
                 subject=email.subject,
                 email_body=email.body_text,
                 context=self._business_context(settings_row),
                 thread_context=thread_context,
+                order_context=order_context,
+                has_tracking_button=tracking_link is not None,
                 model_override=settings_row.openai_model,
             )
         except OpenAIServiceError as exc:
@@ -1383,6 +1431,7 @@ class AIEmailAssistantService:
         reply.model_used = result.model
         reply.prompt_snapshot = result.prompt_snapshot
         reply.error_message = None
+        self._attach_tracking_link(reply, tracking_link)
         db.commit()
         db.refresh(reply)
 
@@ -1545,11 +1594,18 @@ class AIEmailAssistantService:
                 await client.mark_thread_as_read(account, email.thread_id)
                 raise HTTPException(status_code=400, detail=reply.error_message)
 
+        tracking_link = self._tracking_link_from_reply(reply)
+        store = db.get(Store, email.store_id) if email.store_id else None
         send_result = await client.send_thread_reply(
             account,
             to=email.sender_email,
             subject=email.subject,
-            body_text=body,
+            body_text=render_reply_text(body, tracking_link=tracking_link),
+            body_html=render_reply_html(
+                body,
+                tracking_link=tracking_link,
+                theme_color=getattr(store, "email_theme_color", None),
+            ),
             thread_id=email.thread_id,
             in_reply_to_message_id=email.gmail_message_id,
         )
@@ -1793,6 +1849,6 @@ class AIEmailAssistantService:
                 if settings_row.automation_last_run_at
                 else None
             ),
-            openai_configured=is_openai_configured(user),
+            openai_configured=is_openai_configured(db, user, OPENAI_MODULE_AI_EMAIL),
             gmail_connected=gmail_connected,
         )

@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
@@ -356,6 +356,49 @@ def _migrate_user_openai_key_columns() -> None:
             conn.execute(
                 text("ALTER TABLE users ADD COLUMN IF NOT EXISTS openai_api_key_hint VARCHAR(8)")
             )
+
+
+def _migrate_module_openai_keys() -> None:
+    """Copy legacy user OpenAI keys into independent per-module rows once.
+
+    If a user already has any module row, they have been migrated — do not
+    recreate Ads/AI Ads keys after the user disconnects those modules.
+    """
+    from app.db.models import User, UserModuleOpenAIKey
+
+    insp = inspect(engine)
+    if "users" not in insp.get_table_names() or "user_module_openai_keys" not in insp.get_table_names():
+        return
+
+    db = SessionLocal()
+    try:
+        users = db.scalars(select(User).where(User.openai_api_key_encrypted.isnot(None))).all()
+        all_modules = ("ai-email", "ai-ads", "ads")
+        for user in users:
+            has_any = db.scalar(
+                select(UserModuleOpenAIKey.id).where(UserModuleOpenAIKey.user_id == user.id)
+            )
+            seed_modules = all_modules if not has_any else ("ai-email",)
+            for module in seed_modules:
+                exists = db.scalar(
+                    select(UserModuleOpenAIKey.id).where(
+                        UserModuleOpenAIKey.user_id == user.id,
+                        UserModuleOpenAIKey.module_slug == module,
+                    )
+                )
+                if exists:
+                    continue
+                db.add(
+                    UserModuleOpenAIKey(
+                        user_id=user.id,
+                        module_slug=module,
+                        api_key_encrypted=user.openai_api_key_encrypted,
+                        api_key_hint=user.openai_api_key_hint,
+                    )
+                )
+        db.commit()
+    finally:
+        db.close()
 
 
 def _migrate_order_tracking_summary_columns() -> None:
@@ -886,13 +929,54 @@ def _migrate_ai_ads_owner_columns() -> None:
             )
 
 
+def _migrate_ai_email_order_tracking_columns() -> None:
+    """Order-aware replies: order context toggle + the tracking button on each reply."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    names = set(insp.get_table_names())
+
+    tables: dict[str, list[tuple[str, str]]] = {
+        "ai_email_assistant_settings": [
+            ("use_order_context", "BOOLEAN DEFAULT 1" if dialect == "sqlite" else "BOOLEAN DEFAULT TRUE"),
+            (
+                "tracking_button_enabled",
+                "BOOLEAN DEFAULT 1" if dialect == "sqlite" else "BOOLEAN DEFAULT TRUE",
+            ),
+            ("tracking_page_url", "VARCHAR(512) DEFAULT ''"),
+        ],
+        "ai_email_replies": [
+            ("tracking_url", "TEXT"),
+            ("tracking_order_number", "VARCHAR(64)"),
+            ("tracking_number", "VARCHAR(128)"),
+            ("tracking_carrier", "VARCHAR(128)"),
+        ],
+    }
+
+    for table, additions in tables.items():
+        if table not in names:
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        with engine.begin() as conn:
+            for name, col_type in additions:
+                if name in cols:
+                    continue
+                if dialect == "sqlite":
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+                elif dialect == "postgresql":
+                    conn.execute(
+                        text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {col_type}")
+                    )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _migrate_user_email_settings_constraints()
     _migrate_ai_email_assistant_columns()
+    _migrate_ai_email_order_tracking_columns()
     _migrate_user_openai_key_columns()
+    _migrate_module_openai_keys()
     _migrate_order_tracking_summary_columns()
     _migrate_email_branding_columns()
     _migrate_analytics_balance_columns()

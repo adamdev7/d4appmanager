@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from app.config import settings
-from app.core.openai_credentials import resolve_openai_api_key
+from app.core.openai_credentials import OPENAI_MODULE_AI_ADS, resolve_openai_api_key
 from app.db.models import CreativeGenerationJob, Store, StoreAIAdsSettings, User
 from app.db.session import SessionLocal
 from app.services.ai_ads.complete_creative import resolve_generation_counts
@@ -79,7 +79,7 @@ async def _tick() -> None:
             user = db.get(User, store.owner_id)
             if not user:
                 continue
-            api_key = resolve_openai_api_key(user)
+            api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_ADS)
             if not api_key:
                 row.last_weekly_error = "OpenAI API key is not configured"
                 db.commit()

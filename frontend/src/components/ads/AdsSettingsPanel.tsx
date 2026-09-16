@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { ExternalLink, KeyRound, PlugZap, Save, Sparkles, TestTube2 } from "lucide-react";
+import { ExternalLink, PlugZap, Save, Sparkles, TestTube2 } from "lucide-react";
 import { api, type AdsSettings } from "@/lib/api";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
 import { Badge } from "@/components/ui/Badge";
+import { OpenAIModuleKeyCard } from "@/components/settings/OpenAIModuleKeyCard";
 
 type Props = {
   storeId: string;
@@ -136,27 +136,19 @@ export function AdsSettingsPanel({ storeId, settings, onSaved }: Props) {
             <CardTitle>AI ads reports</CardTitle>
           </div>
           <CardDescription>
-            Optionally reuse the OpenAI API key from AI Email Assistant for daily and weekly
-            campaign analysis. Nothing runs until you opt in.
+            This module has its own OpenAI connection. Saving or removing it does not change
+            AI Email Assistant or AI Ads.
           </CardDescription>
         </CardHeader>
         <div className="space-y-4">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant={settings?.openai_configured ? "success" : "warning"}>
-              {settings?.openai_configured ? "OpenAI key ready" : "OpenAI key missing"}
-            </Badge>
-            {settings?.openai_key_masked && (
-              <span className="text-xs text-content-muted">{settings.openai_key_masked}</span>
-            )}
-            {!settings?.openai_configured && (
-              <Link
-                to="/modules/ai-email"
-                className="text-xs font-medium text-brand-600 hover:underline"
-              >
-                Add key in AI Email Assistant
-              </Link>
-            )}
-          </div>
+          <OpenAIModuleKeyCard
+            status={settings}
+            moduleName="Ads reports"
+            description="Used only for campaign analysis in this Ads section."
+            onSave={api.ads.saveOpenAIKey}
+            onRemove={api.ads.deleteOpenAIKey}
+            onStatus={() => onSaved()}
+          />
 
           <Switch
             checked={consent}
@@ -167,7 +159,7 @@ export function AdsSettingsPanel({ storeId, settings, onSaved }: Props) {
                 setWeekly(false);
               }
             }}
-            label="I consent to using my OpenAI API key for Ads analysis"
+            label="I consent to using this OpenAI API key for Ads analysis"
             description="We only call OpenAI with your ads metrics snapshot when you enable reports or click Generate."
           />
 

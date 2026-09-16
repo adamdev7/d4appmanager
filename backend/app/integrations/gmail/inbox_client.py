@@ -461,6 +461,7 @@ class GmailInboxClient:
         body_text: str,
         thread_id: str,
         in_reply_to_message_id: str | None = None,
+        body_html: str | None = None,
     ) -> dict | None:
         token = await self._token(account)
         if not token:
@@ -472,6 +473,9 @@ class GmailInboxClient:
         reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
         em["Subject"] = reply_subject
         em.set_content(body_text, subtype="plain")
+        if body_html:
+            # multipart/alternative — clients that block HTML still get the text link.
+            em.add_alternative(body_html, subtype="html")
         if in_reply_to_message_id:
             em["In-Reply-To"] = f"<{in_reply_to_message_id}>"
             em["References"] = f"<{in_reply_to_message_id}>"

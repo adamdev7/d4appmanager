@@ -39,6 +39,28 @@ class User(Base):
     stores: Mapped[list["Store"]] = relationship(back_populates="owner")
     gmail_accounts: Mapped[list["GmailAccount"]] = relationship(back_populates="owner")
     verification_codes: Mapped[list["VerificationCode"]] = relationship(back_populates="user")
+    module_openai_keys: Mapped[list["UserModuleOpenAIKey"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class UserModuleOpenAIKey(Base):
+    """Per-module OpenAI API key so Email, Ads, and AI Ads connections stay independent."""
+
+    __tablename__ = "user_module_openai_keys"
+    __table_args__ = (UniqueConstraint("user_id", "module_slug", name="uq_user_module_openai_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    module_slug: Mapped[str] = mapped_column(String(32), index=True)
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    user: Mapped["User"] = relationship(back_populates="module_openai_keys")
 
 
 class VerificationPurpose(str, enum.Enum):
@@ -365,6 +387,11 @@ class AIEmailAssistantSettings(Base):
     sync_only_customer_unread: Mapped[bool] = mapped_column(Boolean, default=True)
     verify_gmail_thread_before_reply: Mapped[bool] = mapped_column(Boolean, default=True)
     use_thread_context: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Give the AI the customer's Shopify orders (status, tracking, timeline) when replying
+    use_order_context: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Storefront track-your-order page; a prefilled "Track my order" button links here
+    tracking_button_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    tracking_page_url: Mapped[str] = mapped_column(String(512), default="")
     # Background "Check inbox" / full-history scan (avoids gateway timeouts)
     full_scan_status: Mapped[str] = mapped_column(String(32), default="idle")
     full_scan_message: Mapped[str] = mapped_column(Text, default="")
@@ -431,6 +458,11 @@ class AIEmailReply(Base):
     prompt_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     gmail_sent_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Resolved at draft time so the sent mail matches the order the AI wrote about
+    tracking_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tracking_order_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tracking_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    tracking_carrier: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

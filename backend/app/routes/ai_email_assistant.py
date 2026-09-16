@@ -29,8 +29,9 @@ _service = AIEmailAssistantService()
 @router.get("/openai-key", response_model=OpenAIKeyStatusResponse)
 async def get_openai_key_status(
     user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
 ):
-    return _service.get_openai_key_status(user)
+    return _service.get_openai_key_status(db, user)
 
 
 @router.put("/openai-key", response_model=OpenAIKeyStatusResponse)

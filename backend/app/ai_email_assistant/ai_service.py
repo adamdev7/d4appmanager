@@ -48,6 +48,8 @@ class AIService:
         email_body: str,
         context: BusinessContext,
         thread_context: str | None = None,
+        order_context: str | None = None,
+        has_tracking_button: bool = False,
         model_override: str | None = None,
     ) -> AIReplyResult:
         self._require_api_key()
@@ -58,6 +60,8 @@ class AIService:
             subject=subject,
             email_body=email_body,
             thread_context=thread_context,
+            order_context=order_context,
+            has_tracking_button=has_tracking_button,
         )
         model = self._resolve_model(model_override)
         body = await self._chat_completion(

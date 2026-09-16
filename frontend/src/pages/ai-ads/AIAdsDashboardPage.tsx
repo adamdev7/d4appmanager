@@ -331,7 +331,7 @@ function NextStep({
       return {
         icon: KeyRound,
         title: "Add your OpenAI key",
-        body: "Rendering needs an OpenAI key. It lives in AI Email Assistant settings and is never sent to the browser.",
+        body: "Rendering needs an OpenAI key for this AI Ads module. Add it under Settings — it is separate from AI Email Assistant.",
         action: (
           <Link to="/ai-ads/settings">
             <Button>Check connections</Button>

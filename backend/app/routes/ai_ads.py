@@ -12,6 +12,7 @@ from app.models.ai_ads import (
     AIAdsSettingsUpdate,
     AIAdsStrategyRequest,
 )
+from app.models.ai_email_assistant import OpenAIKeyStatusResponse, SetOpenAIKeyBody
 from app.services.ai_ads.service import AIAdsService
 
 router = APIRouter()
@@ -330,6 +331,31 @@ async def update_settings(
     db: Session = Depends(get_db),
 ):
     return _service.update_settings(db, user, store_id, body.model_dump(exclude_unset=True))
+
+
+@router.get("/openai-key", response_model=OpenAIKeyStatusResponse)
+async def get_ai_ads_openai_key(
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.get_openai_key_status(db, user)
+
+
+@router.put("/openai-key", response_model=OpenAIKeyStatusResponse)
+async def save_ai_ads_openai_key(
+    body: SetOpenAIKeyBody,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.save_openai_key(db, user, body.api_key)
+
+
+@router.delete("/openai-key", response_model=OpenAIKeyStatusResponse)
+async def delete_ai_ads_openai_key(
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.delete_openai_key(db, user)
 
 
 @router.get("/stores/{store_id}/avatars")

@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Switch } from "@/components/ui/Switch";
 import { PageLoader } from "@/components/ui/Loading";
+import { OpenAIModuleKeyCard } from "@/components/settings/OpenAIModuleKeyCard";
 import { cn } from "@/lib/cn";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
@@ -86,8 +87,8 @@ export function AIAdsSettingsPage() {
             <CardTitle>Connections</CardTitle>
           </div>
           <CardDescription>
-            Meta tokens live in Ads / Analytics settings and OpenAI keys in AI Email Assistant.
-            Neither is ever sent to the browser.
+            Meta tokens live in Ads / Analytics settings. OpenAI for this module is stored
+            separately from AI Email Assistant and Ads reports.
           </CardDescription>
         </CardHeader>
         <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
@@ -106,6 +107,28 @@ export function AIAdsSettingsPage() {
             {settings.strategy_model}
           </Connection>
         </dl>
+        <div className="mt-5 border-t border-border pt-5">
+          <OpenAIModuleKeyCard
+            status={settings}
+            moduleName="AI Ads"
+            description="Used only to generate and analyze creatives in AI Ads. Removing it will not disconnect AI Email Assistant."
+            onSave={api.aiAds.saveOpenAIKey}
+            onRemove={api.aiAds.deleteOpenAIKey}
+            onStatus={(status) =>
+              setSettings((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      openai_configured: status.openai_configured,
+                      openai_key_masked: status.openai_key_masked,
+                      openai_key_is_user_owned: status.openai_key_is_user_owned,
+                      openai_uses_server_fallback: status.openai_uses_server_fallback,
+                    }
+                  : prev
+              )
+            }
+          />
+        </div>
       </Card>
 
       <Card>

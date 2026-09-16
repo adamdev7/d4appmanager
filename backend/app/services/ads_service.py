@@ -18,9 +18,12 @@ from app.ai_email_assistant.openai_errors import OpenAIServiceError
 from app.config import settings
 from app.core.crypto import decrypt_value, encrypt_value
 from app.core.openai_credentials import (
+    OPENAI_MODULE_ADS,
+    clear_module_openai_api_key,
     is_openai_configured,
     openai_key_status,
     resolve_openai_api_key,
+    set_module_openai_api_key,
 )
 from app.db.models import AdsAiReport, Store, StoreAdsSettings, StoreAnalyticsSettings, User
 from app.integrations.fx import FxError, convert_amount_with_rate
@@ -149,7 +152,7 @@ class AdsService:
         self._ensure_store(db, user, store_id)
         analytics = self.get_or_create_analytics_settings(db, store_id)
         ads = self.get_or_create_ads_settings(db, store_id)
-        openai = openai_key_status(user)
+        openai = openai_key_status(db, user, OPENAI_MODULE_ADS)
         meta_configured = bool(
             analytics.meta_access_token_encrypted and analytics.meta_ad_account_id
         )
@@ -217,6 +220,20 @@ class AdsService:
 
         db.commit()
         return self.get_settings(db, user, store_id)
+
+    def get_openai_key_status(self, db: Session, user: User) -> dict:
+        return openai_key_status(db, user, OPENAI_MODULE_ADS)
+
+    def save_openai_key(self, db: Session, user: User, api_key: str) -> dict:
+        try:
+            set_module_openai_api_key(db, user, OPENAI_MODULE_ADS, api_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return self.get_openai_key_status(db, user)
+
+    def delete_openai_key(self, db: Session, user: User) -> dict:
+        clear_module_openai_api_key(db, user, OPENAI_MODULE_ADS)
+        return self.get_openai_key_status(db, user)
 
     async def test_meta_connection(
         self, db: Session, user: User, store_id: str, body: dict
@@ -1146,7 +1163,7 @@ class AdsService:
                 "consent": ads_settings.ai_reports_consent,
                 "daily_enabled": ads_settings.daily_ai_reports,
                 "weekly_enabled": ads_settings.weekly_ai_reports,
-                "openai_configured": is_openai_configured(user),
+                "openai_configured": is_openai_configured(db, user, OPENAI_MODULE_ADS),
                 "latest_report": self._serialize_report(latest_report) if latest_report else None,
             },
         }
@@ -1351,11 +1368,11 @@ class AdsService:
                 detail="Accept AI report consent to use your OpenAI key for ads analysis",
             )
 
-        api_key = resolve_openai_api_key(user)
+        api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_ADS)
         if not api_key:
             raise HTTPException(
                 status_code=400,
-                detail="Add your OpenAI API key in AI Email Assistant → Business context first",
+                detail="Add your OpenAI API key in Ads settings first",
             )
 
         dashboard = await self.get_dashboard(
@@ -1449,7 +1466,7 @@ class AdsService:
         ads_settings = self.get_or_create_ads_settings(db, store_id)
         if not ads_settings.ai_reports_consent:
             return []
-        if not resolve_openai_api_key(user):
+        if not resolve_openai_api_key(db, user, OPENAI_MODULE_ADS):
             return []
 
         now = datetime.now(UTC)
