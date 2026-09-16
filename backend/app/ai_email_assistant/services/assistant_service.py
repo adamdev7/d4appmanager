@@ -21,6 +21,7 @@ from app.ai_email_assistant.email_filter import (
     apply_known_customer_guard,
     config_from_settings,
     conversation_looks_like_client,
+    detect_manual_review_reason,
     evaluate_email_filter,
     is_platform_sender,
 )
@@ -35,7 +36,13 @@ from app.ai_email_assistant.order_context import (
     refresh_shipment_tracking,
     strip_tracking_ids_from_text,
 )
-from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_exception
+from app.notifications.whatsapp import (
+    format_manual_review_alert,
+    get_or_create_whatsapp_connection,
+    save_whatsapp_connection,
+    send_user_whatsapp,
+    whatsapp_public_payload,
+)
 from app.ai_email_assistant.prompt_builder import BusinessContext
 from app.ai_email_assistant.reply_html import render_reply_html, render_reply_text
 from app.config import settings
@@ -78,6 +85,7 @@ from app.models.ai_email_assistant import (
     RelatedOrdersResponse,
     SetOpenAIKeyBody,
     ThreadMessageResponse,
+    WhatsAppTestResponse,
 )
 from app.services.tracking_service import TrackingService
 from app.tracking.payload_parser import emails_match, normalize_email
@@ -227,6 +235,8 @@ class AIEmailAssistantService:
             tracking_page_url=row.tracking_page_url or "",
             default_tracking_page_url=settings.default_tracking_page_url or "",
             default_model=settings.openai_model,
+            whatsapp_alerts_enabled=bool(row.whatsapp_alerts_enabled),
+            **whatsapp_public_payload(db, user),
             **key_info,
         )
 
@@ -274,8 +284,47 @@ class AIEmailAssistantService:
         row.use_order_context = data.use_order_context
         row.tracking_button_enabled = data.tracking_button_enabled
         row.tracking_page_url = self._validated_tracking_page_url(data.tracking_page_url)
+        row.whatsapp_alerts_enabled = data.whatsapp_alerts_enabled
+        save_whatsapp_connection(
+            db,
+            user,
+            phone=data.whatsapp_phone,
+            api_key=data.whatsapp_api_key,
+        )
         db.commit()
         return self.get_settings_response(db, user, store.id)
+
+    async def test_whatsapp_alert(
+        self, db: Session, user: User, store_id: str | None = None
+    ) -> WhatsAppTestResponse:
+        """Send a test WhatsApp so the owner can confirm CallMeBot is working."""
+        row = self.get_or_create_settings(db, user, store_id)
+        conn = get_or_create_whatsapp_connection(db, user)
+        if not conn.phone:
+            raise HTTPException(
+                status_code=400,
+                detail="Enter your WhatsApp number with the country code (example: +1 514 555 0100) and save.",
+            )
+        if not conn.api_key_encrypted:
+            raise HTTPException(
+                status_code=400,
+                detail="Paste the CallMeBot API key you received on WhatsApp and save before testing.",
+            )
+        result = await send_user_whatsapp(
+            db,
+            user,
+            text=(
+                f"*App Manager test*\n"
+                f"{row.business_name or 'Your store'} — WhatsApp alerts are working.\n"
+                "When an email is held for manual review, you will get a message like this."
+            ),
+        )
+        if not result.ok:
+            raise HTTPException(status_code=400, detail=result.error or "WhatsApp test failed.")
+        return WhatsAppTestResponse(
+            ok=True,
+            message="Test sent. Check WhatsApp — you should see a message from CallMeBot.",
+        )
 
     async def _fetch_customer_context(
         self,
@@ -554,11 +603,22 @@ class AIEmailAssistantService:
             db, email, thread_context=thread_context
         )
 
+        hold_reason = detect_manual_review_reason(
+            subject=email.subject or "",
+            body=email.body_text or "",
+            thread_context=thread_context,
+        )
+
         config = config_from_settings(settings_row)
 
         # Even with the smart filter toggle off, use AI + full history to decide whether
         # the issue was already answered (reply vs leave as read).
         if not config.enabled:
+            if hold_reason:
+                await self._hold_for_manual_review(
+                    db, email, account, hold_reason, settings_row
+                )
+                return
             if not ai:
                 return
             result = await ai.classify_should_reply(
@@ -568,6 +628,7 @@ class AIEmailAssistantService:
                 business_name=settings_row.business_name,
                 business_type=settings_row.business_type,
                 custom_skip_rules=settings_row.filter_custom_rules or "",
+                business_rules=settings_row.rules or "",
                 thread_context=thread_context,
                 known_customer=known_customer,
                 model_override=settings_row.openai_model,
@@ -589,6 +650,16 @@ class AIEmailAssistantService:
                 known_customer=known_customer,
             )
 
+        if hold_reason or result.needs_manual_review or result.category == "manual_review":
+            await self._hold_for_manual_review(
+                db,
+                email,
+                account,
+                hold_reason or result.reason or "Needs an admin to review before replying.",
+                settings_row,
+            )
+            return
+
         if not result.should_reply:
             email.status = InboxEmailStatus.SKIPPED.value
             email.skip_reason = result.reason or "Filtered — does not need a reply"
@@ -603,6 +674,54 @@ class AIEmailAssistantService:
                 email.id,
                 result.category or "other",
                 (result.reason or "")[:120],
+            )
+
+    async def _hold_for_manual_review(
+        self,
+        db: Session,
+        email: InboxEmail,
+        account: GmailAccount | None,
+        reason: str,
+        settings_row: AIEmailAssistantSettings,
+    ) -> None:
+        """Park sensitive mail for an admin instead of auto-replying."""
+        email.status = InboxEmailStatus.MANUAL_REVIEW.value
+        email.skip_reason = reason
+        email.filter_category = "manual_review"
+        email.processed_at = datetime.now(UTC)
+        db.commit()
+        await self._mark_email_read_in_gmail(db, email, account)
+        logger.info("Held inbox %s for manual review: %s", email.id, reason[:120])
+        await self._notify_manual_review_whatsapp(db, settings_row, email, reason)
+
+    async def _notify_manual_review_whatsapp(
+        self,
+        db: Session,
+        settings_row: AIEmailAssistantSettings,
+        email: InboxEmail,
+        reason: str,
+    ) -> None:
+        if not settings_row.whatsapp_alerts_enabled:
+            return
+        user = db.get(User, settings_row.user_id)
+        if not user:
+            return
+        result = await send_user_whatsapp(
+            db,
+            user,
+            format_manual_review_alert(
+                business_name=settings_row.business_name,
+                sender=email.sender,
+                sender_email=email.sender_email,
+                subject=email.subject,
+                reason=reason,
+            ),
+        )
+        if not result.ok:
+            logger.warning(
+                "WhatsApp manual-review alert failed for inbox %s: %s",
+                email.id,
+                result.error,
             )
 
     async def _is_known_client(
@@ -683,6 +802,9 @@ class AIEmailAssistantService:
         if email.status == InboxEmailStatus.SKIPPED.value:
             reason = email.skip_reason or "left unread as not needing a reply"
             return f"Assistant filtered this conversation — {reason}"
+        if email.status == InboxEmailStatus.MANUAL_REVIEW.value:
+            reason = email.skip_reason or "needs an admin before the AI replies"
+            return f"Held for manual review — {reason}"
         if email.status == InboxEmailStatus.REPLIED.value:
             return "Assistant already replied in this thread via Gmail."
         if email.status == InboxEmailStatus.DRAFT_PENDING.value:
@@ -886,6 +1008,7 @@ class AIEmailAssistantService:
                 if exists.status in (
                     InboxEmailStatus.DRAFT_PENDING.value,
                     InboxEmailStatus.REPLIED.value,
+                    InboxEmailStatus.MANUAL_REVIEW.value,
                 ):
                     thread_id = item.get("threadId") or exists.thread_id
                     if thread_id:
@@ -969,6 +1092,7 @@ class AIEmailAssistantService:
                 InboxEmailStatus.PROCESSED.value,
                 InboxEmailStatus.REPLIED.value,
                 InboxEmailStatus.DRAFT_PENDING.value,
+                InboxEmailStatus.MANUAL_REVIEW.value,
             ):
                 await self._mark_email_read_in_gmail(db, row, account)
 
@@ -1175,6 +1299,7 @@ class AIEmailAssistantService:
                     InboxEmailStatus.REPLIED.value,
                     InboxEmailStatus.SKIPPED.value,
                     InboxEmailStatus.PROCESSED.value,
+                    InboxEmailStatus.MANUAL_REVIEW.value,
                 ):
                     skipped_already += 1
                 continue
@@ -1409,6 +1534,7 @@ class AIEmailAssistantService:
 
         settings_row = self.get_or_create_settings(db, user, store.id)
         db.refresh(email)
+        already_review = email.status == InboxEmailStatus.MANUAL_REVIEW.value
 
         # Idempotent: never create a second reply for an email that already has one.
         existing_sent = find_sent_reply(email)
@@ -1426,7 +1552,7 @@ class AIEmailAssistantService:
                     status_code=409,
                     detail="A reply is already being generated for this email.",
                 )
-            if settings_row.auto_send_enabled:
+            if settings_row.auto_send_enabled and not already_review:
                 return await self.approve_and_send(db, user, existing_draft.id)
             return self._serialize_reply(existing_draft, email.detected_intent)
 
@@ -1439,35 +1565,42 @@ class AIEmailAssistantService:
             raise HTTPException(status_code=400, detail="This email was already replied to.")
 
         account = db.get(GmailAccount, email.gmail_account_id)
-        if account:
-            if await self._skip_if_no_longer_unread_in_gmail(db, account, email):
+        if not already_review:
+            if account:
+                if await self._skip_if_no_longer_unread_in_gmail(db, account, email):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=email.skip_reason or "This email is no longer unread in Gmail.",
+                    )
+                dup = await self._duplicate_skip_reason(db, settings_row, account, email)
+                if dup:
+                    await self._skip_email_as_duplicate(db, email, dup, account=account)
+                    raise HTTPException(status_code=400, detail=dup)
+
+            if settings_row.one_reply_per_thread and thread_has_answered_in_db(
+                db,
+                gmail_account_id=email.gmail_account_id,
+                thread_id=email.thread_id,
+                exclude_inbox_id=email.id,
+            ):
+                await self._skip_email_as_duplicate(
+                    db, email, ALREADY_REPLIED_REASON, account=account
+                )
+                raise HTTPException(status_code=400, detail=ALREADY_REPLIED_REASON)
+
+            await self._apply_email_filter(db, user, email, settings_row)
+            db.refresh(email)
+            if email.status == InboxEmailStatus.SKIPPED.value:
                 raise HTTPException(
                     status_code=400,
-                    detail=email.skip_reason or "This email is no longer unread in Gmail.",
+                    detail=email.skip_reason or "This email was filtered and does not need a reply.",
                 )
-            dup = await self._duplicate_skip_reason(db, settings_row, account, email)
-            if dup:
-                await self._skip_email_as_duplicate(db, email, dup, account=account)
-                raise HTTPException(status_code=400, detail=dup)
-
-        if settings_row.one_reply_per_thread and thread_has_answered_in_db(
-            db,
-            gmail_account_id=email.gmail_account_id,
-            thread_id=email.thread_id,
-            exclude_inbox_id=email.id,
-        ):
-            await self._skip_email_as_duplicate(
-                db, email, ALREADY_REPLIED_REASON, account=account
-            )
-            raise HTTPException(status_code=400, detail=ALREADY_REPLIED_REASON)
-
-        await self._apply_email_filter(db, user, email, settings_row)
-        db.refresh(email)
-        if email.status == InboxEmailStatus.SKIPPED.value:
-            raise HTTPException(
-                status_code=400,
-                detail=email.skip_reason or "This email was filtered and does not need a reply.",
-            )
+            if email.status == InboxEmailStatus.MANUAL_REVIEW.value:
+                raise HTTPException(
+                    status_code=400,
+                    detail=email.skip_reason
+                    or "This email is held for an admin in Manual review.",
+                )
 
         # Claim the inbox row + insert a placeholder draft BEFORE the slow AI call so
         # concurrent autopilot/UI runs cannot generate a second reply.
@@ -1539,7 +1672,7 @@ class AIEmailAssistantService:
         db.commit()
         db.refresh(reply)
 
-        if settings_row.auto_send_enabled:
+        if settings_row.auto_send_enabled and not already_review:
             return await self.approve_and_send(db, user, reply.id)
 
         # Draft-only mode: still mark read in Gmail so the bot does not re-scan it
@@ -1579,8 +1712,11 @@ class AIEmailAssistantService:
         if existing_sent:
             return self._serialize_reply(existing_sent, email.detected_intent)
 
-        # Allow replying to filtered threads from the in-app mailbox
-        if email.status == InboxEmailStatus.SKIPPED.value:
+        # Allow replying to filtered / held threads from the in-app mailbox
+        if email.status in (
+            InboxEmailStatus.SKIPPED.value,
+            InboxEmailStatus.MANUAL_REVIEW.value,
+        ):
             email.skip_reason = None
             email.filter_category = None
 
@@ -1848,7 +1984,11 @@ class AIEmailAssistantService:
             replies = db.scalars(reply_q).all()
 
             emails_received = len(emails)
-            awaiting = sum(1 for e in emails if e.status == InboxEmailStatus.NEW.value)
+            awaiting = sum(
+                1
+                for e in emails
+                if e.status in (InboxEmailStatus.NEW.value, InboxEmailStatus.MANUAL_REVIEW.value)
+            )
             filtered = sum(1 for e in emails if e.status == InboxEmailStatus.SKIPPED.value)
             drafts = sum(1 for r in replies if r.status == AIReplyStatus.DRAFT.value)
             sent = sum(1 for r in replies if r.status == AIReplyStatus.SENT.value)

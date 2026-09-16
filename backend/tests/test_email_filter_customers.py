@@ -166,3 +166,65 @@ def test_conversation_looks_like_client_from_order_language():
         subject="Lunch tomorrow?",
         body="Want to grab a coffee?",
     )
+
+
+def test_subscription_cancel_is_held_for_manual_review_without_ai():
+    from app.ai_email_assistant.email_filter import detect_manual_review_reason
+
+    reason = detect_manual_review_reason(
+        subject="Cancel my subscription",
+        body="Please cancel my membership starting next month.",
+    )
+    assert reason is not None
+    assert "subscription" in reason.lower() or "admin" in reason.lower()
+
+    ai = _FakeAI(EmailFilterResult(should_reply=True, category="customer"))
+    result = asyncio.run(
+        evaluate_email_filter(
+            _config(),
+            sender="Jane Jones <janesox41@gmail.com>",
+            sender_email="janesox41@gmail.com",
+            subject="Cancel my subscription",
+            body="Please cancel my membership. I no longer want to be billed.",
+            ai=ai,
+            known_customer=True,
+        )
+    )
+    assert result.needs_manual_review is True
+    assert result.should_reply is False
+    assert result.category == "manual_review"
+    assert ai.called_with is None
+
+
+def test_unrecognized_charge_is_held_for_manual_review():
+    from app.ai_email_assistant.email_filter import detect_manual_review_reason
+
+    reason = detect_manual_review_reason(
+        subject="Strange charge",
+        body="I don't recognize this charge on my card.",
+    )
+    assert reason is not None
+    assert "charge" in reason.lower() or "admin" in reason.lower()
+
+
+def test_where_is_my_order_is_not_manual_review():
+    from app.ai_email_assistant.email_filter import detect_manual_review_reason
+
+    assert (
+        detect_manual_review_reason(
+            subject="Where is my order?",
+            body="Hi, I still have not received order #1139.",
+        )
+        is None
+    )
+
+
+def test_parse_classification_json_manual_review_flag():
+    from app.ai_email_assistant.email_filter import parse_classification_json
+
+    result = parse_classification_json(
+        '{"should_reply": true, "needs_manual_review": true, "reason": "Escalate", "category": "customer"}'
+    )
+    assert result.needs_manual_review is True
+    assert result.should_reply is False
+    assert result.category == "manual_review"

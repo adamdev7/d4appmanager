@@ -333,6 +333,16 @@ async def update_settings(
     return _service.update_settings(db, user, store_id, body.model_dump(exclude_unset=True))
 
 
+@router.post("/stores/{store_id}/settings/whatsapp-test")
+async def test_whatsapp_alert(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    """Send a test WhatsApp using the shared owner connection."""
+    return await _service.test_whatsapp_alert(db, user, store_id)
+
+
 @router.get("/openai-key", response_model=OpenAIKeyStatusResponse)
 async def get_ai_ads_openai_key(
     user: User = Depends(get_verified_user),

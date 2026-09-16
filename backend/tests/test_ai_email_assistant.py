@@ -100,6 +100,23 @@ def test_known_customer_guard_respects_already_resolved():
     assert guarded.should_reply is False
 
 
+def test_known_customer_guard_does_not_auto_reply_manual_review():
+    from app.ai_email_assistant.email_filter import EmailFilterResult, apply_known_customer_guard
+
+    held = EmailFilterResult(
+        should_reply=False,
+        reason="Subscription cancellation",
+        category="manual_review",
+        needs_manual_review=True,
+    )
+    guarded = apply_known_customer_guard(
+        held, known_customer=True, platform_sender=False
+    )
+    assert guarded.should_reply is False
+    assert guarded.needs_manual_review is True
+    assert guarded.category == "manual_review"
+
+
 def test_mask_openai_api_key():
     assert mask_openai_api_key("sk-abcdefghijklmnop") == "sk-abcd••••mnop"
 

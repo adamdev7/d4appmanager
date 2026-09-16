@@ -527,12 +527,25 @@ export const api = {
         openai_key_is_user_owned: boolean;
         openai_uses_server_fallback: boolean;
         default_model: string;
+        whatsapp_alerts_enabled: boolean;
+        whatsapp_phone: string;
+        whatsapp_configured: boolean;
+        whatsapp_api_key_hint: string | null;
+        whatsapp_last_error: string | null;
+        whatsapp_setup_url: string;
+        whatsapp_allow_message: string;
+        whatsapp_connected_modules: string[];
       }>(`/ai-email-assistant/settings${storeId ? `?store_id=${storeId}` : ""}`),
     updateSettings: (data: object, storeId?: string) =>
       request(`/ai-email-assistant/settings${storeId ? `?store_id=${storeId}` : ""}`, {
         method: "PUT",
         body: JSON.stringify(data),
       }),
+    testWhatsAppAlert: (storeId?: string) =>
+      request<{ ok: boolean; message: string }>(
+        `/ai-email-assistant/settings/whatsapp-test${storeId ? `?store_id=${storeId}` : ""}`,
+        { method: "POST" }
+      ),
     inbox: (storeId?: string) =>
       request<
         Array<{
@@ -1180,6 +1193,11 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
+    testWhatsAppAlert: (storeId: string) =>
+      request<{ ok: boolean; message: string }>(
+        `/ai-ads/stores/${storeId}/settings/whatsapp-test`,
+        { method: "POST" }
+      ),
     saveOpenAIKey: (apiKey: string) =>
       request<{
         openai_configured: boolean;

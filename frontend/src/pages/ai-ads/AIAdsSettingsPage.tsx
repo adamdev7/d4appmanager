@@ -9,6 +9,7 @@ import { Select } from "@/components/ui/Select";
 import { Switch } from "@/components/ui/Switch";
 import { PageLoader } from "@/components/ui/Loading";
 import { OpenAIModuleKeyCard } from "@/components/settings/OpenAIModuleKeyCard";
+import { WhatsAppAlertsCard } from "@/components/settings/WhatsAppAlertsCard";
 import { cn } from "@/lib/cn";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
@@ -23,6 +24,9 @@ export function AIAdsSettingsPage() {
   const [error, setError] = useState("");
   const [avatarName, setAvatarName] = useState("");
   const [avatarDesc, setAvatarDesc] = useState("");
+  const [whatsappKeyInput, setWhatsappKeyInput] = useState("");
+  const [testingWhatsapp, setTestingWhatsapp] = useState(false);
+  const [whatsappTestOk, setWhatsappTestOk] = useState("");
 
   useEffect(() => {
     if (!storeId) {
@@ -36,17 +40,50 @@ export function AIAdsSettingsPage() {
       .finally(() => setLoading(false));
   }, [storeId]);
 
-  async function save() {
-    if (!storeId || !settings) return;
+  async function save(extra?: Record<string, unknown>) {
+    if (!storeId || !settings) return false;
     setSaving(true);
     setError("");
     try {
-      setSettings(await api.aiAds.updateSettings(storeId, settings));
+      const key = (extra?.whatsapp_api_key as string | undefined) ?? whatsappKeyInput.trim();
+      const next = await api.aiAds.updateSettings(storeId, {
+        ...settings,
+        ...extra,
+        whatsapp_api_key: key || undefined,
+      });
+      setSettings(next);
+      setWhatsappKeyInput("");
       setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
+      return false;
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function testWhatsApp() {
+    if (!storeId) return;
+    const saved = await save();
+    if (!saved) return;
+    setTestingWhatsapp(true);
+    setWhatsappTestOk("");
+    setError("");
+    try {
+      const result = await api.aiAds.testWhatsAppAlert(storeId);
+      setWhatsappTestOk(result.message);
+      window.setTimeout(() => setWhatsappTestOk(""), 6000);
+      setSettings(await api.aiAds.getSettings(storeId));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not send the WhatsApp test");
+      try {
+        setSettings(await api.aiAds.getSettings(storeId));
+      } catch {
+        /* ignore */
+      }
+    } finally {
+      setTestingWhatsapp(false);
     }
   }
 
@@ -221,6 +258,30 @@ export function AIAdsSettingsPage() {
           </div>
         </div>
       </Card>
+
+      <WhatsAppAlertsCard
+        moduleName="AI Ads"
+        title="WhatsApp when the weekly batch is done"
+        description="When this week's stills and videos finish generating, you get a recap on your phone: what was made, for which product, and that nothing was published. Customers are never messaged."
+        enableLabel="Send me a recap on WhatsApp"
+        enableDescription="Fires after the weekly generation job completes or fails. Turn this on if WhatsApp is already connected for another module — no extra setup."
+        enabled={Boolean(settings.whatsapp_weekly_alerts_enabled)}
+        onEnabledChange={(v) => setSettings({ ...settings, whatsapp_weekly_alerts_enabled: v })}
+        phone={settings.whatsapp_phone || ""}
+        onPhoneChange={(v) => setSettings({ ...settings, whatsapp_phone: v })}
+        configured={Boolean(settings.whatsapp_configured)}
+        apiKeyHint={settings.whatsapp_api_key_hint ?? null}
+        lastError={settings.whatsapp_last_error ?? null}
+        setupUrl={settings.whatsapp_setup_url}
+        allowMessage={settings.whatsapp_allow_message}
+        connectedModules={settings.whatsapp_connected_modules || []}
+        keyInput={whatsappKeyInput}
+        onKeyInputChange={setWhatsappKeyInput}
+        saving={saving}
+        testing={testingWhatsapp}
+        testOk={whatsappTestOk}
+        onSaveAndTest={() => testWhatsApp()}
+      />
 
       <Card>
         <CardHeader className="mb-4">

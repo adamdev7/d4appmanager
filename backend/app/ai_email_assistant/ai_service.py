@@ -87,6 +87,7 @@ class AIService:
         business_name: str,
         business_type: str,
         custom_skip_rules: str = "",
+        business_rules: str = "",
         thread_context: str | None = None,
         known_customer: bool = False,
         model_override: str | None = None,
@@ -96,13 +97,15 @@ class AIService:
             return EmailFilterResult(should_reply=True)
 
         custom_block = custom_skip_rules.strip() or "None specified."
+        rules_block = business_rules.strip() or "None specified."
         customer_rule = ""
         if known_customer:
             customer_rule = """
 This sender is a known client: their email (for example a Gmail address) has prior chat history
 with this business and/or is linked to a Shopify order. They ARE a client.
 Do not classify them as personal, spam, or unrelated. should_reply must be true unless
-the latest message is only a thank-you that needs no reply or the issue is already fully answered.
+the latest message is only a thank-you that needs no reply, the issue is already fully answered,
+or needs_manual_review is true.
 """
 
         system_message = f"""You classify incoming emails for a {business_type or "business"} named "{business_name or "the business"}".
@@ -113,6 +116,13 @@ Read the entire history before deciding. Identify what the customer asked, wheth
 answered that issue, and whether the latest message raises anything new.
 
 Decide whether the business should send a customer support reply to the LATEST message.
+
+Set needs_manual_review true (and should_reply false, category "manual_review") when an ADMIN must
+handle the email instead of the AI, including:
+- Subscription / membership / auto-renew cancellation or pause requests
+- Unrecognized, unauthorized, or disputed charges / payments / fraud
+- Chargebacks, legal threats, or anything the business rules say a human must handle
+- Situations the rules below say not to promise, approve, or action without an admin
 
 Do NOT reply (should_reply: false) for:
 - Automated/system messages, no-reply senders, delivery receipts, security codes, password resets
@@ -133,13 +143,16 @@ DO reply (should_reply: true) for:
 - Customer thank-you messages when a brief acknowledgment is still appropriate (category: acknowledgment)
 {customer_rule}
 NEVER use category "personal" for customers who bought from or contacted this business.
-Use "customer", "acknowledgment", or "already_resolved".
+Use "customer", "acknowledgment", "already_resolved", or "manual_review".
 
-Additional rules from the business owner (always respect these):
+Business reply rules (if these require a human, set needs_manual_review true):
+{rules_block}
+
+Additional skip rules from the business owner (always respect these):
 {custom_block}
 
 Respond with JSON only, no markdown:
-{{"should_reply": true or false, "reason": "short plain-English explanation for the user", "category": "customer|acknowledgment|already_resolved|automated|newsletter|spam|other"}}"""
+{{"should_reply": true or false, "needs_manual_review": true or false, "reason": "short plain-English explanation for the user", "category": "customer|acknowledgment|already_resolved|automated|newsletter|spam|manual_review|other"}}"""
 
         thread_block = ""
         if thread_context and thread_context.strip():

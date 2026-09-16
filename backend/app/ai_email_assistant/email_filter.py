@@ -40,12 +40,40 @@ _CLIENT_CONVERSATION_HINTS = re.compile(
     re.I,
 )
 
+_SUBSCRIPTION_CANCEL = re.compile(
+    r"(cancel+\w*|stop|end|pause|terminate).{0,60}(subscription|membership|recurring|auto[- ]?renew)|"
+    r"(subscription|membership|recurring|auto[- ]?renew).{0,60}(cancel+\w*|stop|end|pause|terminate)|"
+    r"unsubscribe\s+(me\s+)?from\s+(the\s+)?(subscription|membership|club|box)",
+    re.I | re.S,
+)
+
+_UNRECOGNIZED_CHARGE = re.compile(
+    r"("
+    r"(don'?t|do\s+not|didn'?t|did\s+not)\s+(recognize|authori[sz]e|make|approve).{0,50}"
+    r"(charge|payment|transaction|purchase)|"
+    r"(unauthori[sz]ed|unrecognized|unknown|fraudulent|mystery)\s+(charge|payment|transaction)|"
+    r"(charge|payment|transaction).{0,50}(don'?t|do\s+not|didn'?t)\s+(recognize|authori[sz]e)|"
+    r"chargeback|dispute\s+(this\s+|the\s+|a\s+)?(charge|payment)|"
+    r"stolen\s+(card|credit)|identity\s+theft|fraud\s+alert"
+    r")",
+    re.I | re.S,
+)
+
+_ADMIN_SITUATIONS = re.compile(
+    r"("
+    r"lawyer|attorney|legal\s+action|sue\s+(you|the\s+company)|small\s+claims|"
+    r"better\s+business\s+bureau|\bbbb\b|consumer\s+protection|police\s+report"
+    r")",
+    re.I,
+)
+
 
 @dataclass
 class EmailFilterResult:
     should_reply: bool
     reason: str | None = None
-    category: str | None = None  # customer | automated | newsletter | personal | other
+    category: str | None = None  # customer | automated | newsletter | personal | other | manual_review
+    needs_manual_review: bool = False
 
 
 @dataclass
@@ -56,6 +84,7 @@ class EmailFilterConfig:
     custom_rules: str
     business_name: str
     business_type: str
+    business_rules: str = ""
 
 
 def config_from_settings(row: AIEmailAssistantSettings) -> EmailFilterConfig:
@@ -66,6 +95,7 @@ def config_from_settings(row: AIEmailAssistantSettings) -> EmailFilterConfig:
         custom_rules=row.filter_custom_rules or "",
         business_name=row.business_name,
         business_type=row.business_type,
+        business_rules=row.rules or "",
     )
 
 
@@ -118,6 +148,23 @@ def conversation_looks_like_client(
     return bool(_CLIENT_CONVERSATION_HINTS.search(f"{subject}\n{body}"))
 
 
+def detect_manual_review_reason(
+    *,
+    subject: str = "",
+    body: str = "",
+    thread_context: str | None = None,
+) -> str | None:
+    """Hold for an admin: subscription cancel, unrecognized charges, legal/dispute mail."""
+    blob = f"{subject}\n{body}\n{thread_context or ''}"
+    if _SUBSCRIPTION_CANCEL.search(blob):
+        return "Subscription cancellation — an admin should handle this."
+    if _UNRECOGNIZED_CHARGE.search(blob):
+        return "Unrecognized or disputed charge — an admin should handle this."
+    if _ADMIN_SITUATIONS.search(blob):
+        return "This looks like a legal or dispute issue — an admin should handle this."
+    return None
+
+
 def apply_known_customer_guard(
     result: EmailFilterResult,
     *,
@@ -125,6 +172,13 @@ def apply_known_customer_guard(
     platform_sender: bool,
 ) -> EmailFilterResult:
     """Never treat a buyer / returning sender as 'not a client' just because the AI guessed personal."""
+    if result.needs_manual_review or result.category == "manual_review":
+        return EmailFilterResult(
+            should_reply=False,
+            reason=result.reason or "Needs an admin to review before replying.",
+            category="manual_review",
+            needs_manual_review=True,
+        )
     if not known_customer or platform_sender or result.should_reply:
         return result
     if result.category in ("already_resolved", "acknowledgment"):
@@ -150,6 +204,16 @@ async def evaluate_email_filter(
     platform = is_platform_sender(sender_email)
 
     if not config.enabled:
+        hold_reason = detect_manual_review_reason(
+            subject=subject, body=body, thread_context=thread_context
+        )
+        if hold_reason:
+            return EmailFilterResult(
+                should_reply=False,
+                reason=hold_reason,
+                category="manual_review",
+                needs_manual_review=True,
+            )
         return EmailFilterResult(should_reply=True)
 
     if config.filter_automated:
@@ -160,6 +224,17 @@ async def evaluate_email_filter(
                 reason=auto_reason,
                 category="automated",
             )
+
+    hold_reason = detect_manual_review_reason(
+        subject=subject, body=body, thread_context=thread_context
+    )
+    if hold_reason:
+        return EmailFilterResult(
+            should_reply=False,
+            reason=hold_reason,
+            category="manual_review",
+            needs_manual_review=True,
+        )
 
     # Always use AI when available so it can read full thread history and decide whether
     # the issue was already answered (reply vs ignore / leave as read).
@@ -173,6 +248,7 @@ async def evaluate_email_filter(
                 business_name=config.business_name,
                 business_type=config.business_type,
                 custom_skip_rules=config.custom_rules,
+                business_rules=config.business_rules,
                 thread_context=thread_context,
                 known_customer=known_customer,
             )
@@ -205,8 +281,19 @@ def parse_classification_json(raw: str) -> EmailFilterResult:
         return EmailFilterResult(should_reply=True)
 
     should_reply = bool(data.get("should_reply", True))
-    reason = data.get("reason") or (
-        None if should_reply else "Classified as not requiring a business reply"
-    )
     category = data.get("category")
-    return EmailFilterResult(should_reply=should_reply, reason=reason, category=category)
+    needs_manual_review = bool(data.get("needs_manual_review")) or category == "manual_review"
+    if needs_manual_review:
+        should_reply = False
+        category = "manual_review"
+    reason = data.get("reason") or (
+        "Needs an admin to review before replying."
+        if needs_manual_review
+        else (None if should_reply else "Classified as not requiring a business reply")
+    )
+    return EmailFilterResult(
+        should_reply=should_reply,
+        reason=reason,
+        category=category,
+        needs_manual_review=needs_manual_review,
+    )

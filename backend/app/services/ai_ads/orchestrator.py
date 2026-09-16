@@ -607,6 +607,18 @@ class AdsAIOrchestrator:
                 detail=job.error_message[:280],
                 pct=max(job.progress_pct or 0, 8),
             )
+        finally:
+            if (job.status or "").upper() in {"COMPLETED", "PARTIAL", "FAILED"}:
+                try:
+                    from app.notifications.whatsapp import notify_weekly_ads_generation
+
+                    await notify_weekly_ads_generation(self.db, self.user, self.store, job)
+                except Exception:
+                    logger.exception(
+                        "WhatsApp weekly ads recap failed store=%s job=%s",
+                        self.store.id,
+                        job.id,
+                    )
 
     async def _render_one_creative(
         self,

@@ -243,7 +243,11 @@ class DashboardService:
         inbox_q = select(func.count()).select_from(InboxEmail).where(
             InboxEmail.user_id == user.id,
             InboxEmail.status.in_(
-                [InboxEmailStatus.NEW.value, InboxEmailStatus.DRAFT_PENDING.value]
+                [
+                    InboxEmailStatus.NEW.value,
+                    InboxEmailStatus.DRAFT_PENDING.value,
+                    InboxEmailStatus.MANUAL_REVIEW.value,
+                ]
             ),
         )
         if store_id:

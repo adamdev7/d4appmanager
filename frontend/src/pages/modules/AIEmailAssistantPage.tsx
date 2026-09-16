@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Switch } from "@/components/ui/Switch";
 import { Input } from "@/components/ui/Input";
+import { WhatsAppAlertsCard } from "@/components/settings/WhatsAppAlertsCard";
 import { cn } from "@/lib/cn";
 import {
   BrandLoader,
@@ -42,7 +43,7 @@ import {
 import type { GmailAccount } from "@/types";
 
 type Tab = "inbox" | "stats" | "business" | "settings" | "logs";
-type InboxFilter = "all" | "needs_reply" | "drafts" | "ai_answered" | "replied" | "filtered";
+type InboxFilter = "all" | "needs_reply" | "ai_answered" | "manual_review" | "filtered";
 
 type PeriodStats = {
   emails_received: number;
@@ -153,6 +154,14 @@ type Settings = {
   tracking_page_url: string;
   default_tracking_page_url: string;
   default_model: string;
+  whatsapp_alerts_enabled: boolean;
+  whatsapp_phone: string;
+  whatsapp_configured: boolean;
+  whatsapp_api_key_hint: string | null;
+  whatsapp_last_error: string | null;
+  whatsapp_setup_url: string;
+  whatsapp_allow_message: string;
+  whatsapp_connected_modules: string[];
 };
 
 type LogEntry = {
@@ -267,6 +276,11 @@ function assistantInsight(item: InboxItem): string | null {
     const cat = filterCategoryLabel(item.filter_category);
     return cat ? `Filtered · ${cat}` : "Filtered · no reply needed";
   }
+  if (item.status === "manual_review") {
+    return item.skip_reason
+      ? `Manual review · ${item.skip_reason}`
+      : "Manual review · an admin should reply";
+  }
   if (item.status === "draft_pending" || item.latest_reply?.status === "draft") {
     return "Draft ready for review";
   }
@@ -282,6 +296,7 @@ function assistantInsight(item: InboxItem): string | null {
 
 function statusDotClass(status: string) {
   if (status === "new") return "bg-amber-400";
+  if (status === "manual_review") return "bg-orange-500";
   if (status === "draft" || status === "draft_pending") return "bg-brand-500";
   if (status === "replied" || status === "sent") return "bg-emerald-500";
   if (status === "skipped") return "bg-content-subtle/50";
@@ -373,6 +388,7 @@ function statusBadge(status: string) {
   const map: Record<string, "default" | "success" | "warning" | "muted"> = {
     new: "warning",
     draft_pending: "default",
+    manual_review: "warning",
     replied: "success",
     sent: "success",
     draft: "default",
@@ -388,6 +404,7 @@ function statusLabel(status: string) {
     new: "Needs reply",
     draft_pending: "Draft ready",
     draft: "Draft",
+    manual_review: "Manual review",
     replied: "Replied",
     sent: "Sent",
     skipped: "No reply",
@@ -414,9 +431,8 @@ function answeredByAI(item: InboxItem) {
 function matchesInboxFilter(item: InboxItem, filter: InboxFilter) {
   if (filter === "all") return true;
   if (filter === "needs_reply") return item.status === "new";
-  if (filter === "drafts") return item.status === "draft_pending" || item.latest_reply?.status === "draft";
   if (filter === "ai_answered") return answeredByAI(item);
-  if (filter === "replied") return wasSent(item);
+  if (filter === "manual_review") return item.status === "manual_review";
   if (filter === "filtered") return item.status === "skipped";
   return true;
 }
@@ -432,6 +448,7 @@ function filterCategoryLabel(category: string | null) {
     customer: "Customer",
     acknowledgment: "Thank-you",
     already_resolved: "Already answered",
+    manual_review: "Needs admin",
   };
   return labels[category] ?? category;
 }
@@ -453,6 +470,9 @@ export function AIEmailAssistantPage() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [openaiKeyInput, setOpenaiKeyInput] = useState("");
   const [savingOpenaiKey, setSavingOpenaiKey] = useState(false);
+  const [whatsappKeyInput, setWhatsappKeyInput] = useState("");
+  const [testingWhatsapp, setTestingWhatsapp] = useState(false);
+  const [whatsappTestOk, setWhatsappTestOk] = useState("");
   const [runningAutomation, setRunningAutomation] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
   const sendLockRef = useRef<string | null>(null);
@@ -473,9 +493,8 @@ export function AIEmailAssistantPage() {
   const filterCounts: Record<InboxFilter, number> = {
     all: inbox.length,
     needs_reply: inbox.filter((i) => i.status === "new").length,
-    drafts: inbox.filter((i) => i.status === "draft_pending" || i.latest_reply?.status === "draft").length,
     ai_answered: inbox.filter(answeredByAI).length,
-    replied: inbox.filter(wasSent).length,
+    manual_review: inbox.filter((i) => i.status === "manual_review").length,
     filtered: inbox.filter((i) => i.status === "skipped").length,
   };
 
@@ -854,12 +873,34 @@ export function AIEmailAssistantPage() {
     }
   };
 
-  const saveSettings = async () => {
-    if (!settings) return;
+  const testWhatsAppAlert = async () => {
     const storeId = activeStore?.id;
     if (!storeId) {
       setError("Select a store first.");
       return;
+    }
+    setTestingWhatsapp(true);
+    setWhatsappTestOk("");
+    setError("");
+    try {
+      const result = await api.aiEmailAssistant.testWhatsAppAlert(storeId);
+      setWhatsappTestOk(result.message);
+      window.setTimeout(() => setWhatsappTestOk(""), 6000);
+      await loadSettings();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send the WhatsApp test");
+      await loadSettings();
+    } finally {
+      setTestingWhatsapp(false);
+    }
+  };
+
+  const saveSettings = async () => {
+    if (!settings) return false;
+    const storeId = activeStore?.id;
+    if (!storeId) {
+      setError("Select a store first.");
+      return false;
     }
     setSavingSettings(true);
     setSettingsSaved(false);
@@ -890,14 +931,20 @@ export function AIEmailAssistantPage() {
           use_order_context: settings.use_order_context,
           tracking_button_enabled: settings.tracking_button_enabled,
           tracking_page_url: settings.tracking_page_url,
+          whatsapp_alerts_enabled: settings.whatsapp_alerts_enabled,
+          whatsapp_phone: settings.whatsapp_phone,
+          whatsapp_api_key: whatsappKeyInput.trim() || null,
         },
         storeId
       );
+      setWhatsappKeyInput("");
       await loadSettings();
       setSettingsSaved(true);
       window.setTimeout(() => setSettingsSaved(false), 2500);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save settings");
+      return false;
     } finally {
       setSavingSettings(false);
     }
@@ -1166,9 +1213,8 @@ export function AIEmailAssistantPage() {
                   [
                     { id: "all", label: "All" },
                     { id: "needs_reply", label: "Open" },
-                    { id: "drafts", label: "Drafts" },
                     { id: "ai_answered", label: "AI replied" },
-                    { id: "replied", label: "Sent" },
+                    { id: "manual_review", label: "Manual review" },
                     { id: "filtered", label: "Skipped" },
                   ] as const
                 ).map(({ id, label }) => (
@@ -1210,7 +1256,9 @@ export function AIEmailAssistantPage() {
                       ? connectedAccount
                         ? 'Use "Check inbox" to sync Gmail.'
                         : "Connect Gmail in Settings to get started."
-                      : "Try another filter."}
+                      : inboxFilter === "manual_review"
+                        ? "Cancellations, unrecognized charges, and other mail that needs an admin."
+                        : "Try another filter."}
                   </p>
                 </li>
               ) : null}
@@ -1218,7 +1266,10 @@ export function AIEmailAssistantPage() {
                 const name = displayName(item.sender, item.sender_email);
                 const st = effectiveStatus(item);
                 const active = selected?.id === item.id;
-                const needsAttention = item.status === "new" || item.status === "draft_pending";
+                const needsAttention =
+                  item.status === "new" ||
+                  item.status === "draft_pending" ||
+                  item.status === "manual_review";
                 return (
                   <li key={item.id}>
                     <button
@@ -1512,6 +1563,14 @@ export function AIEmailAssistantPage() {
                         ? ` (${filterCategoryLabel(selected.filter_category)?.toLowerCase()})`
                         : ""}
                       . You can still reply yourself or ask AI to draft one.
+                    </p>
+                  )}
+
+                  {selected.status === "manual_review" && !composing && selected.latest_reply?.status !== "draft" && (
+                    <p className="text-sm text-content-muted mb-3 w-full max-w-none">
+                      Held for manual review
+                      {selected.skip_reason ? ` — ${selected.skip_reason}` : ""}.
+                      Reply yourself, or ask AI to draft a message (it will not send until you approve).
                     </p>
                   )}
 
@@ -2259,6 +2318,34 @@ export function AIEmailAssistantPage() {
               )}
             </div>
           </Card>
+
+          <WhatsAppAlertsCard
+            moduleName="AI Email Assistant"
+            title="WhatsApp alerts for Manual review"
+            description="When an email is held in Manual review, a WhatsApp is sent to your phone with the customer, subject, and why it needs you. Customers are never messaged."
+            enableLabel="Notify me on WhatsApp"
+            enableDescription="One message per held email (subscription cancel, unrecognized charge, or anything an admin must handle)"
+            enabled={settings.whatsapp_alerts_enabled}
+            onEnabledChange={(v) => setSettings({ ...settings, whatsapp_alerts_enabled: v })}
+            phone={settings.whatsapp_phone}
+            onPhoneChange={(v) => setSettings({ ...settings, whatsapp_phone: v })}
+            configured={settings.whatsapp_configured}
+            apiKeyHint={settings.whatsapp_api_key_hint}
+            lastError={settings.whatsapp_last_error}
+            setupUrl={settings.whatsapp_setup_url}
+            allowMessage={settings.whatsapp_allow_message}
+            connectedModules={settings.whatsapp_connected_modules || []}
+            keyInput={whatsappKeyInput}
+            onKeyInputChange={setWhatsappKeyInput}
+            saving={savingSettings}
+            testing={testingWhatsapp}
+            testOk={whatsappTestOk}
+            onSaveAndTest={async () => {
+              const saved = await saveSettings();
+              if (!saved) return;
+              await testWhatsAppAlert();
+            }}
+          />
 
           <Card>
             <CardHeader>

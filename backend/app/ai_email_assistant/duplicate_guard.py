@@ -97,6 +97,8 @@ def thread_has_answered_in_db(
             continue
         if row.status == InboxEmailStatus.REPLIED.value:
             return True
+        if row.status == InboxEmailStatus.MANUAL_REVIEW.value:
+            return True
         if row.status == InboxEmailStatus.DRAFT_PENDING.value and row.replies:
             return True
         for reply in row.replies or []:

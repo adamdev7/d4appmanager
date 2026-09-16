@@ -10,6 +10,12 @@ from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.notifications.whatsapp import (
+    get_or_create_whatsapp_connection,
+    save_whatsapp_connection,
+    send_user_whatsapp,
+    whatsapp_public_payload,
+)
 from app.core.crypto import decrypt_value
 from app.core.openai_credentials import (
     OPENAI_MODULE_AI_ADS,
@@ -142,6 +148,10 @@ class AIAdsService:
             "last_sync_at": row.last_sync_at.isoformat() if row.last_sync_at else None,
             "last_analyze_at": row.last_analyze_at.isoformat() if row.last_analyze_at else None,
             "last_weekly_run_at": row.last_weekly_run_at.isoformat() if row.last_weekly_run_at else None,
+            "whatsapp_weekly_alerts_enabled": bool(
+                getattr(row, "whatsapp_weekly_alerts_enabled", False)
+            ),
+            **whatsapp_public_payload(db, user),
             "meta_configured": meta_configured,
             "openai_configured": openai["openai_configured"],
             "openai_key_masked": openai["openai_key_masked"],
@@ -172,6 +182,7 @@ class AIAdsService:
             "combination_pct": "combination_pct",
             "exploration_pct": "exploration_pct",
             "experimental_pct": "experimental_pct",
+            "whatsapp_weekly_alerts_enabled": "whatsapp_weekly_alerts_enabled",
         }
         for key, attr in mapping.items():
             if key in body and body[key] is not None:
@@ -180,8 +191,44 @@ class AIAdsService:
             row.creative_styles_json = json.dumps(list(body["creative_styles"]))
         if "auto_publish" in body and body["auto_publish"] is not None:
             row.auto_publish = bool(body["auto_publish"]) and bool(settings.ai_ad_auto_publish)
+        if "whatsapp_phone" in body or "whatsapp_api_key" in body:
+            save_whatsapp_connection(
+                db,
+                user,
+                phone=body.get("whatsapp_phone"),
+                api_key=body.get("whatsapp_api_key"),
+            )
         db.commit()
         return self.get_settings(db, user, store_id)
+
+    async def test_whatsapp_alert(self, db: Session, user: User, store_id: str) -> dict:
+        store = self.ensure_store(db, user, store_id)
+        conn = get_or_create_whatsapp_connection(db, user)
+        if not conn.phone:
+            raise HTTPException(
+                status_code=400,
+                detail="Enter your WhatsApp number with the country code (example: +1 514 555 0100) and save.",
+            )
+        if not conn.api_key_encrypted:
+            raise HTTPException(
+                status_code=400,
+                detail="Paste the CallMeBot API key you received on WhatsApp and save before testing.",
+            )
+        result = await send_user_whatsapp(
+            db,
+            user,
+            text=(
+                f"*App Manager test*\n"
+                f"{store.name} — WhatsApp alerts are working.\n"
+                "When this week's ads finish generating, you will get a recap like this."
+            ),
+        )
+        if not result.ok:
+            raise HTTPException(status_code=400, detail=result.error or "WhatsApp test failed.")
+        return {
+            "ok": True,
+            "message": "Test sent. Check WhatsApp — you should see a message from CallMeBot.",
+        }
 
     def overview(self, db: Session, user: User, store_id: str) -> dict:
         self.ensure_store(db, user, store_id)
