@@ -17,7 +17,12 @@ export function LoginPage() {
 
   useEffect(() => {
     const oauthError = searchParams.get("error");
-    if (oauthError) setError(oauthError);
+    if (!oauthError) return;
+    if (/shopify/i.test(oauthError)) {
+      setError("Sign-in could not finish. Try Google again, or use email and password.");
+      return;
+    }
+    setError(oauthError);
   }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {

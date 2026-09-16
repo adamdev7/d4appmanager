@@ -36,7 +36,12 @@ export function GoogleAuthButton({ label }: { label: string }) {
       const { authorize_url } = await api.auth.googleAuthorize();
       window.location.href = authorize_url;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to start Google sign-in");
+      const raw = err instanceof Error ? err.message : "";
+      setError(
+        /shopify/i.test(raw)
+          ? "Google sign-in could not start. The server is busy — try again in a few seconds, or use email and password."
+          : raw || "Unable to start Google sign-in"
+      );
       setLoading(false);
     }
   };

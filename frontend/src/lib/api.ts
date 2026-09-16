@@ -67,7 +67,7 @@ export class ApiError extends Error {
   }
 }
 
-async function parseError(res: Response): Promise<string> {
+async function parseError(res: Response, path = ""): Promise<string> {
   if (res.status === 413) {
     return "That picture was too large for the server. Refresh the page and try again — PNG is compressed before upload.";
   }
@@ -75,7 +75,13 @@ async function parseError(res: Response): Promise<string> {
     const err = await res.json().catch(() => ({}));
     const detail = (err as { detail?: unknown }).detail;
     if (typeof detail === "string" && detail.trim()) return detail;
-    return "Shopify took too long. Saved products in App Manager will load on the next try.";
+    if (/\/products\b|shopify/i.test(path)) {
+      return "Shopify took too long. Saved products in App Manager will load on the next try.";
+    }
+    if (path.startsWith("/auth")) {
+      return "Sign-in took too long. Try again, or use email and password.";
+    }
+    return "The server took too long to respond. Try again in a moment.";
   }
   const err = await res.json().catch(() => ({}));
   const detail = (err as { detail?: unknown }).detail;
@@ -101,7 +107,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!res.ok) {
-    throw new ApiError(await parseError(res), res.status);
+    throw new ApiError(await parseError(res, path), res.status);
   }
   return res.json();
 }
@@ -443,7 +449,7 @@ export const api = {
         body: form,
       });
       if (!res.ok) {
-        throw new ApiError(await parseError(res), res.status);
+        throw new ApiError(await parseError(res, `/email-automation/stores/${storeId}/branding/logo`), res.status);
       }
       return res.json() as Promise<{
         store_id: string;
@@ -835,7 +841,7 @@ export const api = {
         headers: { Accept: "application/json" },
       });
       if (!res.ok) {
-        throw new ApiError(await parseError(res), res.status);
+        throw new ApiError(await parseError(res, "/api/track-order"), res.status);
       }
       return res.json();
     },
@@ -1073,7 +1079,10 @@ export const api = {
         body: form,
       });
       if (!res.ok) {
-        throw new ApiError(await parseError(res), res.status);
+        throw new ApiError(
+          await parseError(res, `/ai-ads/stores/${storeId}/products/${productId}/photos`),
+          res.status
+        );
       }
       return res.json() as Promise<AIAdsProduct>;
     },
