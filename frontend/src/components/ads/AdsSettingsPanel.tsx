@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ExternalLink, PlugZap, Save, Sparkles, TestTube2 } from "lucide-react";
+import { ExternalLink, KeyRound, PlugZap, Save, Sparkles, TestTube2 } from "lucide-react";
 import { api, type AdsSettings } from "@/lib/api";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";

@@ -521,6 +521,10 @@ export function AIEmailAssistantPage() {
                         effective_body: thread.inbox_email.latest_reply.effective_body,
                         status: thread.inbox_email.latest_reply.status,
                         model_used: thread.inbox_email.latest_reply.model_used,
+                        is_ai_generated: thread.inbox_email.latest_reply.is_ai_generated,
+                        tracking_url: thread.inbox_email.latest_reply.tracking_url,
+                        tracking_number: thread.inbox_email.latest_reply.tracking_number,
+                        tracking_carrier: thread.inbox_email.latest_reply.tracking_carrier,
                       }
                     : null,
                 }
