@@ -1,13 +1,10 @@
 from collections.abc import Generator
 from pathlib import Path
-import logging
 
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
-
-logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -946,14 +943,6 @@ def _migrate_ai_email_order_tracking_columns() -> None:
                 "BOOLEAN DEFAULT 1" if dialect == "sqlite" else "BOOLEAN DEFAULT TRUE",
             ),
             ("tracking_page_url", "VARCHAR(512) DEFAULT ''"),
-            (
-                "whatsapp_alerts_enabled",
-                "BOOLEAN DEFAULT 0" if dialect == "sqlite" else "BOOLEAN DEFAULT FALSE",
-            ),
-            ("whatsapp_phone", "VARCHAR(32) DEFAULT ''"),
-            ("whatsapp_api_key_encrypted", "TEXT"),
-            ("whatsapp_api_key_hint", "VARCHAR(16)"),
-            ("whatsapp_last_error", "TEXT"),
         ],
         "ai_email_replies": [
             ("tracking_url", "TEXT"),
@@ -979,86 +968,6 @@ def _migrate_ai_email_order_tracking_columns() -> None:
                     )
 
 
-def _migrate_shared_whatsapp_connection() -> None:
-    """User-level CallMeBot connection + AI Ads weekly recap toggle.
-
-    Copies a key previously saved on AI Email Assistant so other modules can
-    turn alerts on without repeating setup.
-    """
-    from app.db.models import AIEmailAssistantSettings, UserWhatsAppSettings
-
-    insp = inspect(engine)
-    try:
-        insp.clear_cache()
-    except Exception:
-        pass
-    dialect = engine.dialect.name
-    names = set(insp.get_table_names())
-    ads_table = "store_ai_ads_settings"
-    if ads_table in names:
-        cols = {c["name"] for c in insp.get_columns(ads_table)}
-        if "whatsapp_weekly_alerts_enabled" not in cols:
-            col_type = "BOOLEAN DEFAULT 0" if dialect == "sqlite" else "BOOLEAN DEFAULT FALSE"
-            try:
-                with engine.begin() as conn:
-                    if dialect == "sqlite":
-                        conn.execute(
-                            text(
-                                f"ALTER TABLE {ads_table} ADD COLUMN "
-                                f"whatsapp_weekly_alerts_enabled {col_type}"
-                            )
-                        )
-                    elif dialect == "postgresql":
-                        conn.execute(
-                            text(
-                                f"ALTER TABLE {ads_table} ADD COLUMN IF NOT EXISTS "
-                                f"whatsapp_weekly_alerts_enabled {col_type}"
-                            )
-                        )
-            except Exception:
-                logger.exception(
-                    "Could not add store_ai_ads_settings.whatsapp_weekly_alerts_enabled"
-                )
-
-    if "user_whatsapp_settings" not in insp.get_table_names():
-        return
-    if "ai_email_assistant_settings" not in insp.get_table_names():
-        return
-
-    db = SessionLocal()
-    try:
-        existing = {
-            row.user_id
-            for row in db.scalars(select(UserWhatsAppSettings)).all()
-            if row.api_key_encrypted
-        }
-        legacy_rows = db.scalars(
-            select(AIEmailAssistantSettings).where(
-                AIEmailAssistantSettings.whatsapp_api_key_encrypted.is_not(None)
-            )
-        ).all()
-        for legacy in legacy_rows:
-            if legacy.user_id in existing:
-                continue
-            row = db.scalar(
-                select(UserWhatsAppSettings).where(UserWhatsAppSettings.user_id == legacy.user_id)
-            )
-            if not row:
-                row = UserWhatsAppSettings(user_id=legacy.user_id)
-                db.add(row)
-            if row.api_key_encrypted:
-                existing.add(legacy.user_id)
-                continue
-            row.phone = legacy.whatsapp_phone or ""
-            row.api_key_encrypted = legacy.whatsapp_api_key_encrypted
-            row.api_key_hint = legacy.whatsapp_api_key_hint
-            row.last_error = legacy.whatsapp_last_error
-            existing.add(legacy.user_id)
-        db.commit()
-    finally:
-        db.close()
-
-
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -1080,4 +989,3 @@ def init_db() -> None:
     _migrate_ai_ads_owner_columns()
     _migrate_ai_ads_catalog_columns()
     _migrate_ai_ads_catalog_photo_bytes()
-    _migrate_shared_whatsapp_connection()

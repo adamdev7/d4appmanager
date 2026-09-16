@@ -25,10 +25,6 @@ class AIEmailAssistantSettingsUpdate(BaseModel):
     use_order_context: bool = True
     tracking_button_enabled: bool = True
     tracking_page_url: str = ""
-    whatsapp_alerts_enabled: bool = False
-    whatsapp_phone: str = ""
-    # Blank keeps the saved key. Send a new key to replace it.
-    whatsapp_api_key: str | None = None
 
 
 class AIEmailAssistantSettingsResponse(AIEmailAssistantSettingsUpdate):
@@ -42,18 +38,6 @@ class AIEmailAssistantSettingsResponse(AIEmailAssistantSettingsUpdate):
     automation_last_error: str | None = None
     # Falls back to this when tracking_page_url is blank
     default_tracking_page_url: str = ""
-    whatsapp_configured: bool = False
-    whatsapp_api_key_hint: str | None = None
-    whatsapp_last_error: str | None = None
-    whatsapp_setup_url: str = "https://www.callmebot.com/blog/free-api-whatsapp-messages/"
-    whatsapp_allow_message: str = "I allow callmebot to send me messages"
-    whatsapp_connected_modules: list[str] = []
-    whatsapp_api_key: str | None = Field(default=None, exclude=True)
-
-
-class WhatsAppTestResponse(BaseModel):
-    ok: bool
-    message: str
 
 
 class AutomationRunResponse(BaseModel):

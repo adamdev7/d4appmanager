@@ -36,13 +36,7 @@ from app.ai_email_assistant.order_context import (
     refresh_shipment_tracking,
     strip_tracking_ids_from_text,
 )
-from app.notifications.whatsapp import (
-    format_manual_review_alert,
-    get_or_create_whatsapp_connection,
-    save_whatsapp_connection,
-    send_user_whatsapp,
-    whatsapp_public_payload,
-)
+from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_exception
 from app.ai_email_assistant.prompt_builder import BusinessContext
 from app.ai_email_assistant.reply_html import render_reply_html, render_reply_text
 from app.config import settings
@@ -85,7 +79,6 @@ from app.models.ai_email_assistant import (
     RelatedOrdersResponse,
     SetOpenAIKeyBody,
     ThreadMessageResponse,
-    WhatsAppTestResponse,
 )
 from app.services.tracking_service import TrackingService
 from app.tracking.payload_parser import emails_match, normalize_email
@@ -235,8 +228,6 @@ class AIEmailAssistantService:
             tracking_page_url=row.tracking_page_url or "",
             default_tracking_page_url=settings.default_tracking_page_url or "",
             default_model=settings.openai_model,
-            whatsapp_alerts_enabled=bool(getattr(row, "whatsapp_alerts_enabled", False)),
-            **whatsapp_public_payload(db, user),
             **key_info,
         )
 
@@ -284,47 +275,8 @@ class AIEmailAssistantService:
         row.use_order_context = data.use_order_context
         row.tracking_button_enabled = data.tracking_button_enabled
         row.tracking_page_url = self._validated_tracking_page_url(data.tracking_page_url)
-        row.whatsapp_alerts_enabled = data.whatsapp_alerts_enabled
-        save_whatsapp_connection(
-            db,
-            user,
-            phone=data.whatsapp_phone,
-            api_key=data.whatsapp_api_key,
-        )
         db.commit()
         return self.get_settings_response(db, user, store.id)
-
-    async def test_whatsapp_alert(
-        self, db: Session, user: User, store_id: str | None = None
-    ) -> WhatsAppTestResponse:
-        """Send a test WhatsApp so the owner can confirm CallMeBot is working."""
-        row = self.get_or_create_settings(db, user, store_id)
-        conn = get_or_create_whatsapp_connection(db, user)
-        if not conn.phone:
-            raise HTTPException(
-                status_code=400,
-                detail="Enter your WhatsApp number with the country code (example: +1 514 555 0100) and save.",
-            )
-        if not conn.api_key_encrypted:
-            raise HTTPException(
-                status_code=400,
-                detail="Paste the CallMeBot API key you received on WhatsApp and save before testing.",
-            )
-        result = await send_user_whatsapp(
-            db,
-            user,
-            text=(
-                f"*App Manager test*\n"
-                f"{row.business_name or 'Your store'} — WhatsApp alerts are working.\n"
-                "When an email is held for manual review, you will get a message like this."
-            ),
-        )
-        if not result.ok:
-            raise HTTPException(status_code=400, detail=result.error or "WhatsApp test failed.")
-        return WhatsAppTestResponse(
-            ok=True,
-            message="Test sent. Check WhatsApp — you should see a message from CallMeBot.",
-        )
 
     async def _fetch_customer_context(
         self,
@@ -615,9 +567,7 @@ class AIEmailAssistantService:
         # the issue was already answered (reply vs leave as read).
         if not config.enabled:
             if hold_reason:
-                await self._hold_for_manual_review(
-                    db, email, account, hold_reason, settings_row
-                )
+                await self._hold_for_manual_review(db, email, account, hold_reason)
                 return
             if not ai:
                 return
@@ -656,7 +606,6 @@ class AIEmailAssistantService:
                 email,
                 account,
                 hold_reason or result.reason or "Needs an admin to review before replying.",
-                settings_row,
             )
             return
 
@@ -682,7 +631,6 @@ class AIEmailAssistantService:
         email: InboxEmail,
         account: GmailAccount | None,
         reason: str,
-        settings_row: AIEmailAssistantSettings,
     ) -> None:
         """Park sensitive mail for an admin instead of auto-replying."""
         email.status = InboxEmailStatus.MANUAL_REVIEW.value
@@ -692,42 +640,6 @@ class AIEmailAssistantService:
         db.commit()
         await self._mark_email_read_in_gmail(db, email, account)
         logger.info("Held inbox %s for manual review: %s", email.id, reason[:120])
-        try:
-            await self._notify_manual_review_whatsapp(db, settings_row, email, reason)
-        except Exception:
-            logger.exception(
-                "WhatsApp manual-review alert failed for inbox %s", email.id
-            )
-
-    async def _notify_manual_review_whatsapp(
-        self,
-        db: Session,
-        settings_row: AIEmailAssistantSettings,
-        email: InboxEmail,
-        reason: str,
-    ) -> None:
-        if not getattr(settings_row, "whatsapp_alerts_enabled", False):
-            return
-        user = db.get(User, settings_row.user_id)
-        if not user:
-            return
-        result = await send_user_whatsapp(
-            db,
-            user,
-            format_manual_review_alert(
-                business_name=settings_row.business_name,
-                sender=email.sender,
-                sender_email=email.sender_email,
-                subject=email.subject,
-                reason=reason,
-            ),
-        )
-        if not result.ok:
-            logger.warning(
-                "WhatsApp manual-review alert failed for inbox %s: %s",
-                email.id,
-                result.error,
-            )
 
     async def _is_known_client(
         self,

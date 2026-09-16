@@ -67,7 +67,7 @@ export class ApiError extends Error {
   }
 }
 
-async function parseError(res: Response, path = ""): Promise<string> {
+async function parseError(res: Response): Promise<string> {
   if (res.status === 413) {
     return "That picture was too large for the server. Refresh the page and try again — PNG is compressed before upload.";
   }
@@ -75,13 +75,7 @@ async function parseError(res: Response, path = ""): Promise<string> {
     const err = await res.json().catch(() => ({}));
     const detail = (err as { detail?: unknown }).detail;
     if (typeof detail === "string" && detail.trim()) return detail;
-    if (/\/products\b|shopify/i.test(path)) {
-      return "Shopify took too long. Saved products in App Manager will load on the next try.";
-    }
-    if (path.startsWith("/auth")) {
-      return "Sign-in took too long. Try again, or use email and password.";
-    }
-    return "The server took too long to respond. Try again in a moment.";
+    return "Shopify took too long. Saved products in App Manager will load on the next try.";
   }
   const err = await res.json().catch(() => ({}));
   const detail = (err as { detail?: unknown }).detail;
@@ -107,7 +101,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
   if (!res.ok) {
-    throw new ApiError(await parseError(res, path), res.status);
+    throw new ApiError(await parseError(res), res.status);
   }
   return res.json();
 }
@@ -449,7 +443,7 @@ export const api = {
         body: form,
       });
       if (!res.ok) {
-        throw new ApiError(await parseError(res, `/email-automation/stores/${storeId}/branding/logo`), res.status);
+        throw new ApiError(await parseError(res), res.status);
       }
       return res.json() as Promise<{
         store_id: string;
@@ -533,25 +527,12 @@ export const api = {
         openai_key_is_user_owned: boolean;
         openai_uses_server_fallback: boolean;
         default_model: string;
-        whatsapp_alerts_enabled: boolean;
-        whatsapp_phone: string;
-        whatsapp_configured: boolean;
-        whatsapp_api_key_hint: string | null;
-        whatsapp_last_error: string | null;
-        whatsapp_setup_url: string;
-        whatsapp_allow_message: string;
-        whatsapp_connected_modules: string[];
       }>(`/ai-email-assistant/settings${storeId ? `?store_id=${storeId}` : ""}`),
     updateSettings: (data: object, storeId?: string) =>
       request(`/ai-email-assistant/settings${storeId ? `?store_id=${storeId}` : ""}`, {
         method: "PUT",
         body: JSON.stringify(data),
       }),
-    testWhatsAppAlert: (storeId?: string) =>
-      request<{ ok: boolean; message: string }>(
-        `/ai-email-assistant/settings/whatsapp-test${storeId ? `?store_id=${storeId}` : ""}`,
-        { method: "POST" }
-      ),
     inbox: (storeId?: string) =>
       request<
         Array<{
@@ -841,7 +822,7 @@ export const api = {
         headers: { Accept: "application/json" },
       });
       if (!res.ok) {
-        throw new ApiError(await parseError(res, "/api/track-order"), res.status);
+        throw new ApiError(await parseError(res), res.status);
       }
       return res.json();
     },
@@ -1079,10 +1060,7 @@ export const api = {
         body: form,
       });
       if (!res.ok) {
-        throw new ApiError(
-          await parseError(res, `/ai-ads/stores/${storeId}/products/${productId}/photos`),
-          res.status
-        );
+        throw new ApiError(await parseError(res), res.status);
       }
       return res.json() as Promise<AIAdsProduct>;
     },
@@ -1202,11 +1180,6 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
-    testWhatsAppAlert: (storeId: string) =>
-      request<{ ok: boolean; message: string }>(
-        `/ai-ads/stores/${storeId}/settings/whatsapp-test`,
-        { method: "POST" }
-      ),
     saveOpenAIKey: (apiKey: string) =>
       request<{
         openai_configured: boolean;

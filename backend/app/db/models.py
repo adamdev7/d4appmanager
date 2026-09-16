@@ -63,24 +63,6 @@ class UserModuleOpenAIKey(Base):
     user: Mapped["User"] = relationship(back_populates="module_openai_keys")
 
 
-class UserWhatsAppSettings(Base):
-    """One CallMeBot connection per owner, shared by every module that can alert."""
-
-    __tablename__ = "user_whatsapp_settings"
-    __table_args__ = (UniqueConstraint("user_id", name="uq_user_whatsapp_settings_user"),)
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
-    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    phone: Mapped[str] = mapped_column(String(32), default="")
-    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    api_key_hint: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
 class VerificationPurpose(str, enum.Enum):
     EMAIL_VERIFY = "email_verify"
     LOGIN_2FA = "login_2fa"
@@ -411,12 +393,6 @@ class AIEmailAssistantSettings(Base):
     # Storefront track-your-order page; a prefilled "Track my order" button links here
     tracking_button_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     tracking_page_url: Mapped[str] = mapped_column(String(512), default="")
-    # Personal WhatsApp (CallMeBot) when an email is held for manual review
-    whatsapp_alerts_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    whatsapp_phone: Mapped[str] = mapped_column(String(32), default="")
-    whatsapp_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    whatsapp_api_key_hint: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    whatsapp_last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Background "Check inbox" / full-history scan (avoids gateway timeouts)
     full_scan_status: Mapped[str] = mapped_column(String(32), default="idle")
     full_scan_message: Mapped[str] = mapped_column(Text, default="")
@@ -766,8 +742,6 @@ class StoreAIAdsSettings(Base):
     last_analyze_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_weekly_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_weekly_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Recap on WhatsApp when the weekly generation job finishes (uses the shared user connection)
-    whatsapp_weekly_alerts_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     last_product_catalog_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

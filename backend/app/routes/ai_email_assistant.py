@@ -20,7 +20,6 @@ from app.models.ai_email_assistant import (
     SetOpenAIKeyBody,
     SyncInboxRequest,
     UpdateReplyDraftBody,
-    WhatsAppTestResponse,
 )
 
 router = APIRouter()
@@ -69,16 +68,6 @@ async def update_settings(
     db: Session = Depends(get_db),
 ):
     return _service.update_settings(db, user, data, store_id)
-
-
-@router.post("/settings/whatsapp-test", response_model=WhatsAppTestResponse)
-async def test_whatsapp_alert(
-    store_id: str | None = Query(default=None),
-    user: User = Depends(get_verified_user),
-    db: Session = Depends(get_db),
-):
-    """Send a test WhatsApp to the number saved in settings."""
-    return await _service.test_whatsapp_alert(db, user, store_id)
 
 
 @router.get("/inbox")
