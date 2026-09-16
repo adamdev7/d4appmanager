@@ -235,7 +235,7 @@ class AIEmailAssistantService:
             tracking_page_url=row.tracking_page_url or "",
             default_tracking_page_url=settings.default_tracking_page_url or "",
             default_model=settings.openai_model,
-            whatsapp_alerts_enabled=bool(row.whatsapp_alerts_enabled),
+            whatsapp_alerts_enabled=bool(getattr(row, "whatsapp_alerts_enabled", False)),
             **whatsapp_public_payload(db, user),
             **key_info,
         )
@@ -692,7 +692,12 @@ class AIEmailAssistantService:
         db.commit()
         await self._mark_email_read_in_gmail(db, email, account)
         logger.info("Held inbox %s for manual review: %s", email.id, reason[:120])
-        await self._notify_manual_review_whatsapp(db, settings_row, email, reason)
+        try:
+            await self._notify_manual_review_whatsapp(db, settings_row, email, reason)
+        except Exception:
+            logger.exception(
+                "WhatsApp manual-review alert failed for inbox %s", email.id
+            )
 
     async def _notify_manual_review_whatsapp(
         self,
@@ -701,7 +706,7 @@ class AIEmailAssistantService:
         email: InboxEmail,
         reason: str,
     ) -> None:
-        if not settings_row.whatsapp_alerts_enabled:
+        if not getattr(settings_row, "whatsapp_alerts_enabled", False):
             return
         user = db.get(User, settings_row.user_id)
         if not user:

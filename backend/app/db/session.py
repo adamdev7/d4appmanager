@@ -1,10 +1,13 @@
 from collections.abc import Generator
 from pathlib import Path
+import logging
 
 from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -985,6 +988,10 @@ def _migrate_shared_whatsapp_connection() -> None:
     from app.db.models import AIEmailAssistantSettings, UserWhatsAppSettings
 
     insp = inspect(engine)
+    try:
+        insp.clear_cache()
+    except Exception:
+        pass
     dialect = engine.dialect.name
     names = set(insp.get_table_names())
     ads_table = "store_ai_ads_settings"
@@ -992,18 +999,26 @@ def _migrate_shared_whatsapp_connection() -> None:
         cols = {c["name"] for c in insp.get_columns(ads_table)}
         if "whatsapp_weekly_alerts_enabled" not in cols:
             col_type = "BOOLEAN DEFAULT 0" if dialect == "sqlite" else "BOOLEAN DEFAULT FALSE"
-            with engine.begin() as conn:
-                if dialect == "sqlite":
-                    conn.execute(
-                        text(f"ALTER TABLE {ads_table} ADD COLUMN whatsapp_weekly_alerts_enabled {col_type}")
-                    )
-                elif dialect == "postgresql":
-                    conn.execute(
-                        text(
-                            f"ALTER TABLE {ads_table} ADD COLUMN IF NOT EXISTS "
-                            f"whatsapp_weekly_alerts_enabled {col_type}"
+            try:
+                with engine.begin() as conn:
+                    if dialect == "sqlite":
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE {ads_table} ADD COLUMN "
+                                f"whatsapp_weekly_alerts_enabled {col_type}"
+                            )
                         )
-                    )
+                    elif dialect == "postgresql":
+                        conn.execute(
+                            text(
+                                f"ALTER TABLE {ads_table} ADD COLUMN IF NOT EXISTS "
+                                f"whatsapp_weekly_alerts_enabled {col_type}"
+                            )
+                        )
+            except Exception:
+                logger.exception(
+                    "Could not add store_ai_ads_settings.whatsapp_weekly_alerts_enabled"
+                )
 
     if "user_whatsapp_settings" not in insp.get_table_names():
         return

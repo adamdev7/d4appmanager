@@ -173,7 +173,13 @@ async def send_callmebot_whatsapp(
 
     payload = (resp.text or "").strip()
     lowered = payload.lower()
-    if resp.status_code >= 400 or "apikey is invalid" in lowered or "error" in lowered[:80]:
+    rejected = (
+        resp.status_code >= 400
+        or "apikey is invalid" in lowered
+        or lowered.startswith("error")
+        or " error:" in lowered[:80]
+    )
+    if rejected:
         detail = payload[:180] if payload else f"HTTP {resp.status_code}"
         return WhatsAppSendResult(
             ok=False,
@@ -182,21 +188,61 @@ async def send_callmebot_whatsapp(
     return WhatsAppSendResult(ok=True)
 
 
-def get_or_create_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSettings:
+_EMPTY_PUBLIC = {
+    "whatsapp_configured": False,
+    "whatsapp_phone": "",
+    "whatsapp_api_key_hint": None,
+    "whatsapp_last_error": None,
+    "whatsapp_setup_url": CALLMEBOT_GUIDE_URL,
+    "whatsapp_allow_message": ALLOW_MESSAGE,
+    "whatsapp_connected_modules": [],
+}
+
+
+def _repair_whatsapp_schema() -> None:
+    from app.db.session import _migrate_shared_whatsapp_connection
+
+    _migrate_shared_whatsapp_connection()
+
+
+def get_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSettings | None:
+    """Existing shared connection, or None. Never commits — callers own the transaction."""
+    try:
+        return _load_whatsapp_connection(db, user)
+    except Exception:
+        logger.exception("WhatsApp connection lookup failed")
+        db.rollback()
+        try:
+            _repair_whatsapp_schema()
+            return _load_whatsapp_connection(db, user)
+        except Exception:
+            logger.exception("WhatsApp connection lookup failed after schema repair")
+            db.rollback()
+            return None
+
+
+def _load_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSettings | None:
     row = db.scalar(select(UserWhatsAppSettings).where(UserWhatsAppSettings.user_id == user.id))
-    created = False
     if not row:
-        row = UserWhatsAppSettings(user_id=user.id)
-        db.add(row)
+        imported = UserWhatsAppSettings(user_id=user.id)
+        _import_legacy_email_credentials(db, user, imported)
+        if not imported.api_key_encrypted:
+            return None
+        db.add(imported)
         db.flush()
-        created = True
-    imported = False
+        return imported
     if not row.api_key_encrypted:
         _import_legacy_email_credentials(db, user, row)
-        imported = bool(row.api_key_encrypted)
-    if created or imported:
-        db.commit()
-        db.refresh(row)
+    return row
+
+
+def get_or_create_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSettings:
+    row = get_whatsapp_connection(db, user)
+    if row:
+        return row
+    row = UserWhatsAppSettings(user_id=user.id)
+    db.add(row)
+    db.flush()
     return row
 
 
@@ -238,46 +284,83 @@ def save_whatsapp_connection(
     return row
 
 
+def _module_flag_on(db: Session, stmt) -> bool:
+    try:
+        return bool(db.scalar(stmt))
+    except Exception:
+        logger.exception("WhatsApp module flag lookup failed")
+        db.rollback()
+        try:
+            _repair_whatsapp_schema()
+            return bool(db.scalar(stmt))
+        except Exception:
+            logger.exception("WhatsApp module flag lookup failed after schema repair")
+            db.rollback()
+            return False
+
+
 def whatsapp_enabled_modules(db: Session, user: User) -> list[str]:
     labels: list[str] = []
-    email_on = db.scalar(
+    if _module_flag_on(
+        db,
         select(AIEmailAssistantSettings.id).where(
             AIEmailAssistantSettings.user_id == user.id,
             AIEmailAssistantSettings.whatsapp_alerts_enabled.is_(True),
-        )
-    )
-    if email_on:
+        ),
+    ):
         labels.append(MODULE_EMAIL)
-    ads_on = db.scalar(
+    if _module_flag_on(
+        db,
         select(StoreAIAdsSettings.id)
         .join(Store, Store.id == StoreAIAdsSettings.store_id)
         .where(
             Store.owner_id == user.id,
             StoreAIAdsSettings.whatsapp_weekly_alerts_enabled.is_(True),
-        )
-    )
-    if ads_on:
+        ),
+    ):
         labels.append(MODULE_ADS)
     return labels
 
 
 def whatsapp_public_payload(db: Session, user: User) -> dict:
-    row = get_or_create_whatsapp_connection(db, user)
-    return {
-        "whatsapp_configured": bool(row.api_key_encrypted and row.phone),
-        "whatsapp_phone": row.phone or "",
-        "whatsapp_api_key_hint": row.api_key_hint,
-        "whatsapp_last_error": row.last_error,
-        "whatsapp_setup_url": CALLMEBOT_GUIDE_URL,
-        "whatsapp_allow_message": ALLOW_MESSAGE,
-        "whatsapp_connected_modules": whatsapp_enabled_modules(db, user),
-    }
+    """Safe for settings GET — never raises, never commits."""
+    try:
+        row = get_whatsapp_connection(db, user)
+        return {
+            "whatsapp_configured": bool(row and row.api_key_encrypted and row.phone),
+            "whatsapp_phone": (row.phone if row else "") or "",
+            "whatsapp_api_key_hint": row.api_key_hint if row else None,
+            "whatsapp_last_error": row.last_error if row else None,
+            "whatsapp_setup_url": CALLMEBOT_GUIDE_URL,
+            "whatsapp_allow_message": ALLOW_MESSAGE,
+            "whatsapp_connected_modules": whatsapp_enabled_modules(db, user),
+        }
+    except Exception:
+        logger.exception("WhatsApp settings payload failed")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return dict(_EMPTY_PUBLIC)
 
 
 async def send_user_whatsapp(
     db: Session, user: User, text: str
 ) -> WhatsAppSendResult:
-    row = get_or_create_whatsapp_connection(db, user)
+    try:
+        row = get_whatsapp_connection(db, user)
+    except Exception:
+        logger.exception("WhatsApp send aborted: connection lookup failed")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return WhatsAppSendResult(ok=False, error="WhatsApp is not available right now.")
+    if not row:
+        return WhatsAppSendResult(
+            ok=False,
+            error="WhatsApp alerts are on, but the phone number or API key is missing.",
+        )
     phone = normalize_whatsapp_phone(row.phone)
     if not phone or not row.api_key_encrypted:
         result = WhatsAppSendResult(
@@ -358,7 +441,12 @@ async def notify_weekly_ads_generation(
         return
     if (job.status or "").upper() not in {"COMPLETED", "PARTIAL", "FAILED"}:
         return
-    ads = db.scalar(select(StoreAIAdsSettings).where(StoreAIAdsSettings.store_id == store.id))
+    try:
+        ads = db.scalar(select(StoreAIAdsSettings).where(StoreAIAdsSettings.store_id == store.id))
+    except Exception:
+        logger.exception("WhatsApp weekly recap skipped: could not load AI Ads settings")
+        db.rollback()
+        return
     if not ads or not getattr(ads, "whatsapp_weekly_alerts_enabled", False):
         return
     images, videos, items, failed = _weekly_recap_items(db, job)

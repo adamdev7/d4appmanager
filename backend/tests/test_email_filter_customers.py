@@ -219,6 +219,40 @@ def test_where_is_my_order_is_not_manual_review():
     )
 
 
+def test_send_my_subscription_details_is_not_manual_review():
+    from app.ai_email_assistant.email_filter import detect_manual_review_reason
+
+    assert (
+        detect_manual_review_reason(
+            subject="Subscription invoice",
+            body="Hi, can you please send me my subscription details for order #1139?",
+        )
+        is None
+    )
+
+
+def test_end_my_subscription_is_still_manual_review():
+    from app.ai_email_assistant.email_filter import detect_manual_review_reason
+
+    reason = detect_manual_review_reason(
+        subject="Membership",
+        body="I want to end my subscription starting next month.",
+    )
+    assert reason is not None
+
+
+def test_unpaid_invoice_is_not_unrecognized_charge():
+    from app.ai_email_assistant.email_filter import detect_manual_review_reason
+
+    assert (
+        detect_manual_review_reason(
+            subject="Invoice",
+            body="I didn't make the payment yet — can you send another invoice?",
+        )
+        is None
+    )
+
+
 def test_parse_classification_json_manual_review_flag():
     from app.ai_email_assistant.email_filter import parse_classification_json
 

@@ -60,3 +60,22 @@ def test_format_weekly_ads_recap_lists_what_was_made():
     assert "Morning glow" in text
     assert "Nothing was published" in text
     assert "Library" in text
+
+
+def test_whatsapp_public_payload_never_raises():
+    from unittest.mock import patch
+
+    from app.notifications.whatsapp import whatsapp_public_payload
+
+    class BoomDb:
+        def rollback(self):
+            self.rolled_back = True
+
+    with patch(
+        "app.notifications.whatsapp.get_whatsapp_connection",
+        side_effect=RuntimeError("no such column: user_whatsapp_settings"),
+    ):
+        payload = whatsapp_public_payload(BoomDb(), object())  # type: ignore[arg-type]
+    assert payload["whatsapp_configured"] is False
+    assert payload["whatsapp_phone"] == ""
+    assert payload["whatsapp_connected_modules"] == []

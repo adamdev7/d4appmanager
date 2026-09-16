@@ -40,18 +40,24 @@ _CLIENT_CONVERSATION_HINTS = re.compile(
     re.I,
 )
 
+_CANCEL_VERBS = r"cancel+\w*|stop|end|pause|terminate"
+_SUB_NOUNS = r"subscription|membership|recurring|auto[- ]?renew"
+
+# Word boundaries matter: unanchored "end" matches inside "send" / "friend" / "weekend"
+# and was parking ordinary "please send me my subscription…" mail for manual review.
 _SUBSCRIPTION_CANCEL = re.compile(
-    r"(cancel+\w*|stop|end|pause|terminate).{0,60}(subscription|membership|recurring|auto[- ]?renew)|"
-    r"(subscription|membership|recurring|auto[- ]?renew).{0,60}(cancel+\w*|stop|end|pause|terminate)|"
-    r"unsubscribe\s+(me\s+)?from\s+(the\s+)?(subscription|membership|club|box)",
+    rf"(\b(?:{_CANCEL_VERBS})\b.{{0,60}}\b(?:{_SUB_NOUNS})\b|"
+    rf"\b(?:{_SUB_NOUNS})\b.{{0,60}}\b(?:{_CANCEL_VERBS})\b|"
+    r"unsubscribe\s+(me\s+)?from\s+(the\s+)?(subscription|membership|club|box))",
     re.I | re.S,
 )
 
 _UNRECOGNIZED_CHARGE = re.compile(
     r"("
-    r"(don'?t|do\s+not|didn'?t|did\s+not)\s+(recognize|authori[sz]e|make|approve).{0,50}"
+    r"(don'?t|do\s+not|didn'?t|did\s+not)\s+(recognize|authori[sz]e|approve).{0,50}"
     r"(charge|payment|transaction|purchase)|"
-    r"(unauthori[sz]ed|unrecognized|unknown|fraudulent|mystery)\s+(charge|payment|transaction)|"
+    r"(didn'?t|did\s+not)\s+make\s+(this|that|any)\s+(charge|purchase|transaction)|"
+    r"(unauthori[sz]ed|unrecognized|fraudulent|mystery)\s+(charge|payment|transaction)|"
     r"(charge|payment|transaction).{0,50}(don'?t|do\s+not|didn'?t)\s+(recognize|authori[sz]e)|"
     r"chargeback|dispute\s+(this\s+|the\s+|a\s+)?(charge|payment)|"
     r"stolen\s+(card|credit)|identity\s+theft|fraud\s+alert"

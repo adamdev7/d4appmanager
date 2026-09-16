@@ -69,6 +69,19 @@ class AIAdsService:
         return asset
 
     def get_or_create_settings(self, db: Session, store_id: str) -> StoreAIAdsSettings:
+        try:
+            return self._load_or_create_settings(db, store_id)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "whatsapp_weekly_alerts_enabled" not in msg:
+                raise
+            db.rollback()
+            from app.db.session import _migrate_shared_whatsapp_connection
+
+            _migrate_shared_whatsapp_connection()
+            return self._load_or_create_settings(db, store_id)
+
+    def _load_or_create_settings(self, db: Session, store_id: str) -> StoreAIAdsSettings:
         row = db.scalar(select(StoreAIAdsSettings).where(StoreAIAdsSettings.store_id == store_id))
         if row:
             return row

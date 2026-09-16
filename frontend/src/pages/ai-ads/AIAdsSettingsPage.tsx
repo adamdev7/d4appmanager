@@ -47,7 +47,24 @@ export function AIAdsSettingsPage() {
     try {
       const key = (extra?.whatsapp_api_key as string | undefined) ?? whatsappKeyInput.trim();
       const next = await api.aiAds.updateSettings(storeId, {
-        ...settings,
+        weekly_generation_enabled: settings.weekly_generation_enabled,
+        generation_day: settings.generation_day,
+        image_count: settings.image_count,
+        video_count: settings.video_count,
+        auto_publish: settings.auto_publish,
+        winner_pct: settings.winner_pct,
+        combination_pct: settings.combination_pct,
+        exploration_pct: settings.exploration_pct,
+        experimental_pct: settings.experimental_pct,
+        brand_style: settings.brand_style,
+        default_audience: settings.default_audience,
+        default_objective: settings.default_objective,
+        default_placement: settings.default_placement,
+        default_aspect_ratio: settings.default_aspect_ratio,
+        creative_styles: settings.creative_styles,
+        meta_page_id: settings.meta_page_id,
+        whatsapp_weekly_alerts_enabled: settings.whatsapp_weekly_alerts_enabled,
+        whatsapp_phone: settings.whatsapp_phone,
         ...extra,
         whatsapp_api_key: key || undefined,
       });
