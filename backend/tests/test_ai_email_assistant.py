@@ -33,6 +33,73 @@ def test_automated_heuristic_detects_noreply():
     assert reason is not None
 
 
+def test_shopify_merchant_order_alert_is_platform_mail():
+    from app.ai_email_assistant.email_filter import is_platform_sender
+
+    sender = "store+82921259256@t.shopifyemail.com"
+    assert is_platform_sender(sender)
+    reason = check_automated_heuristic(
+        sender,
+        "[LUXORY] Order #1139 placed by Pierrette Duguay",
+        "Order #1139 was placed by Pierrette Duguay.",
+    )
+    assert reason is not None
+    assert "not from the customer" in reason.lower()
+
+
+def test_real_customer_gmail_is_not_treated_as_automated():
+    from app.ai_email_assistant.email_filter import is_platform_sender
+
+    sender = "janesox41@gmail.com"
+    assert not is_platform_sender(sender)
+    # Quoted receipt language must not skip a person writing in.
+    assert (
+        check_automated_heuristic(
+            sender,
+            "Where is my order?",
+            "Hi, any update on order #1139?\n\nUnsubscribe\nYou are receiving this email because you bought from Luxory.",
+        )
+        is None
+    )
+
+
+def test_known_customer_is_not_skipped_as_personal():
+    from app.ai_email_assistant.email_filter import EmailFilterResult, apply_known_customer_guard
+
+    skipped = EmailFilterResult(
+        should_reply=False, reason="Looks like a personal chat", category="personal"
+    )
+    guarded = apply_known_customer_guard(
+        skipped, known_customer=True, platform_sender=False
+    )
+    assert guarded.should_reply is True
+    assert guarded.category == "customer"
+
+
+def test_known_customer_guard_does_not_force_reply_to_shopify():
+    from app.ai_email_assistant.email_filter import EmailFilterResult, apply_known_customer_guard
+
+    skipped = EmailFilterResult(
+        should_reply=False, reason="platform", category="automated"
+    )
+    guarded = apply_known_customer_guard(
+        skipped, known_customer=True, platform_sender=True
+    )
+    assert guarded.should_reply is False
+
+
+def test_known_customer_guard_respects_already_resolved():
+    from app.ai_email_assistant.email_filter import EmailFilterResult, apply_known_customer_guard
+
+    skipped = EmailFilterResult(
+        should_reply=False, reason="Already answered", category="already_resolved"
+    )
+    guarded = apply_known_customer_guard(
+        skipped, known_customer=True, platform_sender=False
+    )
+    assert guarded.should_reply is False
+
+
 def test_mask_openai_api_key():
     assert mask_openai_api_key("sk-abcdefghijklmnop") == "sk-abcd••••mnop"
 

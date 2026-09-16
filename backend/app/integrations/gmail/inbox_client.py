@@ -14,6 +14,8 @@ from app.ai_email_assistant.thread_context import ThreadMessagePart
 from app.db.models import GmailAccount
 from app.integrations.gmail.auth import get_gmail_access_token
 
+from html import unescape
+
 logger = logging.getLogger(__name__)
 
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
@@ -274,6 +276,8 @@ class GmailInboxClient:
             from_header = headers.get("from", "Unknown")
             snippet = msg.get("snippet", "") or ""
             body = self._extract_body(msg.get("payload", {})) or snippet
+            if self.body_looks_like_css(body) and snippet:
+                body = snippet
             from_lower = from_header.lower()
             is_ours = our_email in from_lower
             internal_ms = int(msg.get("internalDate") or 0)
@@ -358,6 +362,8 @@ class GmailInboxClient:
                 from_header = headers.get("from", "Unknown")
                 snippet = data.get("snippet", "") or ""
                 body = self._extract_body(data.get("payload", {})) or snippet
+                if self.body_looks_like_css(body) and snippet:
+                    body = snippet
                 internal_ms = int(data.get("internalDate") or 0)
                 sent_at = (
                     datetime.fromtimestamp(internal_ms / 1000, tz=UTC).isoformat()
@@ -403,6 +409,8 @@ class GmailInboxClient:
         subject = headers.get("subject", "(no subject)")
         body_text = self._extract_body(data.get("payload", {}))
         snippet = data.get("snippet", "")
+        if self.body_looks_like_css(body_text) and snippet:
+            body_text = snippet
 
         return GmailMessageSummary(
             message_id=message_id,
@@ -414,26 +422,25 @@ class GmailInboxClient:
         )
 
     def _extract_body(self, payload: dict) -> str:
-        mime = payload.get("mimeType", "")
-        body_data = payload.get("body", {}).get("data")
-        if body_data and mime.startswith("text/"):
-            return self._decode_body(body_data)
+        plains: list[str] = []
+        htmls: list[str] = []
 
-        parts = payload.get("parts", [])
-        plain = ""
-        html = ""
-        for part in parts:
-            part_mime = part.get("mimeType", "")
-            part_body = part.get("body", {}).get("data")
-            if part_body and part_mime == "text/plain":
-                plain = self._decode_body(part_body)
-            elif part_body and part_mime == "text/html":
-                html = self._strip_html(self._decode_body(part_body))
-            elif part.get("parts"):
-                nested = self._extract_body(part)
-                if nested:
-                    return nested
-        return plain or html
+        def walk(node: dict) -> None:
+            mime = (node.get("mimeType") or "").lower()
+            data = (node.get("body") or {}).get("data")
+            if data and mime == "text/plain":
+                plains.append(self._decode_body(data))
+            elif data and mime == "text/html":
+                htmls.append(self._strip_html(self._decode_body(data)))
+            for part in node.get("parts") or []:
+                walk(part)
+
+        walk(payload)
+        if plains:
+            return max(plains, key=len).strip()
+        if htmls:
+            return max(htmls, key=len).strip()
+        return ""
 
     @staticmethod
     def _decode_body(data: str) -> str:
@@ -442,10 +449,24 @@ class GmailInboxClient:
 
     @staticmethod
     def _strip_html(html: str) -> str:
-        text = re.sub(r"<br\s*/?>", "\n", html, flags=re.I)
-        text = re.sub(r"</p>", "\n", text, flags=re.I)
-        text = re.sub(r"<[^>]+>", "", text)
-        return re.sub(r"\n{3,}", "\n\n", text).strip()
+        text = re.sub(r"<script\b[^>]*>.*?</script>", " ", html, flags=re.I | re.S)
+        text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+        text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+        text = re.sub(r"</(p|div|tr|h[1-6]|li|table|section)>", "\n", text, flags=re.I)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = unescape(text)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def body_looks_like_css(text: str) -> bool:
+        blob = text or ""
+        if blob.count("{") + blob.count("}") < 4:
+            return False
+        lowered = blob.lower()
+        return "background" in lowered or "font-" in lowered or "@media" in lowered
 
     @staticmethod
     def parse_sender_email(from_header: str) -> str:

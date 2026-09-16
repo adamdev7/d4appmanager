@@ -17,7 +17,12 @@ from app.ai_email_assistant.duplicate_guard import (
     thread_has_answered_in_db,
     thread_has_sent_reply,
 )
-from app.ai_email_assistant.email_filter import config_from_settings, evaluate_email_filter
+from app.ai_email_assistant.email_filter import (
+    apply_known_customer_guard,
+    config_from_settings,
+    evaluate_email_filter,
+    is_platform_sender,
+)
 from app.ai_email_assistant.thread_context import format_customer_relationship
 from app.ai_email_assistant.order_context import (
     MatchedOrder,
@@ -542,6 +547,22 @@ class AIEmailAssistantService:
                 db, settings_row, account, email, force=True
             )
 
+        known_customer = False
+        store = db.get(Store, email.store_id) if email.store_id else None
+        if store and not is_platform_sender(email.sender_email):
+            try:
+                matched = await find_customer_orders(
+                    db,
+                    store,
+                    customer_email=email.sender_email,
+                    subject="",
+                    body="",
+                    live_lookup=False,
+                )
+                known_customer = any(m.match_reason == "customer_email" for m in matched)
+            except Exception:
+                logger.exception("Customer-order lookup failed during filter for %s", email.id)
+
         config = config_from_settings(settings_row)
 
         # Even with the smart filter toggle off, use AI + full history to decide whether
@@ -557,7 +578,13 @@ class AIEmailAssistantService:
                 business_type=settings_row.business_type,
                 custom_skip_rules=settings_row.filter_custom_rules or "",
                 thread_context=thread_context,
+                known_customer=known_customer,
                 model_override=settings_row.openai_model,
+            )
+            result = apply_known_customer_guard(
+                result,
+                known_customer=known_customer,
+                platform_sender=is_platform_sender(email.sender_email),
             )
         else:
             result = await evaluate_email_filter(
@@ -568,6 +595,7 @@ class AIEmailAssistantService:
                 body=email.body_text,
                 thread_context=thread_context,
                 ai=ai,
+                known_customer=known_customer,
             )
 
         if not result.should_reply:
@@ -805,14 +833,39 @@ class AIEmailAssistantService:
                 )
             )
             if exists:
-                # Already handled (filtered / drafted / replied) — clear UNREAD so Gmail
-                # and the next sync do not keep surfacing the same message.
-                if exists.status != InboxEmailStatus.NEW.value:
+                # Drafts/replies already handled — clear UNREAD so Gmail does not loop.
+                if exists.status in (
+                    InboxEmailStatus.DRAFT_PENDING.value,
+                    InboxEmailStatus.REPLIED.value,
+                ):
                     thread_id = item.get("threadId") or exists.thread_id
                     if thread_id:
                         await client.mark_thread_as_read(account, thread_id)
                     else:
                         await client.mark_as_read(account, msg_id)
+                    continue
+
+                if exists.status == InboxEmailStatus.NEW.value:
+                    continue
+
+                # Previously skipped/processed mail that is unread again (operator
+                # re-opened it to test, or a filter miss). Re-run filter + reply.
+                if exists.status in (
+                    InboxEmailStatus.SKIPPED.value,
+                    InboxEmailStatus.PROCESSED.value,
+                ):
+                    detail = await client.get_message(account, msg_id)
+                    if detail:
+                        exists.sender = detail.sender
+                        exists.sender_email = client.parse_sender_email(detail.sender)
+                        exists.subject = detail.subject
+                        exists.body_text = detail.body_text
+                    exists.status = InboxEmailStatus.NEW.value
+                    exists.skip_reason = None
+                    exists.filter_category = None
+                    exists.processed_at = None
+                    db.flush()
+                    synced.append(exists)
                 continue
 
             detail = await client.get_message(account, msg_id)

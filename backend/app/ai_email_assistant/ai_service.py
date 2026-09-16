@@ -88,6 +88,7 @@ class AIService:
         business_type: str,
         custom_skip_rules: str = "",
         thread_context: str | None = None,
+        known_customer: bool = False,
         model_override: str | None = None,
     ) -> EmailFilterResult:
         """Decide if an incoming email should receive an AI reply."""
@@ -95,6 +96,14 @@ class AIService:
             return EmailFilterResult(should_reply=True)
 
         custom_block = custom_skip_rules.strip() or "None specified."
+        customer_rule = ""
+        if known_customer:
+            customer_rule = """
+This sender matches a paying Shopify customer. They ARE a client of this business.
+Do not classify them as personal, spam, or unrelated. should_reply must be true unless
+the latest message is only a thank-you that needs no reply or the issue is already fully answered.
+"""
+
         system_message = f"""You classify incoming emails for a {business_type or "business"} named "{business_name or "the business"}".
 
 You receive the FULL email history with this customer when available — earlier separate conversations
@@ -106,7 +115,8 @@ Decide whether the business should send a customer support reply to the LATEST m
 
 Do NOT reply (should_reply: false) for:
 - Automated/system messages, no-reply senders, delivery receipts, security codes, password resets
-- Newsletters, marketing blasts, platform notifications (Shopify, PayPal, social media, etc.)
+- Newsletters, marketing blasts, platform notifications (Shopify, PayPal, social media, etc.) sent FROM
+  those platforms — not customer emails that mention an order
 - Spam or mail clearly unrelated to this business
 - Threads where the business already answered the customer's issue and the latest message does not
   ask a new question, report a new problem, escalate, or request more help (category: already_resolved).
@@ -116,10 +126,11 @@ Do NOT reply (should_reply: false) for:
 
 DO reply (should_reply: true) for:
 - First-contact questions or requests about orders, shipping, refunds, products, cancellations, complaints
+- A customer asking where their order is, even if the message is short
 - Follow-ups that raise a NEW question, say the previous answer did not help, report a new problem,
   or ask for more action — even if the business already replied earlier in the thread (category: customer)
 - Customer thank-you messages when a brief acknowledgment is still appropriate (category: acknowledgment)
-
+{customer_rule}
 NEVER use category "personal" for customers who bought from or contacted this business.
 Use "customer", "acknowledgment", or "already_resolved".
 
