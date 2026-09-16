@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -43,7 +44,10 @@ from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.product_catalog import ShopifyProductCatalog, enqueue_catalog_sync
 from app.services.ai_ads.media_io import imaging_available
 from app.services.ai_ads.exceptions import PILLOW_INSTALL_HINT
+from app.notifications.whatsapp import whatsapp_public_payload
 from app.services.ai_ads.publisher import MetaCreativePublisher
+
+logger = logging.getLogger(__name__)
 
 
 class AIAdsService:
@@ -63,6 +67,19 @@ class AIAdsService:
         return asset
 
     def get_or_create_settings(self, db: Session, store_id: str) -> StoreAIAdsSettings:
+        try:
+            return self._load_or_create_settings(db, store_id)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("AI Ads settings load failed; repairing WhatsApp schema")
+            db.rollback()
+            from app.db.session import _migrate_shared_whatsapp_connection
+
+            _migrate_shared_whatsapp_connection()
+            return self._load_or_create_settings(db, store_id)
+
+    def _load_or_create_settings(self, db: Session, store_id: str) -> StoreAIAdsSettings:
         row = db.scalar(select(StoreAIAdsSettings).where(StoreAIAdsSettings.store_id == store_id))
         if row:
             return row
@@ -142,6 +159,12 @@ class AIAdsService:
             "last_sync_at": row.last_sync_at.isoformat() if row.last_sync_at else None,
             "last_analyze_at": row.last_analyze_at.isoformat() if row.last_analyze_at else None,
             "last_weekly_run_at": row.last_weekly_run_at.isoformat() if row.last_weekly_run_at else None,
+            "whatsapp_weekly_alerts_enabled": bool(
+                getattr(row, "whatsapp_weekly_alerts_enabled", False)
+            ),
+            "whatsapp_configured": bool(
+                whatsapp_public_payload(db, user).get("whatsapp_configured")
+            ),
             "meta_configured": meta_configured,
             "openai_configured": openai["openai_configured"],
             "openai_key_masked": openai["openai_key_masked"],
@@ -172,6 +195,7 @@ class AIAdsService:
             "combination_pct": "combination_pct",
             "exploration_pct": "exploration_pct",
             "experimental_pct": "experimental_pct",
+            "whatsapp_weekly_alerts_enabled": "whatsapp_weekly_alerts_enabled",
         }
         for key, attr in mapping.items():
             if key in body and body[key] is not None:

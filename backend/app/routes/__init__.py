@@ -11,6 +11,7 @@ from app.routes import (
     gmail,
     meta_capi,
     modules,
+    notifications,
     stores,
     track_order,
     tracking,
@@ -30,6 +31,9 @@ api_router.include_router(
     ai_email_assistant.router, prefix="/ai-email-assistant", tags=["ai-email-assistant"]
 )
 api_router.include_router(modules.router, prefix="/modules", tags=["modules"])
+api_router.include_router(
+    notifications.router, prefix="/notifications", tags=["notifications"]
+)
 api_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 api_router.include_router(track_order.router, tags=["track-order"])
 api_router.include_router(tracking.router, prefix="/tracking", tags=["tracking"])

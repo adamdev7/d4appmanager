@@ -153,6 +153,8 @@ type Settings = {
   tracking_page_url: string;
   default_tracking_page_url: string;
   default_model: string;
+  whatsapp_alerts_enabled: boolean;
+  whatsapp_configured: boolean;
 };
 
 type LogEntry = {
@@ -568,7 +570,11 @@ export function AIEmailAssistantPage() {
       return;
     }
     const s = await api.aiEmailAssistant.settings(activeStore.id);
-    setSettings(s as Settings);
+    setSettings({
+      ...(s as Settings),
+      whatsapp_alerts_enabled: Boolean(s.whatsapp_alerts_enabled),
+      whatsapp_configured: Boolean(s.whatsapp_configured),
+    });
   }, [activeStore?.id]);
 
   const loadLogs = useCallback(async () => {
@@ -897,6 +903,7 @@ export function AIEmailAssistantPage() {
           use_order_context: settings.use_order_context,
           tracking_button_enabled: settings.tracking_button_enabled,
           tracking_page_url: settings.tracking_page_url,
+          whatsapp_alerts_enabled: Boolean(settings.whatsapp_alerts_enabled),
         },
         storeId
       );
@@ -2212,6 +2219,21 @@ export function AIEmailAssistantPage() {
                 label="Auto-send replies"
                 description="Send without waiting for your approval (use carefully)"
               />
+              <Switch
+                checked={settings.whatsapp_alerts_enabled}
+                onChange={(v) => setSettings({ ...settings, whatsapp_alerts_enabled: v })}
+                label="WhatsApp me for manual reviews"
+                description="Get a text when an email is held for you (cancellations, charge disputes, and similar)."
+              />
+              {!settings.whatsapp_configured && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  WhatsApp is not connected yet.{" "}
+                  <Link to="/settings" className="font-medium underline">
+                    Set it up in General settings
+                  </Link>{" "}
+                  (about 2 minutes). Alerts start after that.
+                </p>
+              )}
               {settings.automation_last_run_at && (
                 <p className="text-xs text-content-muted">
                   Last run: {formatTime(settings.automation_last_run_at)}

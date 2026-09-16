@@ -25,6 +25,7 @@ class AIEmailAssistantSettingsUpdate(BaseModel):
     use_order_context: bool = True
     tracking_button_enabled: bool = True
     tracking_page_url: str = ""
+    whatsapp_alerts_enabled: bool | None = None
 
 
 class AIEmailAssistantSettingsResponse(AIEmailAssistantSettingsUpdate):
@@ -38,6 +39,8 @@ class AIEmailAssistantSettingsResponse(AIEmailAssistantSettingsUpdate):
     automation_last_error: str | None = None
     # Falls back to this when tracking_page_url is blank
     default_tracking_page_url: str = ""
+    whatsapp_alerts_enabled: bool = False
+    whatsapp_configured: bool = False
 
 
 class AutomationRunResponse(BaseModel):

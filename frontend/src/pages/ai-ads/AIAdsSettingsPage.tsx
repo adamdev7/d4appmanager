@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { AlertTriangle, CalendarClock, Plug, UserSquare2 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import { api, type AIAdsSettings } from "@/lib/api";
@@ -143,12 +144,27 @@ export function AIAdsSettingsPage() {
           </CardDescription>
         </CardHeader>
         <div className="space-y-5">
-          <div className="rounded-lg border border-border bg-surface-muted/40 p-3.5">
+          <div className="rounded-lg border border-border bg-surface-muted/40 p-3.5 space-y-4">
             <Switch
               checked={settings.weekly_generation_enabled}
               onChange={(v) => setSettings({ ...settings, weekly_generation_enabled: v })}
               label="Run a batch for this store every week"
             />
+            <Switch
+              checked={Boolean(settings.whatsapp_weekly_alerts_enabled)}
+              onChange={(v) => setSettings({ ...settings, whatsapp_weekly_alerts_enabled: v })}
+              label="WhatsApp me when weekly ads finish"
+              description="A short recap when this week's stills and videos are ready. Nothing is published."
+            />
+            {!settings.whatsapp_configured && (
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                WhatsApp is not connected yet.{" "}
+                <Link to="/settings" className="font-medium underline">
+                  Set it up in General settings
+                </Link>{" "}
+                (about 2 minutes). Alerts start after that.
+              </p>
+            )}
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Select

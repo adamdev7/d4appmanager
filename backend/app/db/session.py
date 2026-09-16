@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Generator
 from pathlib import Path
 
@@ -5,6 +6,8 @@ from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -968,6 +971,100 @@ def _migrate_ai_email_order_tracking_columns() -> None:
                     )
 
 
+def _migrate_shared_whatsapp_connection() -> None:
+    """User-level CallMeBot connection + module on/off flags.
+
+    Phone and API key live only on user_whatsapp_settings. Email Assistant and
+    AI Ads store booleans. Leftover keys on ai_email_assistant_settings (if any)
+    are copied once so setup does not have to be repeated.
+    """
+    from app.db.models import UserWhatsAppSettings
+
+    insp = inspect(engine)
+    try:
+        insp.clear_cache()
+    except Exception:
+        pass
+    dialect = engine.dialect.name
+    names = set(insp.get_table_names())
+
+    def _add_bool(table: str, column: str) -> None:
+        if table not in names:
+            return
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if column in cols:
+            return
+        col_type = "BOOLEAN DEFAULT 0" if dialect == "sqlite" else "BOOLEAN DEFAULT FALSE"
+        try:
+            with engine.begin() as conn:
+                if dialect == "sqlite":
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                elif dialect == "postgresql":
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
+                        )
+                    )
+        except Exception:
+            logger.exception("Could not add %s.%s", table, column)
+
+    _add_bool("ai_email_assistant_settings", "whatsapp_alerts_enabled")
+    _add_bool("store_ai_ads_settings", "whatsapp_weekly_alerts_enabled")
+
+    try:
+        insp.clear_cache()
+    except Exception:
+        pass
+    names = set(insp.get_table_names())
+    if "user_whatsapp_settings" not in names or "ai_email_assistant_settings" not in names:
+        return
+    email_cols = {c["name"] for c in insp.get_columns("ai_email_assistant_settings")}
+    if "whatsapp_api_key_encrypted" not in email_cols:
+        return
+
+    db = SessionLocal()
+    try:
+        existing = {
+            row.user_id
+            for row in db.scalars(select(UserWhatsAppSettings)).all()
+            if row.api_key_encrypted
+        }
+        legacy_rows = db.execute(
+            text(
+                """
+                SELECT user_id, whatsapp_phone, whatsapp_api_key_encrypted,
+                       whatsapp_api_key_hint, whatsapp_last_error
+                FROM ai_email_assistant_settings
+                WHERE whatsapp_api_key_encrypted IS NOT NULL
+                """
+            )
+        ).mappings().all()
+        for legacy in legacy_rows:
+            uid = legacy["user_id"]
+            if uid in existing:
+                continue
+            row = db.scalar(
+                select(UserWhatsAppSettings).where(UserWhatsAppSettings.user_id == uid)
+            )
+            if not row:
+                row = UserWhatsAppSettings(user_id=uid)
+                db.add(row)
+            if row.api_key_encrypted:
+                existing.add(uid)
+                continue
+            row.phone = legacy["whatsapp_phone"] or ""
+            row.api_key_encrypted = legacy["whatsapp_api_key_encrypted"]
+            row.api_key_hint = legacy["whatsapp_api_key_hint"]
+            row.last_error = legacy["whatsapp_last_error"]
+            existing.add(uid)
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("WhatsApp legacy key copy failed")
+    finally:
+        db.close()
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -989,3 +1086,4 @@ def init_db() -> None:
     _migrate_ai_ads_owner_columns()
     _migrate_ai_ads_catalog_columns()
     _migrate_ai_ads_catalog_photo_bytes()
+    _migrate_shared_whatsapp_connection()

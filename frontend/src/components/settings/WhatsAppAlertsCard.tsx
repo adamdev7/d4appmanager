@@ -3,20 +3,14 @@ import { Check, ExternalLink, MessageCircle, Send } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
-import { Switch } from "@/components/ui/Switch";
 import { cn } from "@/lib/cn";
 
 const DEFAULT_SETUP_URL = "https://www.callmebot.com/blog/free-api-whatsapp-messages/";
 const DEFAULT_ALLOW = "I allow callmebot to send me messages";
 
 type Props = {
-  moduleName: string;
-  title: string;
-  description: string;
-  enableLabel: string;
-  enableDescription: string;
-  enabled: boolean;
-  onEnabledChange: (value: boolean) => void;
+  title?: string;
+  description?: string;
   phone: string;
   onPhoneChange: (value: string) => void;
   configured: boolean;
@@ -34,13 +28,8 @@ type Props = {
 };
 
 export function WhatsAppAlertsCard({
-  moduleName,
-  title,
-  description,
-  enableLabel,
-  enableDescription,
-  enabled,
-  onEnabledChange,
+  title = "WhatsApp notifications",
+  description = "Get a message on your own phone when something needs you. Setup takes about two minutes and you only do it once.",
   phone,
   onPhoneChange,
   configured,
@@ -59,7 +48,6 @@ export function WhatsAppAlertsCard({
   const [showChange, setShowChange] = useState(!configured);
   const [copied, setCopied] = useState(false);
   const phrase = allowMessage || DEFAULT_ALLOW;
-  const others = connectedModules.filter((name) => name !== moduleName);
   const busy = saving || testing;
   const missingCreds = !phone.trim() || (!configured && !keyInput.trim());
 
@@ -74,7 +62,7 @@ export function WhatsAppAlertsCard({
   };
 
   return (
-    <Card>
+    <Card padding="lg">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <MessageCircle className="h-4 w-4 text-brand-600 dark:text-brand-400" />
@@ -83,29 +71,18 @@ export function WhatsAppAlertsCard({
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <div className="space-y-5">
-        <Switch
-          checked={enabled}
-          onChange={onEnabledChange}
-          label={enableLabel}
-          description={enableDescription}
-        />
-
         {configured ? (
           <div className="rounded-lg border border-border bg-surface-muted/50 px-4 py-3 space-y-2">
             <p className="text-sm text-content">
-              WhatsApp is already connected
-              {others.length > 0 ? (
-                <>
-                  {" "}
-                  (used by {others.join(", ")})
-                </>
+              WhatsApp is connected
+              {connectedModules.length > 0 ? (
+                <> and used by {connectedModules.join(", ")}</>
               ) : null}
-              . Turn this on and save — no extra setup.
+              . Turn on alerts in AI Email Assistant or AI Ads when you want them.
             </p>
             <p className="text-xs text-content-subtle">
               Number {phone || "saved"}
-              {apiKeyHint ? ` · key ${apiKeyHint}` : ""}. Same connection is shared by every
-              module.
+              {apiKeyHint ? ` · key ${apiKeyHint}` : ""}.
             </p>
             <button
               type="button"
@@ -171,14 +148,9 @@ export function WhatsAppAlertsCard({
             </span>
           )}
         </div>
-        {enabled && missingCreds && (
+        {missingCreds && (
           <p className="text-xs text-amber-600 dark:text-amber-400">
-            Alerts are on, but nothing will send until both the number and API key are saved.
-          </p>
-        )}
-        {!enabled && configured && (
-          <p className="text-xs text-content-subtle">
-            Connection is ready. Turn the switch on and save when you want {moduleName} alerts.
+            Nothing will send until both the number and API key are saved.
           </p>
         )}
       </div>
@@ -202,7 +174,7 @@ function SetupSteps({
       <div>
         <p className="text-sm font-medium text-content">How to connect (one time, about 2 minutes)</p>
         <p className="text-xs text-content-subtle mt-1">
-          Uses CallMeBot, a free personal WhatsApp gateway. It can only text you — not your
+          Uses CallMeBot, a free personal WhatsApp helper. It can only text you — never your
           customers. You only do this once for the whole app.
         </p>
       </div>
@@ -273,7 +245,8 @@ function SetupSteps({
           <div>
             <p className="font-medium text-content">Paste your number and key below, then send a test</p>
             <p className="mt-0.5">
-              After that, any other module only needs its switch turned on.
+              After that, turn on alerts in AI Email Assistant (manual reviews) or AI Ads (weekly
+              ads).
             </p>
           </div>
         </li>

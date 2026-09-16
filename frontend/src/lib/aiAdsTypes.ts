@@ -218,6 +218,8 @@ export type AIAdsSettings = {
   creative_model: string;
   image_model: string;
   video_model?: string;
+  whatsapp_weekly_alerts_enabled?: boolean;
+  whatsapp_configured?: boolean;
 };
 
 export type AIAdsAdset = {

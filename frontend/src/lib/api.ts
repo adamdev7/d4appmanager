@@ -59,6 +59,16 @@ export type {
 
 const API_BASE = "/api/v1";
 
+export type WhatsAppConnection = {
+  whatsapp_configured: boolean;
+  whatsapp_phone: string;
+  whatsapp_api_key_hint: string | null;
+  whatsapp_last_error: string | null;
+  whatsapp_setup_url: string;
+  whatsapp_allow_message: string;
+  whatsapp_connected_modules: string[];
+};
+
 export class ApiError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -305,6 +315,18 @@ export const api = {
         Array<{ id: string; title: string; description: string; timestamp: string; type: string }>
       >(`/dashboard/activity${storeId ? `?store_id=${storeId}` : ""}`),
   },
+  notifications: {
+    getWhatsApp: () => request<WhatsAppConnection>("/notifications/whatsapp"),
+    saveWhatsApp: (data: { phone?: string; api_key?: string }) =>
+      request<WhatsAppConnection>("/notifications/whatsapp", {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    testWhatsApp: () =>
+      request<{ ok: boolean; message: string }>("/notifications/whatsapp/test", {
+        method: "POST",
+      }),
+  },
   stores: {
     list: () =>
       request<
@@ -527,6 +549,8 @@ export const api = {
         openai_key_is_user_owned: boolean;
         openai_uses_server_fallback: boolean;
         default_model: string;
+        whatsapp_alerts_enabled: boolean;
+        whatsapp_configured: boolean;
       }>(`/ai-email-assistant/settings${storeId ? `?store_id=${storeId}` : ""}`),
     updateSettings: (data: object, storeId?: string) =>
       request(`/ai-email-assistant/settings${storeId ? `?store_id=${storeId}` : ""}`, {
