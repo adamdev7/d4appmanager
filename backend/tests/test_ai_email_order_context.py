@@ -12,6 +12,7 @@ from app.ai_email_assistant.order_context import (
     format_orders_for_prompt,
     pick_tracking_link,
     shipment_status_label,
+    strip_tracking_ids_from_text,
 )
 from app.ai_email_assistant.prompt_builder import BusinessContext, build_reply_prompt
 from app.ai_email_assistant.reply_html import render_reply_html, render_reply_text
@@ -76,16 +77,6 @@ def test_tracking_url_keeps_existing_query_params():
     assert query["order_number"] == ["1045"]
 
 
-def test_no_tracking_link_when_order_has_not_shipped():
-    matched = [MatchedOrder(row=_order(tracking=None, status="pending"), match_reason="customer_email")]
-    assert pick_tracking_link(matched, page_url=TRACK_PAGE, customer_email="a@b.com") is None
-
-
-def test_no_tracking_link_when_page_url_missing():
-    matched = [MatchedOrder(row=_order(), match_reason="customer_email")]
-    assert pick_tracking_link(matched, page_url="", customer_email="a@b.com") is None
-
-
 def test_tracking_link_prefers_the_order_quoted_in_the_email():
     newest = MatchedOrder(row=_order(number="#1099", tracking="AAA111"), match_reason="customer_email")
     quoted = MatchedOrder(row=_order(number="#1045"), match_reason="order_number_in_email")
@@ -95,9 +86,22 @@ def test_tracking_link_prefers_the_order_quoted_in_the_email():
     )
     assert link is not None
     assert link.order_number == "1045"
-    assert link.tracking_number == "YT2625500704564137"
-    assert link.carrier == "YunExpress"
     assert "order_number=1045" in link.url
+    assert "email=omw4973" in link.url
+
+
+def test_tracking_link_for_unshipped_order_uses_order_and_email_only():
+    matched = [MatchedOrder(row=_order(tracking=None, status="pending"), match_reason="customer_email")]
+    link = pick_tracking_link(matched, page_url=TRACK_PAGE, customer_email="omw4973@outlook.com")
+    assert link is not None
+    assert link.order_number == "1045"
+    assert "order_number=1045" in link.url
+    assert "email=" in link.url
+
+
+def test_no_tracking_link_when_page_url_missing():
+    matched = [MatchedOrder(row=_order(), match_reason="customer_email")]
+    assert pick_tracking_link(matched, page_url="", customer_email="a@b.com") is None
 
 
 def test_shipment_status_label():
@@ -127,12 +131,12 @@ def test_prompt_order_block_carries_shipment_facts():
 
     assert "Order #1045" in block
     assert "On the way" in block
-    assert "YT2625500704564137" in block
-    assert "YunExpress" in block
+    assert "YT2625500704564137" not in block
     assert "Luxory Necklace x2" in block
     assert "Shipper added tracking" in block
     assert "quoted in their email" in block
     assert "Track my order" in block
+    assert "do not share the tracking number" in block.lower() or "never" in block.lower()
 
 
 def test_prompt_only_claims_a_button_for_the_order_that_has_one():
@@ -176,7 +180,9 @@ def test_reply_prompt_instructs_model_to_use_order_data_and_button():
     assert "Order #1045" in prompt.user_message
     assert "source of truth" in prompt.system_message
     assert "Track my order" in prompt.system_message
-    assert "do not paste" in prompt.system_message
+    assert "do not paste" in prompt.system_message.lower() or "Never paste" in prompt.system_message
+    assert "tracking number" in prompt.system_message.lower()
+    assert "quote the tracking number" not in prompt.system_message.lower()
 
 
 def test_reply_prompt_omits_button_rule_when_not_trackable():
@@ -204,7 +210,9 @@ def test_reply_html_renders_prefilled_button():
     # The href is HTML-escaped, so "&" between query params becomes "&amp;".
     assert escape(link.url, quote=True) in html
     assert "Your order shipped." in html
-    assert "YT2625500704564137" in html
+    assert "Order 1045" in html
+    assert "YT2625500704564137" not in html
+    assert "YunExpress" not in html
 
 
 def test_reply_html_escapes_body_content():
@@ -229,4 +237,16 @@ def test_reply_text_spells_out_the_link_for_plain_text_clients():
     text = render_reply_text("Your order shipped.", tracking_link=link)
     assert "Your order shipped." in text
     assert link.url in text
-    assert "YT123 (YunExpress)" in text
+    assert "Order 1045" in text
+    assert "YT123" not in text
+    assert "YunExpress" not in text
+    assert "Tracking number" not in text
+
+
+def test_strip_tracking_ids_from_draft():
+    text = strip_tracking_ids_from_text(
+        "Your parcel is on the way. Tracking number: YT2625500704564137 (YunExpress).",
+        ["YT2625500704564137"],
+    )
+    assert "YT2625500704564137" not in text
+    assert "on the way" in text

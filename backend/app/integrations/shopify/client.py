@@ -87,6 +87,7 @@ class ShopifyClient:
         created_at_max: str | None = None,
         financial_status: str | None = None,
         name: str | None = None,
+        email: str | None = None,
         query: str | None = None,
         ids: str | None = None,
     ) -> list[dict]:
@@ -107,6 +108,8 @@ class ShopifyClient:
             params["financial_status"] = financial_status
         if name:
             params["name"] = name
+        if email:
+            params["email"] = email
         if query:
             params["query"] = query
         if ids:
@@ -179,6 +182,84 @@ class ShopifyClient:
         except Exception:
             pass
         return []
+
+    async def find_orders_by_email(self, email: str, *, limit: int = 10) -> list[dict]:
+        """Orders whose customer/contact email matches this address."""
+        from app.tracking.payload_parser import emails_match, normalize_email, recipient_email
+
+        address = normalize_email(email)
+        if not address:
+            return []
+
+        def _matching(orders: list[dict]) -> list[dict]:
+            return [o for o in orders if emails_match(recipient_email(o), address)]
+
+        try:
+            matched = _matching(
+                await self.list_orders(email=address, status="any", limit=limit)
+            )
+            if matched:
+                return matched[:limit]
+        except Exception:
+            logger.debug(
+                "Shopify REST email search failed for %s", self.shop_domain, exc_info=True
+            )
+
+        gql_ids = await self._graphql_order_ids_by_email(address, limit=limit)
+        if gql_ids:
+            found: list[dict] = []
+            for oid in gql_ids[:limit]:
+                try:
+                    found.append(await self.get_order(oid))
+                except Exception:
+                    continue
+            matched = _matching(found)
+            if matched:
+                return matched[:limit]
+
+        return []
+
+    async def _graphql_order_ids_by_email(self, email: str, *, limit: int = 10) -> list[str]:
+        if not self.access_token or not email:
+            return []
+        query = """
+        query OrdersByEmail($q: String!, $first: Int!) {
+          orders(first: $first, query: $q) {
+            edges { node { legacyResourceId } }
+          }
+        }
+        """
+        safe = email.replace('"', "")
+        headers = {
+            "X-Shopify-Access-Token": self.access_token,
+            "Content-Type": "application/json",
+        }
+        ids: list[str] = []
+        async with httpx.AsyncClient(timeout=45) as client:
+            for q in (f"email:{safe}", f"customer_email:{safe}"):
+                try:
+                    resp = await client.post(
+                        f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
+                        headers=headers,
+                        json={
+                            "query": query,
+                            "variables": {"q": q, "first": min(max(limit, 1), 25)},
+                        },
+                    )
+                    resp.raise_for_status()
+                    edges = (
+                        ((resp.json().get("data") or {}).get("orders") or {}).get("edges") or []
+                    )
+                    for edge in edges:
+                        node = (edge or {}).get("node") or {}
+                        oid = str(node.get("legacyResourceId") or "").strip()
+                        if oid and oid not in ids:
+                            ids.append(oid)
+                    if ids:
+                        return ids
+                except Exception:
+                    continue
+        return ids
 
     async def _graphql_order_ids_by_name(self, hashed: str, bare: str) -> list[str]:
         """Return Shopify numeric order ids matching the customer-facing name."""

@@ -136,3 +136,33 @@ def test_filter_answers_gmail_customer_even_if_ai_says_personal():
     assert result.should_reply is True
     assert result.category == "customer"
     assert ai.called_with["known_customer"] is True
+
+
+def test_conversation_looks_like_client_from_gmail_history():
+    from app.ai_email_assistant.email_filter import conversation_looks_like_client
+
+    history = (
+        "EARLIER EMAILS with janesox41@gmail.com (separate conversations, oldest to newest):\n"
+        "--- Customer (Jane Jones <janesox41@gmail.com>) ---\n"
+        "Hi, I ordered a necklace last week.\n"
+    )
+    assert conversation_looks_like_client(
+        thread_context=history,
+        subject="Re: necklace",
+        body="Any news?",
+    )
+
+
+def test_conversation_looks_like_client_from_order_language():
+    from app.ai_email_assistant.email_filter import conversation_looks_like_client
+
+    assert conversation_looks_like_client(
+        thread_context=None,
+        subject="Where is my order?",
+        body="Hi, I still have not received order #1139.",
+    )
+    assert not conversation_looks_like_client(
+        thread_context=None,
+        subject="Lunch tomorrow?",
+        body="Want to grab a coffee?",
+    )

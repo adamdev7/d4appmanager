@@ -99,7 +99,8 @@ class AIService:
         customer_rule = ""
         if known_customer:
             customer_rule = """
-This sender matches a paying Shopify customer. They ARE a client of this business.
+This sender is a known client: their email (for example a Gmail address) has prior chat history
+with this business and/or is linked to a Shopify order. They ARE a client.
 Do not classify them as personal, spam, or unrelated. should_reply must be true unless
 the latest message is only a thank-you that needs no reply or the issue is already fully answered.
 """

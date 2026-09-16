@@ -1580,13 +1580,7 @@ export function AIEmailAssistantPage() {
                             A “Track my order” button will be added below this message
                           </p>
                           <p className="text-xs text-content-muted mt-1">
-                            Prefilled with the customer’s order number and email
-                            {selected.latest_reply.tracking_number
-                              ? ` · tracking ${selected.latest_reply.tracking_number}`
-                              : ""}
-                            {selected.latest_reply.tracking_carrier
-                              ? ` (${selected.latest_reply.tracking_carrier})`
-                              : ""}
+                            Opens the track-your-order page with the customer’s order number and email already filled in. The tracking number is never shown in the email.
                           </p>
                           <a
                             href={selected.latest_reply.tracking_url}
@@ -2279,13 +2273,13 @@ export function AIEmailAssistantPage() {
                 checked={settings.use_order_context}
                 onChange={(v) => setSettings({ ...settings, use_order_context: v })}
                 label="Use Shopify order data in replies"
-                description="Matches the sender (and any order number in the email) to their orders, then shares status, carrier, tracking number, and the latest shipment update"
+                description="Matches the sender (and any order number in the email) to their Shopify orders, then shares status and the latest shipment update — never the carrier tracking number."
               />
               <Switch
                 checked={settings.tracking_button_enabled}
                 onChange={(v) => setSettings({ ...settings, tracking_button_enabled: v })}
                 label="Add a “Track my order” button"
-                description="Attached only when the order has shipped and has a tracking number. The link opens your tracking page with the order number and email already filled in."
+                description="Attached when we can match an order. The button opens your tracking page with the order number and email already filled in — customers never receive a tracking number."
               />
               <Input
                 label="Tracking page URL"

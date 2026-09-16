@@ -20,6 +20,7 @@ from app.ai_email_assistant.duplicate_guard import (
 from app.ai_email_assistant.email_filter import (
     apply_known_customer_guard,
     config_from_settings,
+    conversation_looks_like_client,
     evaluate_email_filter,
     is_platform_sender,
 )
@@ -27,10 +28,12 @@ from app.ai_email_assistant.thread_context import format_customer_relationship
 from app.ai_email_assistant.order_context import (
     MatchedOrder,
     TrackingLink,
+    collect_tracking_ids,
     find_customer_orders,
     format_orders_for_prompt,
     pick_tracking_link,
     refresh_shipment_tracking,
+    strip_tracking_ids_from_text,
 )
 from app.ai_email_assistant.openai_errors import OpenAIServiceError, openai_error_from_exception
 from app.ai_email_assistant.prompt_builder import BusinessContext
@@ -77,7 +80,7 @@ from app.models.ai_email_assistant import (
     ThreadMessageResponse,
 )
 from app.services.tracking_service import TrackingService
-from app.tracking.payload_parser import normalize_email
+from app.tracking.payload_parser import emails_match, normalize_email
 
 logger = logging.getLogger(__name__)
 
@@ -336,14 +339,14 @@ class AIEmailAssistantService:
         db: Session,
         settings_row: AIEmailAssistantSettings,
         email: InboxEmail,
-    ) -> tuple[str | None, TrackingLink | None]:
+    ) -> tuple[str | None, TrackingLink | None, list[str]]:
         """Shopify order facts for the prompt, plus the tracking button to attach."""
         if not settings_row.use_order_context or not email.store_id:
-            return None, None
+            return None, None, []
 
         store = db.get(Store, email.store_id)
         if not store or store.status != StoreStatus.CONNECTED.value:
-            return None, None
+            return None, None, []
 
         try:
             matched: list[MatchedOrder] = await find_customer_orders(
@@ -356,10 +359,10 @@ class AIEmailAssistantService:
         except Exception:
             # Order context is an enhancement — never block a reply on a Shopify hiccup.
             logger.exception("Order context lookup failed for inbox %s", email.id)
-            return None, None
+            return None, None, []
 
         if not matched:
-            return None, None
+            return None, None, []
 
         await refresh_shipment_tracking(db, store, matched)
 
@@ -370,7 +373,7 @@ class AIEmailAssistantService:
             matched, page_url=page_url, customer_email=email.sender_email
         )
         order_context = format_orders_for_prompt(matched, tracking_link=tracking_link)
-        return order_context or None, tracking_link
+        return order_context or None, tracking_link, collect_tracking_ids(matched, tracking_link)
 
     async def _duplicate_skip_reason(
         self,
@@ -547,21 +550,9 @@ class AIEmailAssistantService:
                 db, settings_row, account, email, force=True
             )
 
-        known_customer = False
-        store = db.get(Store, email.store_id) if email.store_id else None
-        if store and not is_platform_sender(email.sender_email):
-            try:
-                matched = await find_customer_orders(
-                    db,
-                    store,
-                    customer_email=email.sender_email,
-                    subject="",
-                    body="",
-                    live_lookup=False,
-                )
-                known_customer = any(m.match_reason == "customer_email" for m in matched)
-            except Exception:
-                logger.exception("Customer-order lookup failed during filter for %s", email.id)
+        known_customer = await self._is_known_client(
+            db, email, thread_context=thread_context
+        )
 
         config = config_from_settings(settings_row)
 
@@ -613,6 +604,64 @@ class AIEmailAssistantService:
                 result.category or "other",
                 (result.reason or "")[:120],
             )
+
+    async def _is_known_client(
+        self,
+        db: Session,
+        email: InboxEmail,
+        *,
+        thread_context: str | None,
+    ) -> bool:
+        """Treat this sender as a client when history or a Shopify order says they are.
+
+        Looked up at filter start by the customer's personal email (e.g. xxx@gmail.com):
+        Gmail/inbox chat history, Shopify orders on that address, and the wording of
+        this message. Platform/Shopify-alert senders are never clients.
+        """
+        if is_platform_sender(email.sender_email):
+            return False
+
+        address = normalize_email(email.sender_email)
+        store = db.get(Store, email.store_id) if email.store_id else None
+        if store:
+            try:
+                matched = await find_customer_orders(
+                    db,
+                    store,
+                    customer_email=email.sender_email,
+                    subject=email.subject or "",
+                    body=email.body_text or "",
+                    live_lookup=True,
+                )
+                if any(
+                    m.match_reason == "customer_email"
+                    or emails_match(m.row.customer_email, address)
+                    for m in matched
+                ):
+                    return True
+            except Exception:
+                logger.exception(
+                    "Customer-order lookup failed during filter for %s", email.id
+                )
+
+        if address:
+            prior = db.scalar(
+                select(func.count())
+                .select_from(InboxEmail)
+                .where(
+                    InboxEmail.user_id == email.user_id,
+                    func.lower(InboxEmail.sender_email) == address,
+                    InboxEmail.id != email.id,
+                )
+            )
+            if prior:
+                return True
+
+        return conversation_looks_like_client(
+            thread_context=thread_context,
+            subject=email.subject or "",
+            body=email.body_text or "",
+        )
 
     def list_inbox(
         self, db: Session, user: User, *, store_id: str | None = None, limit: int = 50
@@ -1448,7 +1497,9 @@ class AIEmailAssistantService:
                 db, settings_row, account, email, force=True
             )
 
-        order_context, tracking_link = await self._order_reply_context(db, settings_row, email)
+        order_context, tracking_link, tracking_ids = await self._order_reply_context(
+            db, settings_row, email
+        )
 
         try:
             ai = self._ai_service(db, user, settings_row)
@@ -1480,7 +1531,7 @@ class AIEmailAssistantService:
 
         email.detected_intent = result.intent
         email.status = InboxEmailStatus.DRAFT_PENDING.value
-        reply.generated_body = result.body
+        reply.generated_body = strip_tracking_ids_from_text(result.body, tracking_ids)
         reply.model_used = result.model
         reply.prompt_snapshot = result.prompt_snapshot
         reply.error_message = None
@@ -1584,6 +1635,8 @@ class AIEmailAssistantService:
         body = (reply.edited_body or reply.generated_body or "").strip()
         if not body:
             raise HTTPException(status_code=400, detail="Reply body is empty")
+        hidden_ids = [reply.tracking_number] if reply.tracking_number else []
+        body = strip_tracking_ids_from_text(body, hidden_ids)
 
         email = reply.inbox_email
         account = db.get(GmailAccount, email.gmail_account_id)

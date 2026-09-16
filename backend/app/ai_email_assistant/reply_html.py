@@ -26,10 +26,7 @@ def _body_to_html(body_text: str) -> str:
 
 def _button_html(link: TrackingLink, theme_color: str) -> str:
     color = (theme_color or "").strip() or DEFAULT_THEME_COLOR
-    details = [f"Order {escape(link.order_number)}"]
-    if link.tracking_number:
-        carrier = f" &middot; {escape(link.carrier)}" if link.carrier else ""
-        details.append(f"Tracking {escape(link.tracking_number)}{carrier}")
+    order_label = f"Order {escape(link.order_number)}" if link.order_number else ""
 
     return f"""<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0 8px;">
   <tr>
@@ -42,7 +39,7 @@ def _button_html(link: TrackingLink, theme_color: str) -> str:
   </tr>
   <tr>
     <td style="padding-top:10px;font-family:Helvetica,Arial,sans-serif;font-size:12px;color:#6b7280;">
-      {" &middot; ".join(details)}
+      {order_label}
     </td>
   </tr>
 </table>"""
@@ -76,7 +73,6 @@ def render_reply_text(body_text: str, *, tracking_link: TrackingLink | None) -> 
         return text
 
     lines = [text, "", f"{TRACK_BUTTON_LABEL}: {tracking_link.url}"]
-    if tracking_link.tracking_number:
-        carrier = f" ({tracking_link.carrier})" if tracking_link.carrier else ""
-        lines.append(f"Tracking number: {tracking_link.tracking_number}{carrier}")
+    if tracking_link.order_number:
+        lines.append(f"Order {tracking_link.order_number}")
     return "\n".join(lines)

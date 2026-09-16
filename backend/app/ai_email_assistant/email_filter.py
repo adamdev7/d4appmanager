@@ -32,6 +32,14 @@ AUTOMATED_SUBJECT_PATTERNS = re.compile(
     re.I,
 )
 
+# Language that means this person is shopping / asking about an order, not a random chat.
+_CLIENT_CONVERSATION_HINTS = re.compile(
+    r"\b(order|commande|#\d{3,}|shipping|shipped|livraison|refund|remboursement|"
+    r"return|retour|package|colis|tracking|purchase|bought|payment|paiement|"
+    r"cancel|annul|delivery|delivered|where is my|ou est ma)\b",
+    re.I,
+)
+
 
 @dataclass
 class EmailFilterResult:
@@ -91,20 +99,39 @@ def check_automated_heuristic(sender_email: str, subject: str, body: str) -> str
     return None
 
 
+def conversation_looks_like_client(
+    *,
+    thread_context: str | None,
+    subject: str = "",
+    body: str = "",
+) -> bool:
+    """True when Gmail history or this message reads like a shopper writing in."""
+    ctx = (thread_context or "").strip()
+    if ctx:
+        if "EARLIER EMAILS" in ctx:
+            return True
+        # More than one message in the relationship (this thread or prior).
+        if ctx.count("--- ") >= 2:
+            return True
+        if _CLIENT_CONVERSATION_HINTS.search(ctx):
+            return True
+    return bool(_CLIENT_CONVERSATION_HINTS.search(f"{subject}\n{body}"))
+
+
 def apply_known_customer_guard(
     result: EmailFilterResult,
     *,
     known_customer: bool,
     platform_sender: bool,
 ) -> EmailFilterResult:
-    """Never treat a Shopify buyer as 'not a client' just because the AI guessed personal."""
+    """Never treat a buyer / returning sender as 'not a client' just because the AI guessed personal."""
     if not known_customer or platform_sender or result.should_reply:
         return result
     if result.category in ("already_resolved", "acknowledgment"):
         return result
     return EmailFilterResult(
         should_reply=True,
-        reason="Sender matches a Shopify customer — answering their email.",
+        reason="Sender is a known client (order or conversation history) — answering their email.",
         category="customer",
     )
 

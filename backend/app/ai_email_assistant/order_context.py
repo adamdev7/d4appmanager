@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -15,8 +16,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.ai_email_assistant.order_link import extract_order_numbers
+from app.core.crypto import decrypt_value
 from app.db.models import OrderTracking, Store
+from app.integrations.shopify.client import ShopifyClient
+from app.tracking.order_sync import OrderTrackingSyncService
 from app.tracking.payload_parser import (
+    emails_match,
     normalize_email,
     normalize_order_number,
     order_number_variants,
@@ -158,6 +163,12 @@ async def find_customer_orders(
             if row and row.id not in by_id:
                 by_id[row.id] = MatchedOrder(row=row, match_reason="order_number_in_email")
 
+        has_email_match = any(m.match_reason == "customer_email" for m in by_id.values())
+        if not has_email_match:
+            for row in await _sync_orders_for_email(db, store, address):
+                if row.id not in by_id:
+                    by_id[row.id] = MatchedOrder(row=row, match_reason="customer_email")
+
     return sorted(
         by_id.values(),
         key=lambda m: (
@@ -201,23 +212,87 @@ async def refresh_shipment_tracking(
         refreshed += 1
 
 
+def collect_tracking_ids(matched: list[MatchedOrder], link: TrackingLink | None = None) -> list[str]:
+    """Carrier tracking codes that must never appear in a customer-facing reply."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in matched:
+        value = (item.row.tracking_number or "").strip()
+        key = value.lower()
+        if value and len(value) >= 8 and key not in seen:
+            seen.add(key)
+            ids.append(value)
+    extra = (link.tracking_number or "").strip() if link else ""
+    if extra and extra.lower() not in seen and len(extra) >= 8:
+        ids.append(extra)
+    return ids
+
+
+def strip_tracking_ids_from_text(text: str, tracking_ids: list[str]) -> str:
+    """Remove known carrier tracking numbers from a draft so they never reach the customer."""
+    out = text or ""
+    for tid in sorted((t for t in tracking_ids if t), key=len, reverse=True):
+        out = re.sub(re.escape(tid), "", out, flags=re.IGNORECASE)
+    out = re.sub(r"(?im)^\s*tracking\s*(number|id|#)?\s*[:#].*$", "", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
+def _scrub_tracking_ids(text: str, tracking_ids: list[str]) -> str:
+    out = text or ""
+    for tid in tracking_ids:
+        out = re.sub(re.escape(tid), "", out, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", out).strip(" -·,;:")
+
+
+async def _sync_orders_for_email(
+    db: Session, store: Store, address: str, *, limit: int = 8
+) -> list[OrderTracking]:
+    """Pull Shopify orders for this customer email when local tracking rows are missing."""
+    if not address or not store.access_token_encrypted:
+        return []
+    try:
+        token = decrypt_value(store.access_token_encrypted)
+    except ValueError:
+        logger.warning("Could not decrypt Shopify token for store %s", store.id)
+        return []
+
+    client = ShopifyClient(store.shop_domain, token)
+    try:
+        orders = await client.find_orders_by_email(address, limit=limit)
+    except Exception:
+        logger.exception("Shopify email order lookup failed for %s", address)
+        return []
+
+    sync = OrderTrackingSyncService(db)
+    rows: list[OrderTracking] = []
+    for order in orders:
+        try:
+            row = sync.upsert_from_shopify_order(store.id, order)
+        except Exception:
+            logger.exception("Failed to store Shopify order for %s", address)
+            continue
+        if row and emails_match(row.customer_email, address):
+            rows.append(row)
+    if rows:
+        db.commit()
+    return rows
+
+
 def pick_tracking_link(
     matched: list[MatchedOrder],
     *,
     page_url: str | None,
     customer_email: str,
 ) -> TrackingLink | None:
-    """Best order to offer a tracking button for, if any is actually trackable."""
-    if not page_url:
-        return None
-
-    shipped = [m for m in matched if is_shipped(m.row)]
-    if not shipped:
+    """Best order to offer a Track my order button (order number + email only)."""
+    if not page_url or not matched:
         return None
 
     # An order the customer explicitly quoted wins over their newest order.
-    quoted = [m for m in shipped if m.match_reason == "order_number_in_email"]
-    chosen = (quoted or shipped)[0].row
+    quoted = [m for m in matched if m.match_reason == "order_number_in_email"]
+    chosen = (quoted or matched)[0].row
 
     # The storefront page verifies order number + email, so use the address on the
     # order rather than the sender when they differ (forwarded mail, alias, etc).
@@ -259,13 +334,13 @@ def _format_order(matched: MatchedOrder, *, tracking_link: TrackingLink | None) 
 
     lines.append(f"- Shipment: {shipment_status_label(row)}")
     if is_shipped(row):
-        carrier = row.carrier or "carrier not specified"
-        lines.append(f"- Tracking number: {row.tracking_number} ({carrier})")
-        if _has_button(row, tracking_link):
-            lines.append(
-                "- A prefilled tracking link for this order is attached to your reply as a "
-                '"Track my order" button. Refer to the button; never paste a raw URL.'
-            )
+        lines.append("- Carrier tracking exists internally; do not share the tracking number.")
+    if _has_button(row, tracking_link):
+        lines.append(
+            "- A prefilled “Track my order” button is attached to your reply (order number + "
+            "email only). Tell the customer to use that button. Never paste a raw URL or a "
+            "carrier tracking number."
+        )
 
     items = _json_list(row.line_items_json)
     if items:
@@ -281,13 +356,17 @@ def _format_order(matched: MatchedOrder, *, tracking_link: TrackingLink | None) 
         if names:
             lines.append(f"- Items: {', '.join(names)}")
 
+    hidden_ids = [(row.tracking_number or "").strip()] if (row.tracking_number or "").strip() else []
     timeline = [e for e in _json_list(row.timeline_json) if isinstance(e, dict)]
     if timeline:
-        lines.append("- Latest shipment updates (newest first):")
+        lines.append("- Latest shipment updates (newest first, no tracking numbers):")
         for event in timeline[:MAX_TIMELINE_EVENTS]:
-            description = str(
-                event.get("description") or event.get("message") or event.get("status") or ""
-            ).strip()
+            description = _scrub_tracking_ids(
+                str(
+                    event.get("description") or event.get("message") or event.get("status") or ""
+                ).strip(),
+                hidden_ids,
+            )
             if not description:
                 continue
             when = str(event.get("at") or event.get("date") or "").strip()
