@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 from sqlalchemy import inspect, select, text
@@ -36,11 +36,28 @@ logger = logging.getLogger(__name__)
 CALLMEBOT_GUIDE_URL = "https://www.callmebot.com/blog/free-api-whatsapp-messages/"
 CALLMEBOT_API_URL = "https://api.callmebot.com/whatsapp.php"
 ALLOW_MESSAGE = "I allow callmebot to send me messages"
+CALLMEBOT_SOURCE = "appmanager"
 
 MODULE_EMAIL = "AI Email Assistant"
 MODULE_ADS = "AI Ads"
 
 _PHONE_KEEP = re.compile(r"[^\d+]+")
+_APIKEY_FROM_MESSAGE = re.compile(
+    r"(?:your\s+)?api\s*key\s*(?:is|:)\s*([0-9]{4,})",
+    re.IGNORECASE,
+)
+
+# CallMeBot uses custom 2xx codes (documented by community integrations).
+_CALLMEBOT_STATUS_MESSAGES = {
+    201: "Wrong parameters — check the phone number and API key.",
+    202: "This WhatsApp number is blocked by CallMeBot.",
+    203: "API key is incorrect for this phone number.",
+    204: "Too many messages sent. Wait a bit and try again.",
+    205: "CallMeBot reported an unknown error. Try again in a minute.",
+    207: "CallMeBot is temporarily down. Try again later.",
+    208: "This number is paused on CallMeBot. Message the bot to reactivate.",
+    209: "This number is blocked or over quota on CallMeBot.",
+}
 
 
 class WhatsAppConfigError(ValueError):
@@ -66,8 +83,23 @@ def normalize_whatsapp_phone(raw: str | None) -> str:
     return "+" + digits
 
 
+def normalize_callmebot_api_key(raw: str | None) -> str:
+    """Accept a bare key or a pasted activation line like 'Your APIKEY is 123123'."""
+    key = (raw or "").strip()
+    if not key:
+        return ""
+    match = _APIKEY_FROM_MESSAGE.search(key)
+    if match:
+        return match.group(1)
+    # Keys from CallMeBot are numeric; strip spaces/dashes if the user copied loosely.
+    digits_only = re.sub(r"[\s\-]", "", key)
+    if digits_only.isdigit() and len(digits_only) >= 4:
+        return digits_only
+    return key
+
+
 def mask_whatsapp_api_key(api_key: str | None) -> str | None:
-    key = (api_key or "").strip()
+    key = normalize_callmebot_api_key(api_key)
     if not key:
         return None
     if len(key) <= 4:
@@ -80,6 +112,15 @@ def mask_whatsapp_phone(raw: str | None) -> str:
     if len(number) < 8:
         return number
     return number[:3] + "••••" + number[-4:]
+
+
+def format_connection_test_message() -> str:
+    """Short WhatsApp-formatted test ping (bold + newlines per CallMeBot docs)."""
+    return (
+        "*App Manager*\n"
+        "WhatsApp alerts are connected.\n"
+        "Turn on alerts in AI Email Assistant or AI Ads when you want them."
+    )
 
 
 def format_manual_review_alert(
@@ -95,11 +136,12 @@ def format_manual_review_alert(
     subj = (subject or "(no subject)").strip()
     why = (reason or "Needs an admin").strip()
     return (
-        f"*Manual review needed* — {store}\n"
+        f"*Manual review needed*\n"
+        f"Store: {store}\n"
         f"From: {who}\n"
         f"Subject: {subj}\n"
-        f"Why: {why}\n\n"
-        "Open App Manager → AI Email Assistant → Manual review to reply."
+        f"Why: {why}\n"
+        "Open App Manager → AI Email Assistant → Manual review."
     )
 
 
@@ -126,7 +168,8 @@ def format_weekly_ads_recap(
     stills = f"{image_count} still" + ("" if image_count == 1 else "s")
     clips = f"{video_count} video" + ("" if video_count == 1 else "s")
     lines = [
-        f"*{headline}* — {store}",
+        f"*{headline}*",
+        f"Store: {store}",
         f"Made: {stills}, {clips}",
     ]
     product = (product_title or "").strip()
@@ -135,33 +178,106 @@ def format_weekly_ads_recap(
     for item in items[:6]:
         label = (item or "").strip()
         if label:
-            lines.append(f"• {label}")
+            lines.append(f"- {label}")
     if failed_count:
         lines.append(f"{failed_count} creative(s) failed.")
     if error and status_key == "FAILED":
         lines.append(f"Error: {error.strip()[:180]}")
-    lines.append("")
-    lines.append("Nothing was published. Open App Manager → AI Ads → Library to review.")
+    lines.append("Nothing was published. Open App Manager → AI Ads → Library.")
     return "\n".join(lines)
 
 
 def build_callmebot_url(*, phone: str, api_key: str, text: str) -> str:
-    """CallMeBot GET URL. `+` in the phone must be %2B, not a raw plus (that becomes a space)."""
-    return (
-        f"{CALLMEBOT_API_URL}"
-        f"?phone={quote(phone, safe='')}"
-        f"&text={quote(text, safe='')}"
-        f"&apikey={quote(api_key, safe='')}"
-    )
+    """CallMeBot GET URL per docs / Homey / PHP samples.
+
+    Docs example: phone=+34123123123 (literal "+", not %2B). Text is urlencoded
+    (%20 / %0A). Homey builds params then replaces %2B with +.
+    https://www.callmebot.com/blog/free-api-whatsapp-messages/
+    """
+    query = urlencode(
+        {
+            "phone": phone,
+            "text": text,
+            "apikey": api_key,
+            "source": CALLMEBOT_SOURCE,
+        },
+        quote_via=quote,
+    ).replace("%2B", "+")
+    return f"{CALLMEBOT_API_URL}?{query}"
+
+
+def _plain_callmebot_body(payload: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", payload or "")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def callmebot_send_succeeded(status_code: int, payload: str) -> bool:
+    """True when CallMeBot accepted the message (queued or sent)."""
+    lowered = (payload or "").strip().lower()
+    if re.search(r"\berror\b", lowered) and "message queued" not in lowered:
+        return False
+    if status_code == 210:
+        return True
+    if status_code != 200:
+        return False
+    if not lowered:
+        # Some CallMeBot paths return an empty 200 after queueing.
+        return True
+    return "message queued" in lowered or "message sent" in lowered
 
 
 def callmebot_response_rejected(status_code: int, payload: str) -> bool:
-    lowered = (payload or "").strip().lower()
-    if status_code >= 400:
+    if callmebot_send_succeeded(status_code, payload):
+        return False
+    if status_code in _CALLMEBOT_STATUS_MESSAGES or status_code >= 400:
         return True
+    lowered = (payload or "").strip().lower()
     if "apikey is invalid" in lowered or "api key is invalid" in lowered:
         return True
-    return bool(re.search(r"\berror\b", lowered))
+    if "apikey is incorrect" in lowered or "api key is incorrect" in lowered:
+        return True
+    if re.search(r"\berror\b", lowered):
+        return True
+    # Non-empty 200 without a queue confirmation.
+    return status_code == 200 and bool(lowered)
+
+
+def format_callmebot_error(status_code: int, payload: str) -> str:
+    """User-facing reason — prefer CallMeBot's ERROR line, not the request echo."""
+    if status_code in _CALLMEBOT_STATUS_MESSAGES:
+        return _CALLMEBOT_STATUS_MESSAGES[status_code]
+
+    plain = _plain_callmebot_body(payload)
+    lowered = plain.lower()
+
+    if "apikey is invalid" in lowered or "api key is invalid" in lowered:
+        return (
+            "API key is invalid for this number. "
+            "Paste the key CallMeBot sent you, or message the bot “Recover APIKey”."
+        )
+    if "apikey is incorrect" in lowered or "api key is incorrect" in lowered:
+        return (
+            "API key is incorrect for this number. "
+            "Paste the key CallMeBot sent you, or message the bot “Recover APIKey”."
+        )
+    if "phone number format" in lowered:
+        return "Phone number format is incorrect. Use country code, e.g. +1 514 555 0100."
+
+    error_line = re.search(r"ERROR:\s*(.+?)(?:\s{2,}|$)", plain, re.IGNORECASE)
+    if error_line:
+        return error_line.group(1).strip()[:200]
+
+    # Avoid dumping "Message to: … Text to send: …" echoes.
+    cleaned = re.sub(
+        r"Message to:.*?Text to send:.*?(?=APIKey|ERROR|$)",
+        "",
+        plain,
+        flags=re.IGNORECASE,
+    ).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned and len(cleaned) < 160 and "text to send" not in cleaned.lower():
+        return cleaned
+    return f"CallMeBot could not send the message (HTTP {status_code})."
 
 
 async def send_callmebot_whatsapp(
@@ -172,7 +288,7 @@ async def send_callmebot_whatsapp(
     timeout_seconds: float = 30,
 ) -> WhatsAppSendResult:
     number = normalize_whatsapp_phone(phone)
-    key = (api_key or "").strip()
+    key = normalize_callmebot_api_key(api_key)
     body = (text or "").strip()
     if not number:
         return WhatsAppSendResult(ok=False, error="Enter your WhatsApp number with country code.")
@@ -184,7 +300,9 @@ async def send_callmebot_whatsapp(
     url = build_callmebot_url(phone=number, api_key=key, text=body)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
-            resp = await client.get(url)
+            # Send a raw Request so httpx does not re-encode the literal "+" in phone.
+            request = httpx.Request("GET", url)
+            resp = await client.send(request)
     except httpx.TimeoutException:
         return WhatsAppSendResult(
             ok=False,
@@ -195,15 +313,11 @@ async def send_callmebot_whatsapp(
         return WhatsAppSendResult(ok=False, error="Could not reach WhatsApp (CallMeBot). Try again.")
 
     payload = (resp.text or "").strip()
-    if callmebot_response_rejected(resp.status_code, payload):
-        detail = re.sub(r"<[^>]+>", " ", payload)
-        detail = re.sub(r"\s+", " ", detail).strip()[:180] or f"HTTP {resp.status_code}"
-        logger.warning("CallMeBot rejected send status=%s body=%s", resp.status_code, payload[:300])
-        return WhatsAppSendResult(
-            ok=False,
-            error=f"CallMeBot rejected the send: {detail}",
-        )
-    return WhatsAppSendResult(ok=True)
+    if callmebot_send_succeeded(resp.status_code, payload):
+        return WhatsAppSendResult(ok=True)
+    detail = format_callmebot_error(resp.status_code, payload)
+    logger.warning("CallMeBot rejected send status=%s body=%s", resp.status_code, payload[:300])
+    return WhatsAppSendResult(ok=False, error=detail)
 
 
 _EMPTY_PUBLIC = {
@@ -328,7 +442,7 @@ def save_whatsapp_connection(
             )
         if cleaned:
             row.phone = cleaned
-    new_key = (api_key or "").strip()
+    new_key = normalize_callmebot_api_key(api_key)
     if new_key:
         row.api_key_encrypted = encrypt_value(new_key)
         row.api_key_hint = mask_whatsapp_api_key(new_key)

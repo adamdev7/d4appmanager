@@ -120,25 +120,27 @@ export function WhatsAppAlertsCard({
                   ? `Saved key ${apiKeyHint || "••••"}. Leave blank to keep it, or paste a new key to replace it.`
                   : "Paste the API key from the WhatsApp message (not your WhatsApp password)."
               }
-              placeholder={configured ? "••••••••" : "123123"}
+              placeholder={configured ? "Leave blank to keep saved key" : "123123"}
               type="password"
               value={keyInput}
               onChange={(e) => onKeyInputChange(e.target.value)}
-              autoComplete="off"
+              autoComplete="new-password"
+              name="callmebot-api-key"
+              data-1p-ignore="true"
+              data-lpignore="true"
             />
           </div>
         )}
 
-        {lastError && (
-          <p className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-            Last send failed: {lastError}
-          </p>
-        )}
-        {error && (
+        {error ? (
           <p className="text-sm text-red-600 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
             {error}
           </p>
-        )}
+        ) : lastError ? (
+          <p className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+            Last send failed: {lastError}
+          </p>
+        ) : null}
 
         <div className="flex flex-wrap items-center gap-2">
           <Button

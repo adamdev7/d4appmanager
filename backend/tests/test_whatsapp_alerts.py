@@ -24,6 +24,17 @@ def test_mask_whatsapp_api_key():
     assert mask_whatsapp_api_key(None) is None
 
 
+def test_normalize_callmebot_api_key_extracts_from_paste():
+    from app.notifications.whatsapp import normalize_callmebot_api_key
+
+    assert normalize_callmebot_api_key("123123") == "123123"
+    assert (
+        normalize_callmebot_api_key("API Activated for your phone number. Your APIKEY is 987654")
+        == "987654"
+    )
+    assert normalize_callmebot_api_key("  55 66 77  ") == "556677"
+
+
 def test_format_manual_review_alert_is_plain_and_actionable():
     text = format_manual_review_alert(
         business_name="Luxory",
@@ -32,7 +43,7 @@ def test_format_manual_review_alert_is_plain_and_actionable():
         subject="Cancel my subscription",
         reason="Subscription cancel request",
     )
-    assert "Manual review needed" in text
+    assert "*Manual review needed*" in text
     assert "Luxory" in text
     assert "Jane" in text
     assert "Cancel my subscription" in text
@@ -62,6 +73,15 @@ def test_format_weekly_ads_recap_lists_what_was_made():
     assert "Library" in text
 
 
+def test_format_connection_test_message():
+    from app.notifications.whatsapp import format_connection_test_message
+
+    text = format_connection_test_message()
+    assert text.startswith("*App Manager*")
+    assert "\n" in text
+    assert "AI Email Assistant" in text or "AI Ads" in text
+
+
 def test_whatsapp_public_payload_never_raises():
     from unittest.mock import patch
 
@@ -81,7 +101,8 @@ def test_whatsapp_public_payload_never_raises():
     assert payload["whatsapp_connected_modules"] == []
 
 
-def test_callmebot_url_encodes_plus_in_phone():
+def test_callmebot_url_keeps_literal_plus_in_phone():
+    """CallMeBot docs / Homey use phone=+34… not phone=%2B34…"""
     from app.notifications.whatsapp import build_callmebot_url
 
     url = build_callmebot_url(
@@ -89,16 +110,35 @@ def test_callmebot_url_encodes_plus_in_phone():
         api_key="123123",
         text="Hello\nthere",
     )
-    assert "phone=%2B15145550100" in url
+    assert "phone=+15145550100" in url
     assert "apikey=123123" in url
     assert "text=Hello%0Athere" in url
-    assert "phone=+" not in url
+    assert "source=appmanager" in url
+    assert "phone=%2B" not in url
 
 
 def test_callmebot_html_error_is_rejected():
-    from app.notifications.whatsapp import callmebot_response_rejected
+    from app.notifications.whatsapp import callmebot_response_rejected, callmebot_send_succeeded
 
     assert callmebot_response_rejected(200, "<br>ERROR: Phone number format is incorrect")
     assert callmebot_response_rejected(200, "APIKey is invalid")
+    assert callmebot_response_rejected(203, "APIKey is incorrect")
     assert callmebot_response_rejected(503, "Service Unavailable")
     assert not callmebot_response_rejected(200, "Message queued to be sent")
+    assert callmebot_send_succeeded(200, "Message queued to be sent")
+    assert callmebot_send_succeeded(210, "queued")
+
+
+def test_format_callmebot_error_prefers_clear_reason():
+    from app.notifications.whatsapp import format_callmebot_error
+
+    echo = (
+        "Message to: +4382256262 Text to send: *App Manager*%0AHello. "
+        "APIKey is invalid"
+    )
+    msg = format_callmebot_error(200, echo)
+    assert "invalid" in msg.lower()
+    assert "Message to:" not in msg
+    assert format_callmebot_error(203, "") == (
+        "API key is incorrect for this phone number."
+    )

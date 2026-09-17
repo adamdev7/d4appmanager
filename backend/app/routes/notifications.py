@@ -9,6 +9,7 @@ from app.db.models import User
 from app.db.session import get_db
 from app.notifications.whatsapp import (
     WhatsAppConfigError,
+    format_connection_test_message,
     get_or_create_whatsapp_connection,
     save_whatsapp_connection,
     send_user_whatsapp,
@@ -84,15 +85,7 @@ async def test_whatsapp_settings(
             status_code=400,
             detail="Paste the CallMeBot API key you received on WhatsApp and save before testing.",
         )
-    result = await send_user_whatsapp(
-        db,
-        user,
-        text=(
-            "*App Manager test*\n"
-            "WhatsApp alerts are working.\n"
-            "Turn on alerts in AI Email Assistant (manual reviews) or AI Ads (weekly ads)."
-        ),
-    )
+    result = await send_user_whatsapp(db, user, text=format_connection_test_message())
     public = whatsapp_public_payload(db, user)
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.error or "WhatsApp test failed.")

@@ -47,7 +47,8 @@ export function GeneralSettingsPage() {
       setError(e instanceof Error ? e.message : "Could not save or send a test WhatsApp");
       try {
         const refreshed = await api.notifications.getWhatsApp();
-        setWhatsapp(refreshed);
+        // Keep the live error only — avoid a second box from whatsapp_last_error.
+        setWhatsapp({ ...refreshed, whatsapp_last_error: null });
         setPhone(refreshed.whatsapp_phone || phone);
       } catch {
         /* keep current form values */
