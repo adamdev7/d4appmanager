@@ -13,6 +13,7 @@ from app.models.analytics import (
     MrrWebhookPayload,
     ProductCostsUpdate,
     StripeAccountCreate,
+    StripeAccountUpdate,
 )
 from app.services.analytics_service import AnalyticsService
 
@@ -140,6 +141,19 @@ async def add_stripe_account(
     db: Session = Depends(get_db),
 ):
     return await _service.add_stripe_account(db, user, store_id, body.model_dump())
+
+
+@router.patch("/stores/{store_id}/stripe-accounts/{account_id}")
+async def update_stripe_account(
+    store_id: str,
+    account_id: str,
+    body: StripeAccountUpdate,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.update_stripe_account(
+        db, user, store_id, account_id, body.model_dump()
+    )
 
 
 @router.delete("/stores/{store_id}/stripe-accounts/{account_id}")

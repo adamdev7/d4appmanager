@@ -489,6 +489,19 @@ class AnalyticsService:
         _dashboard_cache.invalidate_store(store_id)
         return {"ok": True, "accounts": self._list_stripe_accounts(db, store_id)}
 
+    def update_stripe_account(
+        self, db: Session, user: User, store_id: str, account_id: str, body: dict
+    ) -> dict:
+        self._ensure_store(db, user, store_id)
+        row = db.get(AnalyticsStripeAccount, account_id)
+        if not row or row.store_id != store_id:
+            raise HTTPException(status_code=404, detail="Stripe account not found")
+        if "is_active" in body:
+            row.is_active = bool(body["is_active"])
+        db.commit()
+        _dashboard_cache.invalidate_store(store_id)
+        return {"ok": True, "accounts": self._list_stripe_accounts(db, store_id)}
+
     @staticmethod
     def _serialize_investment(row: AnalyticsManualInvestment) -> dict:
         return {

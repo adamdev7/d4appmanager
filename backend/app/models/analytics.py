@@ -47,6 +47,12 @@ class StripeAccountCreate(BaseModel):
     secret_key: str = Field(min_length=8)
 
 
+class StripeAccountUpdate(BaseModel):
+    """Toggle whether this Stripe MID is included in analytics extraction."""
+
+    is_active: bool
+
+
 class StripeAccountTestRequest(BaseModel):
     secret_key: str | None = None
     account_id: str | None = None

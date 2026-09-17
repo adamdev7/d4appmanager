@@ -19,6 +19,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Ca
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
+import { Switch } from "@/components/ui/Switch";
 
 const DISPLAY_CURRENCIES = [
   { code: "USD", label: "US Dollar ($)" },
@@ -77,7 +78,12 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
     setMrrAmount(String(settings.mrr_manual_amount ?? 0));
     setMrrSubscribers(String(settings.mrr_manual_subscribers ?? 0));
     setMrrChurn(String(settings.mrr_manual_churn_pct ?? 0));
-    setStripeAccounts(settings.stripe_accounts ?? []);
+    setStripeAccounts(
+      (settings.stripe_accounts ?? []).map((a) => ({
+        ...a,
+        is_active: a.is_active !== false,
+      }))
+    );
     if (settings.mrr_webhook_secret) setFreshWebhookSecret(settings.mrr_webhook_secret);
     setMetaToken("");
   }, [settings]);
@@ -106,9 +112,24 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
       };
       if (metaToken.trim()) payload.meta_access_token = metaToken.trim();
       const saved = await api.analytics.updateSettings(storeId, payload);
+
+      const originalAccounts = settings?.stripe_accounts ?? [];
+      let accounts = saved.stripe_accounts ?? [];
+      const dirty = stripeAccounts.filter((a) => {
+        const orig = originalAccounts.find((o) => o.id === a.id);
+        const nextActive = a.is_active !== false;
+        return orig != null && Boolean(orig.is_active) !== nextActive;
+      });
+      for (const a of dirty) {
+        const res = await api.analytics.updateStripeAccount(storeId, a.id, {
+          is_active: a.is_active !== false,
+        });
+        accounts = (res.accounts as AnalyticsStripeAccount[]) ?? accounts;
+      }
+
       setMetaToken("");
       if (saved.mrr_webhook_secret) setFreshWebhookSecret(saved.mrr_webhook_secret);
-      setStripeAccounts(saved.stripe_accounts ?? []);
+      setStripeAccounts(accounts);
       if (saved.display_currency) setDisplayCurrency(saved.display_currency.toUpperCase());
       setMessage("Settings saved.");
       onSaved();
@@ -176,6 +197,13 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not remove account");
     }
+  };
+
+  const toggleStripeExtraction = (id: string, isActive: boolean) => {
+    setStripeAccounts((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, is_active: isActive } : a))
+    );
+    setMessage("");
   };
 
   const syncStripeMrr = async () => {
@@ -387,24 +415,53 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
                   </div>
                   {stripeAccounts.length > 0 && (
                     <ul className="space-y-2 text-sm">
-                      {stripeAccounts.map((a) => (
-                        <li
-                          key={a.id}
-                          className="flex items-center justify-between gap-2 border border-border rounded-lg px-3 py-2"
-                        >
-                          <div>
-                            <p className="font-medium text-content">{a.label}</p>
-                            <p className="text-xs text-content-muted">
-                              {a.secret_key_masked} · last MRR {a.last_mrr} · {a.last_subscribers} subs
-                              {a.last_error ? ` · ${a.last_error}` : ""}
-                            </p>
-                          </div>
-                          <Button type="button" variant="ghost" size="sm" onClick={() => removeStripe(a.id)}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </li>
-                      ))}
+                      {stripeAccounts.map((a) => {
+                        const extracting = a.is_active !== false;
+                        return (
+                          <li
+                            key={a.id}
+                            className="flex items-center justify-between gap-3 border border-border rounded-lg px-3 py-2"
+                          >
+                            <div className="min-w-0">
+                              <p className="font-medium text-content">{a.label}</p>
+                              <p className="text-xs text-content-muted">
+                                {a.secret_key_masked} · last MRR {a.last_mrr} · {a.last_subscribers}{" "}
+                                subs
+                                {a.last_error ? ` · ${a.last_error}` : ""}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-3 shrink-0">
+                              <div
+                                className="flex items-center gap-2"
+                                title="Include this Stripe account in analytics extraction"
+                              >
+                                <span className="text-xs text-content-muted whitespace-nowrap">
+                                  {extracting ? "Extracting" : "Paused"}
+                                </span>
+                                <Switch
+                                  checked={extracting}
+                                  onChange={(checked) => toggleStripeExtraction(a.id, checked)}
+                                />
+                              </div>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => removeStripe(a.id)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </li>
+                        );
+                      })}
                     </ul>
+                  )}
+                  {stripeAccounts.length > 0 && (
+                    <p className="text-xs text-content-subtle">
+                      Turn off extraction to exclude a Stripe account from analytics (revenue, fees,
+                      balances, MRR). Toggle changes apply when you save settings.
+                    </p>
                   )}
                 </div>
               )}

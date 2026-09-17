@@ -948,6 +948,15 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
+    updateStripeAccount: (
+      storeId: string,
+      accountId: string,
+      data: { is_active: boolean },
+    ) =>
+      request<{ ok: boolean; accounts: unknown[] }>(
+        `/analytics/stores/${storeId}/stripe-accounts/${accountId}`,
+        { method: "PATCH", body: JSON.stringify(data) },
+      ),
     deleteStripeAccount: (storeId: string, accountId: string) =>
       request<{ ok: boolean; accounts: unknown[] }>(
         `/analytics/stores/${storeId}/stripe-accounts/${accountId}`,
