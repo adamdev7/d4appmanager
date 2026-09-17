@@ -64,13 +64,16 @@ class UserModuleOpenAIKey(Base):
 
 
 class UserWhatsAppSettings(Base):
-    """One CallMeBot connection per owner, shared by every module that can alert."""
+    """CallMeBot connection(s) per owner — alerts fan out to every saved number."""
 
     __tablename__ = "user_whatsapp_settings"
-    __table_args__ = (UniqueConstraint("user_id", name="uq_user_whatsapp_settings_user"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "phone", name="uq_user_whatsapp_settings_user_phone"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    label: Mapped[str] = mapped_column(String(64), default="")
     phone: Mapped[str] = mapped_column(String(32), default="")
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_hint: Mapped[str | None] = mapped_column(String(16), nullable=True)

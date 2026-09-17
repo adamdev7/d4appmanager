@@ -972,7 +972,7 @@ def _migrate_ai_email_order_tracking_columns() -> None:
 
 
 def _migrate_shared_whatsapp_connection() -> None:
-    """User-level CallMeBot connection + module on/off flags.
+    """User-level CallMeBot connection(s) + module on/off flags.
 
     Phone and API key live only on user_whatsapp_settings. Email Assistant and
     AI Ads store booleans. Leftover keys on ai_email_assistant_settings (if any)
@@ -984,6 +984,8 @@ def _migrate_shared_whatsapp_connection() -> None:
         UserWhatsAppSettings.__table__.create(bind=engine, checkfirst=True)
     except Exception:
         logger.exception("Could not create user_whatsapp_settings")
+
+    _migrate_whatsapp_multi_connections()
 
     insp = inspect(engine)
     try:
@@ -1069,6 +1071,137 @@ def _migrate_shared_whatsapp_connection() -> None:
     finally:
         db.close()
 
+
+def _migrate_whatsapp_multi_connections() -> None:
+    """Allow several CallMeBot numbers per user (drop one-row-per-user unique)."""
+    insp = inspect(engine)
+    if "user_whatsapp_settings" not in insp.get_table_names():
+        return
+    dialect = engine.dialect.name
+    cols = {c["name"] for c in insp.get_columns("user_whatsapp_settings")}
+
+    with engine.begin() as conn:
+        if "label" not in cols:
+            try:
+                if dialect == "sqlite":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE user_whatsapp_settings "
+                            "ADD COLUMN label VARCHAR(64) DEFAULT ''"
+                        )
+                    )
+                elif dialect == "postgresql":
+                    conn.execute(
+                        text(
+                            "ALTER TABLE user_whatsapp_settings "
+                            "ADD COLUMN IF NOT EXISTS label VARCHAR(64) DEFAULT ''"
+                        )
+                    )
+            except Exception:
+                logger.exception("Could not add user_whatsapp_settings.label")
+
+        if dialect == "postgresql":
+            conn.execute(
+                text(
+                    "ALTER TABLE user_whatsapp_settings "
+                    "DROP CONSTRAINT IF EXISTS uq_user_whatsapp_settings_user"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE user_whatsapp_settings "
+                    "DROP CONSTRAINT IF EXISTS user_whatsapp_settings_user_id_key"
+                )
+            )
+            try:
+                conn.execute(
+                    text(
+                        "ALTER TABLE user_whatsapp_settings "
+                        "ADD CONSTRAINT uq_user_whatsapp_settings_user_phone "
+                        "UNIQUE (user_id, phone)"
+                    )
+                )
+            except Exception:
+                # Already exists or phones empty — fine.
+                pass
+            return
+
+        if dialect != "sqlite":
+            return
+
+        # SQLite: rebuild if the old one-row-per-user unique is still present.
+        index_rows = conn.execute(text("PRAGMA index_list('user_whatsapp_settings')")).fetchall()
+        needs_rebuild = False
+        for row in index_rows:
+            # row: (seq, name, unique, origin, partial)
+            name = row[1]
+            is_unique = bool(row[2])
+            if not is_unique:
+                continue
+            cols_info = conn.execute(text(f"PRAGMA index_info('{name}')")).fetchall()
+            col_names = [c[2] for c in cols_info]
+            if col_names == ["user_id"]:
+                needs_rebuild = True
+                break
+        if not needs_rebuild:
+            return
+
+        conn.execute(
+            text(
+                """
+                CREATE TABLE user_whatsapp_settings_new (
+                    id VARCHAR(36) NOT NULL PRIMARY KEY,
+                    user_id VARCHAR(36) NOT NULL,
+                    label VARCHAR(64) DEFAULT '',
+                    phone VARCHAR(32) DEFAULT '',
+                    api_key_encrypted TEXT,
+                    api_key_hint VARCHAR(16),
+                    last_error TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (user_id, phone),
+                    FOREIGN KEY(user_id) REFERENCES users (id) ON DELETE CASCADE
+                )
+                """
+            )
+        )
+        has_label = "label" in {c["name"] for c in insp.get_columns("user_whatsapp_settings")}
+        if has_label:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO user_whatsapp_settings_new
+                    (id, user_id, label, phone, api_key_encrypted, api_key_hint,
+                     last_error, created_at, updated_at)
+                    SELECT id, user_id, COALESCE(label, ''), phone, api_key_encrypted,
+                           api_key_hint, last_error, created_at, updated_at
+                    FROM user_whatsapp_settings
+                    """
+                )
+            )
+        else:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO user_whatsapp_settings_new
+                    (id, user_id, label, phone, api_key_encrypted, api_key_hint,
+                     last_error, created_at, updated_at)
+                    SELECT id, user_id, '', phone, api_key_encrypted,
+                           api_key_hint, last_error, created_at, updated_at
+                    FROM user_whatsapp_settings
+                    """
+                )
+            )
+        conn.execute(text("DROP TABLE user_whatsapp_settings"))
+        conn.execute(
+            text("ALTER TABLE user_whatsapp_settings_new RENAME TO user_whatsapp_settings")
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_user_whatsapp_settings_user_id "
+                "ON user_whatsapp_settings (user_id)"
+            )
+        )
 
 def init_db() -> None:
     from app.db import models  # noqa: F401

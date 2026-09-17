@@ -92,13 +92,47 @@ def test_whatsapp_public_payload_never_raises():
             self.rolled_back = True
 
     with patch(
-        "app.notifications.whatsapp.get_whatsapp_connection",
+        "app.notifications.whatsapp.list_whatsapp_connections",
         side_effect=RuntimeError("no such column: user_whatsapp_settings"),
     ):
         payload = whatsapp_public_payload(BoomDb(), object())  # type: ignore[arg-type]
     assert payload["whatsapp_configured"] is False
     assert payload["whatsapp_phone"] == ""
     assert payload["whatsapp_connected_modules"] == []
+    assert payload["whatsapp_connections"] == []
+    assert payload["whatsapp_max_connections"] == 5
+
+
+def test_format_alert_samples_match_expected_shape():
+    from app.notifications.whatsapp import format_manual_review_alert, format_weekly_ads_recap
+
+    email_alert = format_manual_review_alert(
+        business_name="Luxory",
+        sender="Jane",
+        sender_email="jane@shop.com",
+        subject="Cancel my subscription",
+        reason="Subscription cancel request",
+    )
+    assert email_alert == (
+        "*Manual review needed*\n"
+        "Store: Luxory\n"
+        "From: Jane\n"
+        "Subject: Cancel my subscription\n"
+        "Why: Subscription cancel request\n"
+        "Open App Manager → AI Email Assistant → Manual review."
+    )
+
+    ads_alert = format_weekly_ads_recap(
+        store_name="Luxory",
+        status="COMPLETED",
+        product_title="Silk robe",
+        image_count=2,
+        video_count=1,
+        items=["Still: Morning glow", "Video: See it in motion"],
+    )
+    assert "*This week's ads are ready*" in ads_alert
+    assert "Store: Luxory" in ads_alert
+    assert "- Still: Morning glow" in ads_alert
 
 
 def test_callmebot_url_keeps_literal_plus_in_phone():

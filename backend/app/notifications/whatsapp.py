@@ -1,7 +1,8 @@
 """Personal WhatsApp alerts for the store owner (CallMeBot).
 
-One connection per user, shared by AI Email Assistant, AI Ads, and any later
-module. Each module only stores its own on/off flag.
+One or more connections per user, shared by AI Email Assistant, AI Ads, and any
+later module. Alerts fan out to every saved number. Each module only stores its
+own on/off flag.
 Setup guide: https://www.callmebot.com/blog/free-api-whatsapp-messages/
 """
 
@@ -320,6 +321,8 @@ async def send_callmebot_whatsapp(
     return WhatsAppSendResult(ok=False, error=detail)
 
 
+MAX_WHATSAPP_CONNECTIONS = 5
+
 _EMPTY_PUBLIC = {
     "whatsapp_configured": False,
     "whatsapp_phone": "",
@@ -328,6 +331,8 @@ _EMPTY_PUBLIC = {
     "whatsapp_setup_url": CALLMEBOT_GUIDE_URL,
     "whatsapp_allow_message": ALLOW_MESSAGE,
     "whatsapp_connected_modules": [],
+    "whatsapp_connections": [],
+    "whatsapp_max_connections": MAX_WHATSAPP_CONNECTIONS,
 }
 
 
@@ -337,34 +342,74 @@ def _repair_whatsapp_schema() -> None:
     _migrate_shared_whatsapp_connection()
 
 
-def get_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSettings | None:
-    """Existing shared connection, or None. Never commits — callers own the transaction."""
+def _connection_ready(row: UserWhatsAppSettings | None) -> bool:
+    return bool(row and row.api_key_encrypted and normalize_whatsapp_phone(row.phone))
+
+
+def _connection_public(row: UserWhatsAppSettings) -> dict:
+    return {
+        "id": row.id,
+        "label": (row.label or "").strip(),
+        "phone": (row.phone or ""),
+        "api_key_hint": row.api_key_hint,
+        "last_error": row.last_error,
+        "configured": _connection_ready(row),
+    }
+
+
+def list_whatsapp_connections(db: Session, user: User) -> list[UserWhatsAppSettings]:
+    """All CallMeBot numbers for this user, oldest first. Never commits."""
     try:
-        return _load_whatsapp_connection(db, user)
+        return _list_whatsapp_connections(db, user)
     except Exception:
-        logger.exception("WhatsApp connection lookup failed")
+        logger.exception("WhatsApp connection list failed")
         db.rollback()
         try:
             _repair_whatsapp_schema()
-            return _load_whatsapp_connection(db, user)
+            return _list_whatsapp_connections(db, user)
         except Exception:
-            logger.exception("WhatsApp connection lookup failed after schema repair")
+            logger.exception("WhatsApp connection list failed after schema repair")
             db.rollback()
-            return None
+            return []
 
 
-def _load_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSettings | None:
-    row = db.scalar(select(UserWhatsAppSettings).where(UserWhatsAppSettings.user_id == user.id))
-    if not row:
-        imported = UserWhatsAppSettings(user_id=user.id)
-        _import_legacy_email_credentials(db, user, imported)
-        if not imported.api_key_encrypted:
-            return None
-        db.add(imported)
-        db.flush()
-        return imported
-    if not row.api_key_encrypted:
-        _import_legacy_email_credentials(db, user, row)
+def _list_whatsapp_connections(db: Session, user: User) -> list[UserWhatsAppSettings]:
+    rows = list(
+        db.scalars(
+            select(UserWhatsAppSettings)
+            .where(UserWhatsAppSettings.user_id == user.id)
+            .order_by(UserWhatsAppSettings.created_at.asc())
+        ).all()
+    )
+    if rows:
+        for row in rows:
+            if not row.api_key_encrypted:
+                _import_legacy_email_credentials(db, user, row)
+        return rows
+    imported = UserWhatsAppSettings(user_id=user.id)
+    _import_legacy_email_credentials(db, user, imported)
+    if not imported.api_key_encrypted:
+        return []
+    db.add(imported)
+    db.flush()
+    return [imported]
+
+
+def get_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSettings | None:
+    """Primary (first) connection — kept for older callers."""
+    rows = list_whatsapp_connections(db, user)
+    return rows[0] if rows else None
+
+
+def get_whatsapp_connection_by_id(
+    db: Session, user: User, connection_id: str
+) -> UserWhatsAppSettings | None:
+    row = db.scalar(
+        select(UserWhatsAppSettings).where(
+            UserWhatsAppSettings.id == connection_id,
+            UserWhatsAppSettings.user_id == user.id,
+        )
+    )
     return row
 
 
@@ -379,9 +424,7 @@ def get_or_create_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSe
     except IntegrityError:
         db.rollback()
         _repair_whatsapp_schema()
-        existing = db.scalar(
-            select(UserWhatsAppSettings).where(UserWhatsAppSettings.user_id == user.id)
-        )
+        existing = get_whatsapp_connection(db, user)
         if existing:
             return existing
         row = UserWhatsAppSettings(user_id=user.id)
@@ -425,14 +468,15 @@ def _import_legacy_email_credentials(
     row.last_error = legacy["whatsapp_last_error"]
 
 
-def save_whatsapp_connection(
-    db: Session,
-    user: User,
+def _apply_connection_fields(
+    row: UserWhatsAppSettings,
     *,
     phone: str | None = None,
     api_key: str | None = None,
-) -> UserWhatsAppSettings:
-    row = get_or_create_whatsapp_connection(db, user)
+    label: str | None = None,
+) -> None:
+    if label is not None:
+        row.label = (label or "").strip()[:64]
     if phone is not None:
         stripped = phone.strip()
         cleaned = normalize_whatsapp_phone(phone)
@@ -447,7 +491,84 @@ def save_whatsapp_connection(
         row.api_key_encrypted = encrypt_value(new_key)
         row.api_key_hint = mask_whatsapp_api_key(new_key)
         row.last_error = None
+
+
+def save_whatsapp_connection(
+    db: Session,
+    user: User,
+    *,
+    phone: str | None = None,
+    api_key: str | None = None,
+    label: str | None = None,
+    connection_id: str | None = None,
+) -> UserWhatsAppSettings:
+    """Update an existing connection, or create/update the primary one."""
+    if connection_id:
+        row = get_whatsapp_connection_by_id(db, user, connection_id)
+        if not row:
+            raise WhatsAppConfigError("That WhatsApp number was not found.")
+    else:
+        row = get_or_create_whatsapp_connection(db, user)
+    _apply_connection_fields(row, phone=phone, api_key=api_key, label=label)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise WhatsAppConfigError(
+            "That WhatsApp number is already saved. Edit it instead of adding it again."
+        ) from exc
     return row
+
+
+def create_whatsapp_connection(
+    db: Session,
+    user: User,
+    *,
+    phone: str,
+    api_key: str,
+    label: str | None = None,
+) -> UserWhatsAppSettings:
+    existing = list_whatsapp_connections(db, user)
+    ready = [r for r in existing if _connection_ready(r)]
+    if len(ready) >= MAX_WHATSAPP_CONNECTIONS:
+        raise WhatsAppConfigError(
+            f"You can save up to {MAX_WHATSAPP_CONNECTIONS} WhatsApp numbers."
+        )
+    cleaned = normalize_whatsapp_phone(phone)
+    if not cleaned:
+        raise WhatsAppConfigError(
+            "Enter your WhatsApp number with the country code (example: +1 514 555 0100)."
+        )
+    key = normalize_callmebot_api_key(api_key)
+    if not key:
+        raise WhatsAppConfigError(
+            "Paste the CallMeBot API key you received on WhatsApp."
+        )
+    # Reuse an empty placeholder row if present.
+    blank = next(
+        (r for r in existing if not r.phone and not r.api_key_encrypted),
+        None,
+    )
+    row = blank or UserWhatsAppSettings(user_id=user.id)
+    if not blank:
+        db.add(row)
+    _apply_connection_fields(row, phone=cleaned, api_key=key, label=label)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise WhatsAppConfigError(
+            "That WhatsApp number is already saved. Edit it instead of adding it again."
+        ) from exc
+    return row
+
+
+def delete_whatsapp_connection(db: Session, user: User, connection_id: str) -> None:
+    row = get_whatsapp_connection_by_id(db, user, connection_id)
+    if not row:
+        raise WhatsAppConfigError("That WhatsApp number was not found.")
+    db.delete(row)
+    db.flush()
 
 
 def _module_flag_on(db: Session, table: str, column: str, stmt) -> bool:
@@ -507,15 +628,22 @@ def whatsapp_enabled_modules(db: Session, user: User) -> list[str]:
 def whatsapp_public_payload(db: Session, user: User) -> dict:
     """Safe for settings GET — never raises, never commits."""
     try:
-        row = get_whatsapp_connection(db, user)
+        rows = list_whatsapp_connections(db, user)
+        ready = [r for r in rows if _connection_ready(r)]
+        primary = ready[0] if ready else (rows[0] if rows else None)
         return {
-            "whatsapp_configured": bool(row and row.api_key_encrypted and row.phone),
-            "whatsapp_phone": (row.phone if row else "") or "",
-            "whatsapp_api_key_hint": row.api_key_hint if row else None,
-            "whatsapp_last_error": row.last_error if row else None,
+            "whatsapp_configured": bool(ready),
+            "whatsapp_phone": (primary.phone if primary else "") or "",
+            "whatsapp_api_key_hint": primary.api_key_hint if primary else None,
+            "whatsapp_last_error": next(
+                (r.last_error for r in rows if r.last_error),
+                None,
+            ),
             "whatsapp_setup_url": CALLMEBOT_GUIDE_URL,
             "whatsapp_allow_message": ALLOW_MESSAGE,
             "whatsapp_connected_modules": whatsapp_enabled_modules(db, user),
+            "whatsapp_connections": [_connection_public(r) for r in rows if _connection_ready(r) or r.phone],
+            "whatsapp_max_connections": MAX_WHATSAPP_CONNECTIONS,
         }
     except Exception:
         logger.exception("WhatsApp settings payload failed")
@@ -526,23 +654,9 @@ def whatsapp_public_payload(db: Session, user: User) -> dict:
         return dict(_EMPTY_PUBLIC)
 
 
-async def send_user_whatsapp(
-    db: Session, user: User, text: str
+async def _send_to_connection(
+    db: Session, row: UserWhatsAppSettings, text: str
 ) -> WhatsAppSendResult:
-    try:
-        row = get_whatsapp_connection(db, user)
-    except Exception:
-        logger.exception("WhatsApp send aborted: connection lookup failed")
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        return WhatsAppSendResult(ok=False, error="WhatsApp is not available right now.")
-    if not row:
-        return WhatsAppSendResult(
-            ok=False,
-            error="WhatsApp alerts are on, but the phone number or API key is missing.",
-        )
     phone = normalize_whatsapp_phone(row.phone)
     if not phone or not row.api_key_encrypted:
         result = WhatsAppSendResult(
@@ -550,7 +664,6 @@ async def send_user_whatsapp(
             error="WhatsApp alerts are on, but the phone number or API key is missing.",
         )
         row.last_error = result.error
-        db.commit()
         return result
     try:
         api_key = decrypt_value(row.api_key_encrypted)
@@ -560,13 +673,59 @@ async def send_user_whatsapp(
             error="Could not read the saved WhatsApp API key. Paste it again in Settings.",
         )
         row.last_error = result.error
-        db.commit()
         return result
 
     result = await send_callmebot_whatsapp(phone=phone, api_key=api_key, text=text)
     row.last_error = None if result.ok else result.error
+    return result
+
+
+async def send_whatsapp_connection(
+    db: Session, user: User, connection_id: str, text: str
+) -> WhatsAppSendResult:
+    row = get_whatsapp_connection_by_id(db, user, connection_id)
+    if not row:
+        return WhatsAppSendResult(ok=False, error="That WhatsApp number was not found.")
+    result = await _send_to_connection(db, row, text)
     db.commit()
     return result
+
+
+async def send_user_whatsapp(
+    db: Session, user: User, text: str
+) -> WhatsAppSendResult:
+    """Send to every configured number. OK if at least one delivery is accepted."""
+    try:
+        rows = [r for r in list_whatsapp_connections(db, user) if _connection_ready(r)]
+    except Exception:
+        logger.exception("WhatsApp send aborted: connection lookup failed")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return WhatsAppSendResult(ok=False, error="WhatsApp is not available right now.")
+    if not rows:
+        return WhatsAppSendResult(
+            ok=False,
+            error="WhatsApp alerts are on, but no phone number or API key is saved yet.",
+        )
+
+    errors: list[str] = []
+    ok_count = 0
+    for row in rows:
+        result = await _send_to_connection(db, row, text)
+        if result.ok:
+            ok_count += 1
+        elif result.error:
+            label = (row.label or "").strip() or row.phone or "number"
+            errors.append(f"{label}: {result.error}")
+    db.commit()
+    if ok_count:
+        return WhatsAppSendResult(ok=True)
+    return WhatsAppSendResult(
+        ok=False,
+        error="; ".join(errors) if errors else "WhatsApp send failed.",
+    )
 
 
 def _job_is_weekly(job: CreativeGenerationJob) -> bool:

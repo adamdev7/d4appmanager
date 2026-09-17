@@ -59,6 +59,15 @@ export type {
 
 const API_BASE = "/api/v1";
 
+export type WhatsAppRecipient = {
+  id: string;
+  label: string;
+  phone: string;
+  api_key_hint: string | null;
+  last_error: string | null;
+  configured: boolean;
+};
+
 export type WhatsAppConnection = {
   whatsapp_configured: boolean;
   whatsapp_phone: string;
@@ -67,6 +76,8 @@ export type WhatsAppConnection = {
   whatsapp_setup_url: string;
   whatsapp_allow_message: string;
   whatsapp_connected_modules: string[];
+  whatsapp_connections?: WhatsAppRecipient[];
+  whatsapp_max_connections?: number;
 };
 
 export class ApiError extends Error {
@@ -317,12 +328,31 @@ export const api = {
   },
   notifications: {
     getWhatsApp: () => request<WhatsAppConnection>("/notifications/whatsapp"),
-    saveWhatsApp: (data: { phone?: string; api_key?: string }) =>
+    saveWhatsApp: (data: {
+      id?: string;
+      phone?: string;
+      api_key?: string;
+      label?: string;
+    }) =>
       request<WhatsAppConnection>("/notifications/whatsapp", {
         method: "PUT",
         body: JSON.stringify(data),
       }),
-    testWhatsApp: (data?: { phone?: string; api_key?: string }) =>
+    addWhatsApp: (data: { phone: string; api_key: string; label?: string }) =>
+      request<WhatsAppConnection>("/notifications/whatsapp", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    deleteWhatsApp: (id: string) =>
+      request<WhatsAppConnection>(`/notifications/whatsapp/${id}`, {
+        method: "DELETE",
+      }),
+    testWhatsApp: (data?: {
+      id?: string;
+      phone?: string;
+      api_key?: string;
+      label?: string;
+    }) =>
       request<{ ok: boolean; message: string } & WhatsAppConnection>(
         "/notifications/whatsapp/test",
         {

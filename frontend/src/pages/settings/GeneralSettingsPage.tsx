@@ -5,57 +5,129 @@ import { Switch } from "@/components/ui/Switch";
 import { Button } from "@/components/ui/Button";
 import { WhatsAppAlertsCard } from "@/components/settings/WhatsAppAlertsCard";
 import { useAuth } from "@/context/AuthContext";
-import { api, type WhatsAppConnection } from "@/lib/api";
+import { api, type WhatsAppConnection, type WhatsAppRecipient } from "@/lib/api";
+
+type FormState = {
+  id?: string;
+  label: string;
+  phone: string;
+  apiKey: string;
+};
+
+const emptyForm = (): FormState => ({ label: "", phone: "", apiKey: "" });
 
 export function GeneralSettingsPage() {
   const { user } = useAuth();
   const [emailNotifs, setEmailNotifs] = useState(true);
   const [weeklyDigest, setWeeklyDigest] = useState(false);
   const [whatsapp, setWhatsapp] = useState<WhatsAppConnection | null>(null);
-  const [phone, setPhone] = useState("");
-  const [keyInput, setKeyInput] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<FormState>(emptyForm());
+  const [busy, setBusy] = useState(false);
   const [testOk, setTestOk] = useState("");
   const [error, setError] = useState("");
+
+  const connections: WhatsAppRecipient[] = whatsapp?.whatsapp_connections?.length
+    ? whatsapp.whatsapp_connections
+    : whatsapp?.whatsapp_configured
+      ? [
+          {
+            id: "legacy",
+            label: "",
+            phone: whatsapp.whatsapp_phone || "",
+            api_key_hint: whatsapp.whatsapp_api_key_hint,
+            last_error: whatsapp.whatsapp_last_error,
+            configured: true,
+          },
+        ]
+      : [];
 
   useEffect(() => {
     api.notifications
       .getWhatsApp()
       .then((data) => {
         setWhatsapp(data);
-        setPhone(data.whatsapp_phone || "");
+        const list = data.whatsapp_connections ?? [];
+        if (list.length === 0 && !data.whatsapp_configured) {
+          setEditingId("new");
+          setForm(emptyForm());
+        }
       })
       .catch((e) => setError(e instanceof Error ? e.message : "Could not load WhatsApp settings"));
   }, []);
 
+  const applyResult = (data: WhatsAppConnection, message?: string) => {
+    setWhatsapp(data);
+    setForm(emptyForm());
+    setEditingId(null);
+    if (message) setTestOk(message);
+  };
+
   const saveAndTest = async () => {
-    setSaving(true);
-    setTesting(true);
+    setBusy(true);
     setError("");
     setTestOk("");
     try {
-      const result = await api.notifications.testWhatsApp({
-        phone,
-        api_key: keyInput.trim() || undefined,
-      });
-      setWhatsapp(result);
-      setPhone(result.whatsapp_phone || phone);
-      setKeyInput("");
-      setTestOk(result.message);
+      const payload = {
+        id: form.id,
+        phone: form.phone,
+        api_key: form.apiKey.trim() || undefined,
+        label: form.label.trim() || undefined,
+      };
+      const result = await api.notifications.testWhatsApp(payload);
+      applyResult(result, result.message);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save or send a test WhatsApp");
       try {
         const refreshed = await api.notifications.getWhatsApp();
-        // Keep the live error only — avoid a second box from whatsapp_last_error.
         setWhatsapp({ ...refreshed, whatsapp_last_error: null });
-        setPhone(refreshed.whatsapp_phone || phone);
       } catch {
-        /* keep current form values */
+        /* keep form */
       }
     } finally {
-      setSaving(false);
-      setTesting(false);
+      setBusy(false);
+    }
+  };
+
+  const testExisting = async (id: string) => {
+    setBusy(true);
+    setError("");
+    setTestOk("");
+    try {
+      const result = await api.notifications.testWhatsApp({ id });
+      applyResult(result, result.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not send a test WhatsApp");
+      try {
+        const refreshed = await api.notifications.getWhatsApp();
+        setWhatsapp({ ...refreshed, whatsapp_last_error: null });
+      } catch {
+        /* ignore */
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (id: string) => {
+    if (!window.confirm("Remove this WhatsApp number? Alerts will stop going to it.")) return;
+    setBusy(true);
+    setError("");
+    setTestOk("");
+    try {
+      const data = await api.notifications.deleteWhatsApp(id);
+      setWhatsapp(data);
+      if ((data.whatsapp_connections?.length ?? 0) === 0) {
+        setEditingId("new");
+        setForm(emptyForm());
+      } else if (editingId === id) {
+        setEditingId(null);
+        setForm(emptyForm());
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not remove WhatsApp number");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -102,21 +174,42 @@ export function GeneralSettingsPage() {
       </Card>
 
       <WhatsAppAlertsCard
-        phone={phone}
-        onPhoneChange={setPhone}
-        configured={Boolean(whatsapp?.whatsapp_configured)}
-        apiKeyHint={whatsapp?.whatsapp_api_key_hint ?? null}
-        lastError={whatsapp?.whatsapp_last_error ?? null}
-        error={error}
+        connections={connections}
+        maxConnections={whatsapp?.whatsapp_max_connections ?? 5}
         setupUrl={whatsapp?.whatsapp_setup_url}
         allowMessage={whatsapp?.whatsapp_allow_message}
         connectedModules={whatsapp?.whatsapp_connected_modules}
-        keyInput={keyInput}
-        onKeyInputChange={setKeyInput}
-        onSaveAndTest={saveAndTest}
-        saving={saving}
-        testing={testing}
+        error={error}
         testOk={testOk}
+        busy={busy}
+        editingId={editingId}
+        form={form}
+        onFormChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
+        onStartAdd={() => {
+          setEditingId("new");
+          setForm(emptyForm());
+          setError("");
+          setTestOk("");
+        }}
+        onStartEdit={(row) => {
+          setEditingId(row.id);
+          setForm({
+            id: row.id === "legacy" ? undefined : row.id,
+            label: row.label || "",
+            phone: row.phone || "",
+            apiKey: "",
+          });
+          setError("");
+          setTestOk("");
+        }}
+        onCancelForm={() => {
+          setEditingId(null);
+          setForm(emptyForm());
+          setError("");
+        }}
+        onSaveAndTest={saveAndTest}
+        onTestExisting={testExisting}
+        onRemove={remove}
       />
     </div>
   );
