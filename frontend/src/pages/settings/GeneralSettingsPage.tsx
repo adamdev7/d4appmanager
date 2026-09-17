@@ -35,17 +35,13 @@ export function GeneralSettingsPage() {
     setError("");
     setTestOk("");
     try {
-      const saved = await api.notifications.saveWhatsApp({
+      const result = await api.notifications.testWhatsApp({
         phone,
         api_key: keyInput.trim() || undefined,
       });
-      setWhatsapp(saved);
-      setPhone(saved.whatsapp_phone || phone);
+      setWhatsapp(result);
+      setPhone(result.whatsapp_phone || phone);
       setKeyInput("");
-      const result = await api.notifications.testWhatsApp();
-      const refreshed = await api.notifications.getWhatsApp();
-      setWhatsapp(refreshed);
-      setPhone(refreshed.whatsapp_phone || phone);
       setTestOk(result.message);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save or send a test WhatsApp");
@@ -104,18 +100,13 @@ export function GeneralSettingsPage() {
         </div>
       </Card>
 
-      {error && (
-        <p className="text-sm text-red-600 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-          {error}
-        </p>
-      )}
-
       <WhatsAppAlertsCard
         phone={phone}
         onPhoneChange={setPhone}
         configured={Boolean(whatsapp?.whatsapp_configured)}
         apiKeyHint={whatsapp?.whatsapp_api_key_hint ?? null}
         lastError={whatsapp?.whatsapp_last_error ?? null}
+        error={error}
         setupUrl={whatsapp?.whatsapp_setup_url}
         allowMessage={whatsapp?.whatsapp_allow_message}
         connectedModules={whatsapp?.whatsapp_connected_modules}

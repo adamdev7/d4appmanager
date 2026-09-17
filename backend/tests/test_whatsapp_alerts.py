@@ -79,3 +79,26 @@ def test_whatsapp_public_payload_never_raises():
     assert payload["whatsapp_configured"] is False
     assert payload["whatsapp_phone"] == ""
     assert payload["whatsapp_connected_modules"] == []
+
+
+def test_callmebot_url_encodes_plus_in_phone():
+    from app.notifications.whatsapp import build_callmebot_url
+
+    url = build_callmebot_url(
+        phone="+15145550100",
+        api_key="123123",
+        text="Hello\nthere",
+    )
+    assert "phone=%2B15145550100" in url
+    assert "apikey=123123" in url
+    assert "text=Hello%0Athere" in url
+    assert "phone=+" not in url
+
+
+def test_callmebot_html_error_is_rejected():
+    from app.notifications.whatsapp import callmebot_response_rejected
+
+    assert callmebot_response_rejected(200, "<br>ERROR: Phone number format is incorrect")
+    assert callmebot_response_rejected(200, "APIKey is invalid")
+    assert callmebot_response_rejected(503, "Service Unavailable")
+    assert not callmebot_response_rejected(200, "Message queued to be sent")

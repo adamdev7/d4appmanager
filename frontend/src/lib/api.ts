@@ -322,10 +322,14 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
-    testWhatsApp: () =>
-      request<{ ok: boolean; message: string }>("/notifications/whatsapp/test", {
-        method: "POST",
-      }),
+    testWhatsApp: (data?: { phone?: string; api_key?: string }) =>
+      request<{ ok: boolean; message: string } & WhatsAppConnection>(
+        "/notifications/whatsapp/test",
+        {
+          method: "POST",
+          body: JSON.stringify(data ?? {}),
+        }
+      ),
   },
   stores: {
     list: () =>

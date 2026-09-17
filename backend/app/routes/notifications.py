@@ -8,6 +8,7 @@ from app.auth.dependencies import get_verified_user
 from app.db.models import User
 from app.db.session import get_db
 from app.notifications.whatsapp import (
+    WhatsAppConfigError,
     get_or_create_whatsapp_connection,
     save_whatsapp_connection,
     send_user_whatsapp,
@@ -25,10 +26,24 @@ class WhatsAppConnectionUpdate(BaseModel):
 class WhatsAppTestResponse(BaseModel):
     ok: bool
     message: str
+    whatsapp_configured: bool = False
+    whatsapp_phone: str = ""
+    whatsapp_api_key_hint: str | None = None
+    whatsapp_last_error: str | None = None
+    whatsapp_setup_url: str = ""
+    whatsapp_allow_message: str = ""
+    whatsapp_connected_modules: list[str] = []
+
+
+def _save_or_400(db: Session, user: User, body: WhatsAppConnectionUpdate) -> None:
+    try:
+        save_whatsapp_connection(db, user, phone=body.phone, api_key=body.api_key)
+    except WhatsAppConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/whatsapp")
-async def get_whatsapp_connection(
+async def get_whatsapp_settings(
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
@@ -36,21 +51,28 @@ async def get_whatsapp_connection(
 
 
 @router.put("/whatsapp")
-async def update_whatsapp_connection(
+async def update_whatsapp_settings(
     body: WhatsAppConnectionUpdate,
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
-    save_whatsapp_connection(db, user, phone=body.phone, api_key=body.api_key)
+    _save_or_400(db, user, body)
     db.commit()
     return whatsapp_public_payload(db, user)
 
 
 @router.post("/whatsapp/test", response_model=WhatsAppTestResponse)
-async def test_whatsapp_connection(
+async def test_whatsapp_settings(
+    body: WhatsAppConnectionUpdate | None = None,
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
+    """Save number/key if provided, then send a test WhatsApp."""
+    payload = body or WhatsAppConnectionUpdate()
+    if payload.phone is not None or payload.api_key:
+        _save_or_400(db, user, payload)
+        db.commit()
+
     conn = get_or_create_whatsapp_connection(db, user)
     if not conn.phone:
         raise HTTPException(
@@ -71,9 +93,11 @@ async def test_whatsapp_connection(
             "Turn on alerts in AI Email Assistant (manual reviews) or AI Ads (weekly ads)."
         ),
     )
+    public = whatsapp_public_payload(db, user)
     if not result.ok:
         raise HTTPException(status_code=400, detail=result.error or "WhatsApp test failed.")
     return WhatsAppTestResponse(
         ok=True,
         message="Test sent. Check WhatsApp — you should see a message from CallMeBot.",
+        **public,
     )

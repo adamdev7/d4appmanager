@@ -11,9 +11,11 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import inspect, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt_value, encrypt_value
@@ -39,6 +41,10 @@ MODULE_EMAIL = "AI Email Assistant"
 MODULE_ADS = "AI Ads"
 
 _PHONE_KEEP = re.compile(r"[^\d+]+")
+
+
+class WhatsAppConfigError(ValueError):
+    """User-facing setup error (bad number, missing key, etc.)."""
 
 
 @dataclass
@@ -139,12 +145,31 @@ def format_weekly_ads_recap(
     return "\n".join(lines)
 
 
+def build_callmebot_url(*, phone: str, api_key: str, text: str) -> str:
+    """CallMeBot GET URL. `+` in the phone must be %2B, not a raw plus (that becomes a space)."""
+    return (
+        f"{CALLMEBOT_API_URL}"
+        f"?phone={quote(phone, safe='')}"
+        f"&text={quote(text, safe='')}"
+        f"&apikey={quote(api_key, safe='')}"
+    )
+
+
+def callmebot_response_rejected(status_code: int, payload: str) -> bool:
+    lowered = (payload or "").strip().lower()
+    if status_code >= 400:
+        return True
+    if "apikey is invalid" in lowered or "api key is invalid" in lowered:
+        return True
+    return bool(re.search(r"\berror\b", lowered))
+
+
 async def send_callmebot_whatsapp(
     *,
     phone: str,
     api_key: str,
     text: str,
-    timeout_seconds: float = 20,
+    timeout_seconds: float = 30,
 ) -> WhatsAppSendResult:
     number = normalize_whatsapp_phone(phone)
     key = (api_key or "").strip()
@@ -156,12 +181,10 @@ async def send_callmebot_whatsapp(
     if not body:
         return WhatsAppSendResult(ok=False, error="Message is empty.")
 
+    url = build_callmebot_url(phone=number, api_key=key, text=body)
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.get(
-                CALLMEBOT_API_URL,
-                params={"phone": number, "text": body, "apikey": key},
-            )
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+            resp = await client.get(url)
     except httpx.TimeoutException:
         return WhatsAppSendResult(
             ok=False,
@@ -172,15 +195,10 @@ async def send_callmebot_whatsapp(
         return WhatsAppSendResult(ok=False, error="Could not reach WhatsApp (CallMeBot). Try again.")
 
     payload = (resp.text or "").strip()
-    lowered = payload.lower()
-    rejected = (
-        resp.status_code >= 400
-        or "apikey is invalid" in lowered
-        or lowered.startswith("error")
-        or " error:" in lowered[:80]
-    )
-    if rejected:
-        detail = payload[:180] if payload else f"HTTP {resp.status_code}"
+    if callmebot_response_rejected(resp.status_code, payload):
+        detail = re.sub(r"<[^>]+>", " ", payload)
+        detail = re.sub(r"\s+", " ", detail).strip()[:180] or f"HTTP {resp.status_code}"
+        logger.warning("CallMeBot rejected send status=%s body=%s", resp.status_code, payload[:300])
         return WhatsAppSendResult(
             ok=False,
             error=f"CallMeBot rejected the send: {detail}",
@@ -242,7 +260,19 @@ def get_or_create_whatsapp_connection(db: Session, user: User) -> UserWhatsAppSe
         return row
     row = UserWhatsAppSettings(user_id=user.id)
     db.add(row)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        _repair_whatsapp_schema()
+        existing = db.scalar(
+            select(UserWhatsAppSettings).where(UserWhatsAppSettings.user_id == user.id)
+        )
+        if existing:
+            return existing
+        row = UserWhatsAppSettings(user_id=user.id)
+        db.add(row)
+        db.flush()
     return row
 
 
@@ -290,7 +320,12 @@ def save_whatsapp_connection(
 ) -> UserWhatsAppSettings:
     row = get_or_create_whatsapp_connection(db, user)
     if phone is not None:
+        stripped = phone.strip()
         cleaned = normalize_whatsapp_phone(phone)
+        if stripped and not cleaned:
+            raise WhatsAppConfigError(
+                "Enter your WhatsApp number with the country code (example: +1 514 555 0100)."
+            )
         if cleaned:
             row.phone = cleaned
     new_key = (api_key or "").strip()
@@ -301,18 +336,30 @@ def save_whatsapp_connection(
     return row
 
 
-def _module_flag_on(db: Session, stmt) -> bool:
+def _module_flag_on(db: Session, table: str, column: str, stmt) -> bool:
+    """Read a module on/off flag without poisoning the request session."""
     try:
+        insp = inspect(db.get_bind())
+        if table not in insp.get_table_names():
+            return False
+        if column not in {c["name"] for c in insp.get_columns(table)}:
+            return False
         return bool(db.scalar(stmt))
     except Exception:
         logger.exception("WhatsApp module flag lookup failed")
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:
+            pass
         try:
             _repair_whatsapp_schema()
             return bool(db.scalar(stmt))
         except Exception:
             logger.exception("WhatsApp module flag lookup failed after schema repair")
-            db.rollback()
+            try:
+                db.rollback()
+            except Exception:
+                pass
             return False
 
 
@@ -320,6 +367,8 @@ def whatsapp_enabled_modules(db: Session, user: User) -> list[str]:
     labels: list[str] = []
     if _module_flag_on(
         db,
+        "ai_email_assistant_settings",
+        "whatsapp_alerts_enabled",
         select(AIEmailAssistantSettings.id).where(
             AIEmailAssistantSettings.user_id == user.id,
             AIEmailAssistantSettings.whatsapp_alerts_enabled.is_(True),
@@ -328,6 +377,8 @@ def whatsapp_enabled_modules(db: Session, user: User) -> list[str]:
         labels.append(MODULE_EMAIL)
     if _module_flag_on(
         db,
+        "store_ai_ads_settings",
+        "whatsapp_weekly_alerts_enabled",
         select(StoreAIAdsSettings.id)
         .join(Store, Store.id == StoreAIAdsSettings.store_id)
         .where(

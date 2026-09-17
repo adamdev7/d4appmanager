@@ -16,6 +16,7 @@ type Props = {
   configured: boolean;
   apiKeyHint: string | null;
   lastError: string | null;
+  error?: string;
   setupUrl?: string;
   allowMessage?: string;
   connectedModules?: string[];
@@ -35,6 +36,7 @@ export function WhatsAppAlertsCard({
   configured,
   apiKeyHint,
   lastError,
+  error = "",
   setupUrl,
   allowMessage,
   connectedModules = [],
@@ -132,9 +134,15 @@ export function WhatsAppAlertsCard({
             Last send failed: {lastError}
           </p>
         )}
+        {error && (
+          <p className="text-sm text-red-600 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+            {error}
+          </p>
+        )}
 
         <div className="flex flex-wrap items-center gap-2">
           <Button
+            type="button"
             variant="outline"
             disabled={busy || missingCreds}
             onClick={() => void onSaveAndTest()}

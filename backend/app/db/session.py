@@ -980,6 +980,11 @@ def _migrate_shared_whatsapp_connection() -> None:
     """
     from app.db.models import UserWhatsAppSettings
 
+    try:
+        UserWhatsAppSettings.__table__.create(bind=engine, checkfirst=True)
+    except Exception:
+        logger.exception("Could not create user_whatsapp_settings")
+
     insp = inspect(engine)
     try:
         insp.clear_cache()
