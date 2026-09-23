@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type TextareaHTMLAttributes } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Sparkles,
@@ -446,8 +446,71 @@ function filterCategoryLabel(category: string | null) {
   return labels[category] ?? category;
 }
 
+function isInboxFilter(value: string | null): value is InboxFilter {
+  return (
+    value === "all" ||
+    value === "needs_reply" ||
+    value === "ai_answered" ||
+    value === "manual_review" ||
+    value === "filtered"
+  );
+}
+
+function inboxItemFromApi(email: {
+  id: string;
+  sender: string;
+  sender_email: string;
+  subject: string;
+  body_text: string;
+  detected_intent: string | null;
+  skip_reason: string | null;
+  filter_category: string | null;
+  status: string;
+  received_at: string;
+  latest_reply: {
+    id: string;
+    effective_body: string;
+    status: string;
+    model_used: string;
+    is_ai_generated: boolean;
+    tracking_url: string | null;
+    tracking_number: string | null;
+    tracking_carrier: string | null;
+  } | null;
+}): InboxItem {
+  const reply = email.latest_reply;
+  return {
+    id: email.id,
+    sender: email.sender,
+    sender_email: email.sender_email,
+    subject: email.subject,
+    body_text: email.body_text,
+    detected_intent: email.detected_intent,
+    skip_reason: email.skip_reason,
+    filter_category: email.filter_category,
+    status: email.status,
+    received_at: email.received_at,
+    latest_reply: reply
+      ? {
+          id: reply.id,
+          effective_body: reply.effective_body,
+          status: reply.status,
+          model_used: reply.model_used,
+          is_ai_generated: reply.is_ai_generated,
+          tracking_url: reply.tracking_url,
+          tracking_number: reply.tracking_number,
+          tracking_carrier: reply.tracking_carrier,
+        }
+      : null,
+  };
+}
+
 export function AIEmailAssistantPage() {
-  const { activeStore } = useStore();
+  const { activeStore, stores, setActiveStoreId } = useStore();
+  const [searchParams] = useSearchParams();
+  const linkedEmailId = searchParams.get("email");
+  const linkedStoreId = searchParams.get("store");
+  const linkedFilter = searchParams.get("filter");
   const [tab, setTab] = useState<Tab>("inbox");
   const [accounts, setAccounts] = useState<GmailAccount[]>([]);
   const [inbox, setInbox] = useState<InboxItem[]>([]);
@@ -458,7 +521,7 @@ export function AIEmailAssistantPage() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(linkedEmailId);
   const [draftEdit, setDraftEdit] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [openaiKeyInput, setOpenaiKeyInput] = useState("");
@@ -469,7 +532,13 @@ export function AIEmailAssistantPage() {
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [confirmFullScanOpen, setConfirmFullScanOpen] = useState(false);
   const [scanResultMessage, setScanResultMessage] = useState("");
-  const [inboxFilter, setInboxFilter] = useState<InboxFilter>("all");
+  const [inboxFilter, setInboxFilter] = useState<InboxFilter>(
+    isInboxFilter(linkedFilter) ? linkedFilter : "all"
+  );
+  const linkedEmailRef = useRef(linkedEmailId);
+  linkedEmailRef.current = linkedEmailId;
+  const scrolledToLink = useRef(false);
+  const alignedLinkedFilter = useRef(false);
   const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
   const [composing, setComposing] = useState(false);
@@ -503,9 +572,16 @@ export function AIEmailAssistantPage() {
       setInbox([]);
       return;
     }
-    const data = await api.aiEmailAssistant.inbox(activeStore.id);
-    setInbox(data as InboxItem[]);
-    setSelectedId((prev) => prev ?? (data as InboxItem[])[0]?.id ?? null);
+    const data = (await api.aiEmailAssistant.inbox(activeStore.id)) as InboxItem[];
+    const pin = linkedEmailRef.current;
+    setInbox((prev) => {
+      if (!pin) return data;
+      const pinned = prev.filter(
+        (item) => item.id === pin && !data.some((row) => row.id === item.id)
+      );
+      return pinned.length ? [...pinned, ...data] : data;
+    });
+    setSelectedId((prev) => prev ?? data[0]?.id ?? null);
   }, [activeStore?.id]);
 
   const loadThread = useCallback(async (emailId: string) => {
@@ -515,31 +591,11 @@ export function AIEmailAssistantPage() {
       setThreadMessages(thread.messages as ThreadMessage[]);
       // Keep list row in sync if thread payload has fresher email state
       if (thread.inbox_email) {
-        setInbox((prev) =>
-          prev.map((item) =>
-            item.id === thread.inbox_email.id
-              ? {
-                  ...item,
-                  status: thread.inbox_email.status,
-                  skip_reason: thread.inbox_email.skip_reason,
-                  filter_category: thread.inbox_email.filter_category,
-                  detected_intent: thread.inbox_email.detected_intent,
-                  latest_reply: thread.inbox_email.latest_reply
-                    ? {
-                        id: thread.inbox_email.latest_reply.id,
-                        effective_body: thread.inbox_email.latest_reply.effective_body,
-                        status: thread.inbox_email.latest_reply.status,
-                        model_used: thread.inbox_email.latest_reply.model_used,
-                        is_ai_generated: thread.inbox_email.latest_reply.is_ai_generated,
-                        tracking_url: thread.inbox_email.latest_reply.tracking_url,
-                        tracking_number: thread.inbox_email.latest_reply.tracking_number,
-                        tracking_carrier: thread.inbox_email.latest_reply.tracking_carrier,
-                      }
-                    : null,
-                }
-              : item
-          )
-        );
+        const fresh = inboxItemFromApi(thread.inbox_email);
+        setInbox((prev) => {
+          if (!prev.some((item) => item.id === fresh.id)) return [fresh, ...prev];
+          return prev.map((item) => (item.id === fresh.id ? { ...item, ...fresh } : item));
+        });
       }
     } catch {
       setThreadMessages([]);
@@ -618,8 +674,35 @@ export function AIEmailAssistantPage() {
   }, [activeStore?.id, loadAccounts, loadInbox, loadSettings, loadLogs, loadStats]);
 
   useEffect(() => {
+    if (!linkedStoreId) return;
+    if (!stores.some((store) => store.id === linkedStoreId)) return;
+    if (activeStore?.id === linkedStoreId) return;
+    setActiveStoreId(linkedStoreId);
+  }, [linkedStoreId, stores, activeStore?.id, setActiveStoreId]);
+
+  useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  useEffect(() => {
+    if (linkedEmailId) setTab("inbox");
+  }, [linkedEmailId]);
+
+  useEffect(() => {
+    if (alignedLinkedFilter.current || !linkedEmailId) return;
+    const item = inbox.find((row) => row.id === linkedEmailId);
+    if (!item) return;
+    alignedLinkedFilter.current = true;
+    if (!matchesInboxFilter(item, inboxFilter)) setInboxFilter("all");
+  }, [linkedEmailId, inbox, inboxFilter]);
+
+  useEffect(() => {
+    if (!linkedEmailId || scrolledToLink.current) return;
+    const node = document.getElementById(`inbox-row-${linkedEmailId}`);
+    if (!node) return;
+    node.scrollIntoView({ block: "nearest" });
+    scrolledToLink.current = true;
+  }, [linkedEmailId, filteredInbox, loading]);
 
   useEffect(() => {
     // Only auto-open the composer when there is a pending AI/manual draft to review.
@@ -1241,6 +1324,7 @@ export function AIEmailAssistantPage() {
                   <li key={item.id}>
                     <button
                       type="button"
+                      id={`inbox-row-${item.id}`}
                       onClick={() => setSelectedId(item.id)}
                       className={cn(
                         "w-full text-left px-4 py-3 transition-colors border-l-[3px]",
@@ -1684,6 +1768,10 @@ export function AIEmailAssistantPage() {
                   )}
                 </footer>
               </>
+            ) : selectedId && (loading || threadLoading) ? (
+              <div className="flex-1 flex items-center justify-center">
+                <BrandLoader size="sm" />
+              </div>
             ) : (
               <div className="flex-1 flex flex-col items-center justify-center px-8 text-center">
                 <div className="h-12 w-12 rounded-full bg-surface-muted flex items-center justify-center mb-4">

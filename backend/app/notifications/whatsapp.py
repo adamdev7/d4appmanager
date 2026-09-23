@@ -19,6 +19,7 @@ from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.crypto import decrypt_value, encrypt_value
 from app.db.models import (
     AIEmailAssistantSettings,
@@ -43,6 +44,8 @@ MODULE_EMAIL = "AI Email Assistant"
 MODULE_ADS = "AI Ads"
 
 _PHONE_KEEP = re.compile(r"[^\d+]+")
+_WHATSAPP_MARKDOWN = re.compile(r"[*_~`]+")
+_SENDER_ANGLE = re.compile(r"^(.*?)\s*<([^>]+)>\s*$")
 _APIKEY_FROM_MESSAGE = re.compile(
     r"(?:your\s+)?api\s*key\s*(?:is|:)\s*([0-9]{4,})",
     re.IGNORECASE,
@@ -124,6 +127,42 @@ def format_connection_test_message() -> str:
     )
 
 
+def _whatsapp_plain(value: str | None, *, limit: int, fallback: str = "") -> str:
+    """Single-line text safe to drop into a WhatsApp message (no markdown markers)."""
+    text = _WHATSAPP_MARKDOWN.sub("", value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return fallback
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _split_sender(sender: str | None, sender_email: str | None) -> tuple[str, str]:
+    raw_name = (sender or "").strip()
+    email = (sender_email or "").strip()
+    match = _SENDER_ANGLE.match(raw_name)
+    if match:
+        raw_name = match.group(1).strip().strip("\"'")
+        if not email:
+            email = match.group(2).strip()
+    name = _whatsapp_plain(raw_name, limit=80)
+    email = _whatsapp_plain(email, limit=120)
+    if name and email and name.lower() == email.lower():
+        name = ""
+    return name, email
+
+
+def manual_review_app_url(*, email_id: str, store_id: str | None = None) -> str:
+    """Deep link that opens this email on the Manual review tab."""
+    base = settings.public_frontend_url.rstrip("/")
+    query: dict[str, str] = {"filter": "manual_review", "email": email_id.strip()}
+    store = (store_id or "").strip()
+    if store:
+        query["store"] = store
+    return f"{base}/modules/ai-email?{urlencode(query)}"
+
+
 def format_manual_review_alert(
     *,
     business_name: str,
@@ -131,19 +170,30 @@ def format_manual_review_alert(
     sender_email: str,
     subject: str,
     reason: str,
+    email_id: str | None = None,
+    store_id: str | None = None,
 ) -> str:
-    store = (business_name or "Your store").strip() or "Your store"
-    who = (sender or sender_email or "a customer").strip()
-    subj = (subject or "(no subject)").strip()
-    why = (reason or "Needs an admin").strip()
-    return (
-        f"*Manual review needed*\n"
-        f"Store: {store}\n"
-        f"From: {who}\n"
-        f"Subject: {subj}\n"
-        f"Why: {why}\n"
-        "Open App Manager → AI Email Assistant → Manual review."
-    )
+    """Owner alert. CallMeBot is text-only, so the review URL is the tap target."""
+    store = _whatsapp_plain(business_name, limit=80, fallback="Your store")
+    name, email = _split_sender(sender, sender_email)
+    subject_text = _whatsapp_plain(subject, limit=140, fallback="(no subject)")
+    why = _whatsapp_plain(reason, limit=220, fallback="Needs an admin before we reply.")
+    lines = [
+        "🔔 *Manual review*",
+        "",
+        f"🏪 *{store}*",
+    ]
+    if name:
+        lines.append(f"👤 {name}")
+    if email:
+        lines.append(f"✉️ {email}")
+    elif not name:
+        lines.append("👤 Customer")
+    lines.extend(["📝 " + subject_text, "", f"⚠️ {why}"])
+    link_id = (email_id or "").strip()
+    if link_id:
+        lines.extend(["", "👉 *Review this email*", manual_review_app_url(email_id=link_id, store_id=store_id)])
+    return "\n".join(lines)
 
 
 def format_weekly_ads_recap(

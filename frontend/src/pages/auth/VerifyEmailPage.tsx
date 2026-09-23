@@ -4,6 +4,7 @@ import { AuthLayout } from "@/components/layout/AuthLayout";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useAuth } from "@/context/AuthContext";
+import { consumeAuthReturn } from "@/lib/authReturn";
 
 export function VerifyEmailPage() {
   const [params] = useSearchParams();
@@ -29,7 +30,7 @@ export function VerifyEmailPage() {
       } else {
         await verifyEmail(email, code);
       }
-      navigate("/dashboard");
+      navigate(consumeAuthReturn());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Verification failed");
     } finally {

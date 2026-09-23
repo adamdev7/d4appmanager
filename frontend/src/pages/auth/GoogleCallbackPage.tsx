@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AuthLayout } from "@/components/layout/AuthLayout";
 import { BrandLoader } from "@/components/ui/Loading";
 import { useAuth } from "@/context/AuthContext";
+import { consumeAuthReturn } from "@/lib/authReturn";
 
 export function GoogleCallbackPage() {
   const { completeGoogleAuth } = useAuth();
@@ -24,7 +25,7 @@ export function GoogleCallbackPage() {
     (async () => {
       try {
         await completeGoogleAuth(token);
-        if (!cancelled) navigate("/dashboard", { replace: true });
+        if (!cancelled) navigate(consumeAuthReturn(), { replace: true });
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Google sign-in failed");

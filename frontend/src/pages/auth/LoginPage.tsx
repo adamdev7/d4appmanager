@@ -5,6 +5,7 @@ import { AuthDivider, GoogleAuthButton } from "@/components/auth/GoogleAuthButto
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useAuth } from "@/context/AuthContext";
+import { consumeAuthReturn } from "@/lib/authReturn";
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -43,7 +44,7 @@ export function LoginPage() {
         );
         return;
       }
-      navigate("/dashboard");
+      navigate(consumeAuthReturn());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in");
     } finally {

@@ -36,19 +36,31 @@ def test_normalize_callmebot_api_key_extracts_from_paste():
 
 
 def test_format_manual_review_alert_is_plain_and_actionable():
+    from app.config import settings
+
     text = format_manual_review_alert(
         business_name="Luxory",
-        sender="Jane",
+        sender="Jane Doe <jane@shop.com>",
         sender_email="jane@shop.com",
         subject="Cancel my subscription",
         reason="Subscription cancel request",
+        email_id="email-1",
+        store_id="store-1",
     )
-    assert "*Manual review needed*" in text
-    assert "Luxory" in text
-    assert "Jane" in text
-    assert "Cancel my subscription" in text
-    assert "Subscription cancel request" in text
-    assert "Manual review" in text
+    assert text.startswith("🔔 *Manual review*")
+    assert "🏪 *Luxory*" in text
+    assert "👤 Jane Doe" in text
+    assert "✉️ jane@shop.com" in text
+    assert "<jane@shop.com>" not in text
+    assert "📝 Cancel my subscription" in text
+    assert "⚠️ Subscription cancel request" in text
+    assert "👉 *Review this email*" in text
+    link = (
+        f"{settings.public_frontend_url.rstrip('/')}/modules/ai-email"
+        "?filter=manual_review&email=email-1&store=store-1"
+    )
+    assert link in text
+    assert text.strip().endswith(link)
 
 
 def test_format_weekly_ads_recap_lists_what_was_made():
@@ -110,17 +122,17 @@ def test_format_alert_samples_match_expected_shape():
         business_name="Luxory",
         sender="Jane",
         sender_email="jane@shop.com",
-        subject="Cancel my subscription",
+        subject="Cancel my *subscription*",
         reason="Subscription cancel request",
+        email_id="email-1",
+        store_id="store-1",
     )
-    assert email_alert == (
-        "*Manual review needed*\n"
-        "Store: Luxory\n"
-        "From: Jane\n"
-        "Subject: Cancel my subscription\n"
-        "Why: Subscription cancel request\n"
-        "Open App Manager → AI Email Assistant → Manual review."
-    )
+    assert "🔔 *Manual review*" in email_alert
+    assert "Cancel my subscription" in email_alert
+    assert "*subscription*" not in email_alert
+    assert "filter=manual_review" in email_alert
+    assert "email=email-1" in email_alert
+    assert "store=store-1" in email_alert
 
     ads_alert = format_weekly_ads_recap(
         store_name="Luxory",

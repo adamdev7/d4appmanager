@@ -698,6 +698,8 @@ class AIEmailAssistantService:
                 sender_email=email.sender_email,
                 subject=email.subject,
                 reason=reason,
+                email_id=email.id,
+                store_id=email.store_id,
             ),
         )
         if not result.ok:

@@ -1,6 +1,7 @@
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 import { BrandLoader } from "@/components/ui/Loading";
+import { rememberAuthReturn } from "@/lib/authReturn";
 import type { ReactNode } from "react";
 
 export function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -16,6 +17,7 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   }
 
   if (!isAuthenticated) {
+    rememberAuthReturn(`${location.pathname}${location.search}${location.hash}`);
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
