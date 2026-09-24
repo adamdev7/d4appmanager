@@ -24,6 +24,46 @@ def test_strip_html_drops_css_and_keeps_visible_copy():
     assert "Jane" in text
 
 
+def test_extract_body_unwraps_quoted_plain_and_prefers_html():
+    client = GmailInboxClient(db=None)  # type: ignore[arg-type]
+    plain = "\n".join(
+        [
+            ">> Your account is ready. You can browse our latest products, place orders,",
+            ">> and track deliveries from your account whenever you need to.",
+            ">>",
+            ">> If you ever need help, just reply to this email.",
+        ]
+    )
+    html = (
+        "<html><body><p>Your account is ready. You can browse our latest products, "
+        "place orders, and track deliveries from your account whenever you need to.</p>"
+        "<p>If you ever need help, just reply to this email.</p></body></html>"
+    )
+    payload = {
+        "mimeType": "multipart/alternative",
+        "parts": [
+            {"mimeType": "text/plain", "body": {"data": _b64(plain)}},
+            {"mimeType": "text/html", "body": {"data": _b64(html)}},
+        ],
+    }
+    body = client._extract_body(payload)
+    assert ">>" not in body
+    assert body.startswith("Your account is ready.")
+    assert "just reply to this email." in body
+
+
+def test_extract_body_drops_gmail_quoted_history():
+    client = GmailInboxClient(db=None)  # type: ignore[arg-type]
+    plain = (
+        "Why have you tried to take money from my account\n\n"
+        "On Thu, 24 Sep 2026 at 09:55, LUXORY <support@luxory.com> wrote:\n"
+        "> Your account is ready.\n"
+    )
+    assert client._extract_body(
+        {"mimeType": "text/plain", "body": {"data": _b64(plain)}}
+    ) == "Why have you tried to take money from my account"
+
+
 def test_extract_body_prefers_plain_text_over_html():
     client = GmailInboxClient(db=None)  # type: ignore[arg-type]
     payload = {

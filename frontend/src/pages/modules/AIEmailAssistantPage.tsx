@@ -257,11 +257,25 @@ function fulfillmentLabel(status: string | null) {
 }
 
 function cleanEmailBody(text: string) {
-  return text
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  let raw = text.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n");
+  const wrote = raw.search(/\nOn [\s\S]{0,220}wrote:\s*\n/i);
+  if (wrote > 0) raw = raw.slice(0, wrote);
+  const lines = raw.split("\n");
+  const filled = lines.filter((ln) => ln.trim());
+  const quoted = filled.filter((ln) => ln.trimStart().startsWith(">"));
+  if (filled.length >= 2 && quoted.length / filled.length >= 0.5) {
+    raw = lines
+      .map((ln) => {
+        let s = ln;
+        while (s.trimStart().startsWith(">")) {
+          s = s.trimStart().slice(1);
+          if (s.startsWith(" ")) s = s.slice(1);
+        }
+        return s.trimEnd();
+      })
+      .join("\n");
+  }
+  return raw.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function assistantInsight(item: InboxItem): string | null {
@@ -308,7 +322,7 @@ function EmailBodyText({ text, className }: { text: string; className?: string }
   }
   const parts = cleaned.split(/(https?:\/\/[^\s<>\]"'`]+)/gi);
   return (
-    <div className={cn("text-[14px] leading-6 whitespace-pre-wrap break-words", className)}>
+    <div className={cn("text-[15px] leading-7 whitespace-pre-wrap break-words", className)}>
       {parts.map((part, i) => {
         if (/^https?:\/\//i.test(part)) {
           let label = part;
@@ -1248,12 +1262,12 @@ export function AIEmailAssistantPage() {
       </div>
 
       {tab === "inbox" && (
-        <div className="rounded-xl border border-brand-line/50 bg-surface overflow-hidden shadow-card h-[min(820px,calc(100dvh-11rem))] sm:h-[min(860px,calc(100dvh-12rem))] xl:h-[calc(100dvh-9.5rem)] 2xl:h-[calc(100dvh-10rem)] flex flex-col lg:flex-row w-full min-w-0 dark:border-border">
-          {/* Thread list */}
+        <div className="rounded-xl border border-brand-line/50 bg-surface overflow-hidden shadow-card h-[calc(100dvh-8.5rem)] min-h-[520px] flex flex-col xl:flex-row w-full min-w-0 dark:border-border">
+          {/* Thread list — full width until the screen is wide enough for a side-by-side chat */}
           <aside
             className={cn(
-              "w-full lg:w-[min(400px,34%)] xl:w-[min(440px,32%)] 2xl:w-[480px] shrink-0 border-b lg:border-b-0 lg:border-r border-border flex flex-col min-h-0",
-              selected && "hidden lg:flex"
+              "w-full xl:w-[320px] 2xl:w-[360px] shrink-0 border-b xl:border-b-0 xl:border-r border-border flex flex-col min-h-0",
+              selected && "hidden xl:flex"
             )}
           >
             <div className="px-3 pt-3 pb-2 shrink-0 space-y-2">
@@ -1377,7 +1391,7 @@ export function AIEmailAssistantPage() {
           <section
             className={cn(
               "flex-1 min-w-0 flex flex-col min-h-0 bg-surface",
-              !selected && "hidden lg:flex"
+              !selected && "hidden xl:flex"
             )}
           >
             {selected ? (
@@ -1386,7 +1400,7 @@ export function AIEmailAssistantPage() {
                   <button
                     type="button"
                     onClick={() => setSelectedId(null)}
-                    className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content lg:hidden mb-3"
+                    className="inline-flex items-center gap-1.5 text-sm text-content-muted hover:text-content xl:hidden mb-3"
                   >
                     <ArrowLeft className="h-4 w-4" />
                     Inbox
@@ -1510,7 +1524,7 @@ export function AIEmailAssistantPage() {
                       <div className="h-8 w-8 rounded-full bg-surface-muted text-content-muted flex items-center justify-center text-[10px] font-semibold shrink-0 mt-1">
                         {initials(displayName(selected.sender, selected.sender_email))}
                       </div>
-                      <div className="min-w-0 max-w-[78%] sm:max-w-[70%]">
+                      <div className="min-w-0 w-full max-w-3xl">
                         <div className="rounded-2xl rounded-tl-md bg-surface border border-brand-line/55 fluo-bubble px-3.5 py-2.5 text-content dark:border-border">
                           <EmailBodyText text={selected.body_text} />
                         </div>
@@ -1555,7 +1569,7 @@ export function AIEmailAssistantPage() {
                             </div>
                             <div
                               className={cn(
-                                "min-w-0 max-w-[78%] sm:max-w-[70%] flex flex-col",
+                                "min-w-0 w-full max-w-3xl flex flex-col",
                                 mine ? "items-end" : "items-start"
                               )}
                             >

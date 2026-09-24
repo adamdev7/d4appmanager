@@ -18,6 +18,41 @@ from html import unescape
 
 logger = logging.getLogger(__name__)
 
+_WROTE_SPLIT = re.compile(
+    r"\nOn .{0,220}wrote:\s*\n|\n-{2,}\s*Original Message\s*-{2,}|\nFrom:\s.+\nSent:\s",
+    re.I,
+)
+
+
+def _mostly_quoted(text: str) -> bool:
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return False
+    quoted = sum(1 for ln in lines if ln.lstrip().startswith(">"))
+    return quoted / len(lines) >= 0.5
+
+
+def _visible_email_text(text: str) -> str:
+    """Drop reply-quote markers so the pane matches what Gmail shows."""
+    raw = (text or "").replace("\r\n", "\n").strip()
+    if not raw:
+        return ""
+    head = _WROTE_SPLIT.split(raw, maxsplit=1)[0].strip()
+    source = head or raw
+    lines = source.splitlines()
+    if _mostly_quoted(source):
+        unwrapped: list[str] = []
+        for ln in lines:
+            s = ln
+            while s.lstrip().startswith(">"):
+                s = s.lstrip()[1:]
+                if s.startswith(" "):
+                    s = s[1:]
+            unwrapped.append(s.rstrip())
+        source = "\n".join(unwrapped)
+    source = re.sub(r"\n{3,}", "\n\n", source).strip()
+    return source
+
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 # Gmail lists newest-first; we scan this many unread IDs then sort by date ascending.
 _UNREAD_SCAN_CAP = 200
@@ -436,11 +471,19 @@ class GmailInboxClient:
                 walk(part)
 
         walk(payload)
-        if plains:
-            return max(plains, key=len).strip()
-        if htmls:
-            return max(htmls, key=len).strip()
-        return ""
+        plain = max(plains, key=len).strip() if plains else ""
+        html_text = max(htmls, key=len).strip() if htmls else ""
+        plain_visible = _visible_email_text(plain)
+        html_visible = _visible_email_text(html_text)
+        # Gmail shows the HTML. The plain part is often every line prefixed with ">"
+        # (or the whole previous thread quoted again). Prefer the readable copy.
+        if html_visible and _mostly_quoted(plain):
+            return html_visible
+        if plain_visible and not self.body_looks_like_css(plain_visible):
+            return plain_visible
+        if html_visible:
+            return html_visible
+        return plain_visible or plain or html_text
 
     @staticmethod
     def _decode_body(data: str) -> str:
@@ -452,6 +495,14 @@ class GmailInboxClient:
         text = re.sub(r"<script\b[^>]*>.*?</script>", " ", html, flags=re.I | re.S)
         text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
         text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+        # Gmail already shows older messages as their own cards. Drop the quoted copy.
+        text = re.sub(
+            r'<div[^>]*class="[^"]*gmail_quote[^"]*"[^>]*>.*',
+            " ",
+            text,
+            flags=re.I | re.S,
+        )
+        text = re.sub(r"<blockquote\b[^>]*>.*?</blockquote>", " ", text, flags=re.I | re.S)
         text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
         text = re.sub(r"</(p|div|tr|h[1-6]|li|table|section)>", "\n", text, flags=re.I)
         text = re.sub(r"<[^>]+>", " ", text)
