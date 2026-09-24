@@ -23,6 +23,7 @@ interface AuthContextValue {
   resendVerification: (email: string) => Promise<void>;
   resendLoginCode: (email: string) => Promise<void>;
   completeGoogleAuth: (token: string) => Promise<void>;
+  updateUser: (next: AuthUser) => void;
   logout: () => void;
   isAuthenticated: boolean;
 }
@@ -110,6 +111,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(me);
   }, []);
 
+  const updateUser = useCallback((next: AuthUser) => {
+    setUser(next);
+    localStorage.setItem("user", JSON.stringify(next));
+  }, []);
+
   const logout = useCallback(() => {
     localStorage.removeItem("access_token");
     localStorage.removeItem("user");
@@ -128,6 +134,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         resendVerification,
         resendLoginCode,
         completeGoogleAuth,
+        updateUser,
         logout,
         isAuthenticated: !!user?.is_verified,
       }}

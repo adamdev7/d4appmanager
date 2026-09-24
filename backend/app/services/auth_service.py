@@ -22,7 +22,7 @@ from app.core.security import (
 )
 from app.db.models import User, VerificationCode, VerificationPurpose
 from app.integrations.google_auth import GoogleAuthClient
-from app.models.user import UserCreate, UserLogin
+from app.models.user import UserCreate, UserLogin, UserProfileUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,8 @@ class AuthService:
             "email": user.email,
             "full_name": user.full_name,
             "is_verified": user.is_verified,
+            "email_notifications": bool(getattr(user, "email_notifications", True)),
+            "weekly_digest": bool(getattr(user, "weekly_digest", False)),
         }
 
     def _token_response(self, user: User) -> dict:
@@ -298,6 +300,24 @@ class AuthService:
         return {"message": "If an account exists, a reset link has been sent."}
 
     def get_user(self, user: User) -> dict:
+        return self._user_response(user)
+
+    def update_profile(self, db: Session, user: User, data: UserProfileUpdate) -> dict:
+        if data.full_name is not None:
+            name = data.full_name.strip()
+            if not name:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Full name cannot be empty.",
+                )
+            user.full_name = name
+        if data.email_notifications is not None:
+            user.email_notifications = data.email_notifications
+        if data.weekly_digest is not None:
+            user.weekly_digest = data.weekly_digest
+        db.add(user)
+        db.commit()
+        db.refresh(user)
         return self._user_response(user)
 
     def begin_google_auth(self) -> dict:

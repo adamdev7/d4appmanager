@@ -32,6 +32,8 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(255))
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    email_notifications: Mapped[bool] = mapped_column(Boolean, default=True)
+    weekly_digest: Mapped[bool] = mapped_column(Boolean, default=False)
     openai_api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     openai_api_key_hint: Mapped[str | None] = mapped_column(String(8), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

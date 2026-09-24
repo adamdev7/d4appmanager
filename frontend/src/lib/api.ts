@@ -132,6 +132,8 @@ export type AuthUser = {
   email: string;
   full_name: string;
   is_verified?: boolean;
+  email_notifications?: boolean;
+  weekly_digest?: boolean;
 };
 
 export type CarrierTestResult = {
@@ -308,6 +310,15 @@ export const api = {
         body: JSON.stringify({ email }),
       }),
     me: () => request<AuthUser>("/auth/me"),
+    updateProfile: (data: {
+      full_name?: string;
+      email_notifications?: boolean;
+      weekly_digest?: boolean;
+    }) =>
+      request<AuthUser>("/auth/me", {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
     forgotPassword: (email: string) =>
       request<{ message: string }>("/auth/forgot-password", {
         method: "POST",

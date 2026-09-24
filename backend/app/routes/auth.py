@@ -8,7 +8,7 @@ from app.config import settings
 from app.core.rate_limit import enforce_auth_rate_limit
 from app.db.models import User
 from app.db.session import get_db
-from app.models.user import UserCreate, UserLogin
+from app.models.user import UserCreate, UserLogin, UserProfileUpdate
 from app.services.auth_service import AuthService
 
 router = APIRouter()
@@ -167,3 +167,12 @@ async def google_callback(
 @router.get("/me")
 async def me(user: User = Depends(get_verified_user)):
     return _auth.get_user(user)
+
+
+@router.patch("/me")
+async def update_me(
+    data: UserProfileUpdate,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _auth.update_profile(db, user, data)

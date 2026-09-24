@@ -7,6 +7,8 @@ class User(BaseModel):
     full_name: str
     is_active: bool = True
     is_verified: bool = False
+    email_notifications: bool = True
+    weekly_digest: bool = False
 
 
 class UserCreate(BaseModel):
@@ -18,6 +20,12 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class UserProfileUpdate(BaseModel):
+    full_name: str | None = Field(default=None, min_length=1, max_length=255)
+    email_notifications: bool | None = None
+    weekly_digest: bool | None = None
 
 
 class TokenResponse(BaseModel):

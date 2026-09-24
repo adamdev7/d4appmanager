@@ -361,6 +361,37 @@ def _migrate_user_openai_key_columns() -> None:
             )
 
 
+def _migrate_user_general_prefs() -> None:
+    """Profile notification toggles on General settings."""
+    insp = inspect(engine)
+    if "users" not in insp.get_table_names():
+        return
+
+    user_cols = {c["name"] for c in insp.get_columns("users")}
+    with engine.begin() as conn:
+        dialect = engine.dialect.name
+        if dialect == "sqlite":
+            if "email_notifications" not in user_cols:
+                conn.execute(
+                    text("ALTER TABLE users ADD COLUMN email_notifications BOOLEAN DEFAULT 1")
+                )
+            if "weekly_digest" not in user_cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN weekly_digest BOOLEAN DEFAULT 0"))
+        elif dialect == "postgresql":
+            conn.execute(
+                text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_notifications "
+                    "BOOLEAN NOT NULL DEFAULT TRUE"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE users ADD COLUMN IF NOT EXISTS weekly_digest "
+                    "BOOLEAN NOT NULL DEFAULT FALSE"
+                )
+            )
+
+
 def _migrate_module_openai_keys() -> None:
     """Copy legacy user OpenAI keys into independent per-module rows once.
 
@@ -1211,6 +1242,7 @@ def init_db() -> None:
     _migrate_ai_email_assistant_columns()
     _migrate_ai_email_order_tracking_columns()
     _migrate_user_openai_key_columns()
+    _migrate_user_general_prefs()
     _migrate_module_openai_keys()
     _migrate_order_tracking_summary_columns()
     _migrate_email_branding_columns()

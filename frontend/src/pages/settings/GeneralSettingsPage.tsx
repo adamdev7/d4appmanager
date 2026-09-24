@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Check } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { Switch } from "@/components/ui/Switch";
@@ -17,15 +18,19 @@ type FormState = {
 const emptyForm = (): FormState => ({ label: "", phone: "", apiKey: "" });
 
 export function GeneralSettingsPage() {
-  const { user } = useAuth();
-  const [emailNotifs, setEmailNotifs] = useState(true);
-  const [weeklyDigest, setWeeklyDigest] = useState(false);
+  const { user, updateUser } = useAuth();
+  const [fullName, setFullName] = useState(user?.full_name ?? "");
+  const [emailNotifs, setEmailNotifs] = useState(user?.email_notifications ?? true);
+  const [weeklyDigest, setWeeklyDigest] = useState(user?.weekly_digest ?? false);
   const [whatsapp, setWhatsapp] = useState<WhatsAppConnection | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(emptyForm());
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [testOk, setTestOk] = useState("");
+  const [saveOk, setSaveOk] = useState("");
   const [error, setError] = useState("");
+  const [saveError, setSaveError] = useState("");
 
   const connections: WhatsAppRecipient[] = whatsapp?.whatsapp_connections?.length
     ? whatsapp.whatsapp_connections
@@ -41,6 +46,13 @@ export function GeneralSettingsPage() {
           },
         ]
       : [];
+
+  useEffect(() => {
+    if (!user) return;
+    setFullName(user.full_name ?? "");
+    setEmailNotifs(user.email_notifications ?? true);
+    setWeeklyDigest(user.weekly_digest ?? false);
+  }, [user]);
 
   useEffect(() => {
     api.notifications
@@ -63,10 +75,61 @@ export function GeneralSettingsPage() {
     if (message) setTestOk(message);
   };
 
+  const whatsappFormHasInput =
+    editingId !== null &&
+    (form.phone.trim().length > 0 || form.apiKey.trim().length > 0 || form.label.trim().length > 0);
+
+  const saveWhatsAppDraft = async () => {
+    if (!whatsappFormHasInput) return;
+    const isNew = editingId === "new";
+    const missingKey = isNew && !form.apiKey.trim();
+    if (!form.phone.trim() || missingKey) {
+      throw new Error(
+        isNew
+          ? "Enter a WhatsApp number and CallMeBot API key before saving."
+          : "Enter a WhatsApp number before saving."
+      );
+    }
+    const payload = {
+      id: form.id,
+      phone: form.phone,
+      api_key: form.apiKey.trim() || undefined,
+      label: form.label.trim() || undefined,
+    };
+    const data = await api.notifications.saveWhatsApp(payload);
+    applyResult(data);
+  };
+
+  const saveAll = async () => {
+    setSaving(true);
+    setSaveError("");
+    setSaveOk("");
+    setTestOk("");
+    try {
+      const name = fullName.trim();
+      if (!name) {
+        throw new Error("Full name cannot be empty.");
+      }
+      const updated = await api.auth.updateProfile({
+        full_name: name,
+        email_notifications: emailNotifs,
+        weekly_digest: weeklyDigest,
+      });
+      updateUser(updated);
+      await saveWhatsAppDraft();
+      setSaveOk("All general settings saved.");
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Could not save general settings");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const saveAndTest = async () => {
     setBusy(true);
     setError("");
     setTestOk("");
+    setSaveOk("");
     try {
       const payload = {
         id: form.id,
@@ -93,6 +156,7 @@ export function GeneralSettingsPage() {
     setBusy(true);
     setError("");
     setTestOk("");
+    setSaveOk("");
     try {
       const result = await api.notifications.testWhatsApp({ id });
       applyResult(result, result.message);
@@ -114,6 +178,7 @@ export function GeneralSettingsPage() {
     setBusy(true);
     setError("");
     setTestOk("");
+    setSaveOk("");
     try {
       const data = await api.notifications.deleteWhatsApp(id);
       setWhatsapp(data);
@@ -131,6 +196,8 @@ export function GeneralSettingsPage() {
     }
   };
 
+  const pageBusy = busy || saving;
+
   return (
     <div className="w-full min-w-0 max-w-4xl 2xl:max-w-5xl space-y-6">
       <div>
@@ -144,12 +211,14 @@ export function GeneralSettingsPage() {
           <CardDescription>Your personal account information.</CardDescription>
         </CardHeader>
         <div className="space-y-4">
-          <Input label="Full name" defaultValue={user?.full_name} />
+          <Input
+            label="Full name"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            autoComplete="name"
+          />
           <Input label="Email" type="email" defaultValue={user?.email} disabled />
         </div>
-        <Button className="mt-6" variant="primary">
-          Save changes
-        </Button>
       </Card>
 
       <Card padding="lg">
@@ -181,7 +250,7 @@ export function GeneralSettingsPage() {
         connectedModules={whatsapp?.whatsapp_connected_modules}
         error={error}
         testOk={testOk}
-        busy={busy}
+        busy={pageBusy}
         editingId={editingId}
         form={form}
         onFormChange={(patch) => setForm((f) => ({ ...f, ...patch }))}
@@ -190,6 +259,7 @@ export function GeneralSettingsPage() {
           setForm(emptyForm());
           setError("");
           setTestOk("");
+          setSaveOk("");
         }}
         onStartEdit={(row) => {
           setEditingId(row.id);
@@ -201,6 +271,7 @@ export function GeneralSettingsPage() {
           });
           setError("");
           setTestOk("");
+          setSaveOk("");
         }}
         onCancelForm={() => {
           setEditingId(null);
@@ -211,6 +282,30 @@ export function GeneralSettingsPage() {
         onTestExisting={testExisting}
         onRemove={remove}
       />
+
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between pt-2 pb-4">
+        <div className="min-h-[1.25rem] space-y-1">
+          {saveError ? (
+            <p className="text-sm text-red-600 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+              {saveError}
+            </p>
+          ) : null}
+          {saveOk ? (
+            <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+              <Check className="h-4 w-4" /> {saveOk}
+            </span>
+          ) : null}
+        </div>
+        <Button
+          type="button"
+          variant="primary"
+          className="sm:ml-auto shrink-0"
+          disabled={pageBusy}
+          onClick={() => void saveAll()}
+        >
+          {saving ? "Saving…" : "Save changes"}
+        </Button>
+      </div>
     </div>
   );
 }
