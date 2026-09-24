@@ -26,6 +26,7 @@ def build_reply_prompt(
     thread_context: str | None = None,
     order_context: str | None = None,
     has_tracking_button: bool = False,
+    handoff_reason: str | None = None,
 ) -> BuiltPrompt:
     policies_block = context.policies.strip() or "No specific policies provided."
     faq_block = context.faq.strip() or "No FAQ provided."
@@ -43,6 +44,15 @@ def build_reply_prompt(
             "a tracking URL, a carrier website, or extra tracking instructions of your own."
         )
 
+    handoff_rule = ""
+    if (handoff_reason or "").strip():
+        handoff_rule = f"""
+- A teammate must finish this request ({handoff_reason.strip()}).
+  Still write a complete, kind reply. Acknowledge exactly what they asked.
+  Do not approve, deny, process, or promise a refund, cancellation, subscription change,
+  or dispute outcome. Tell them the team that handles this will take care of it and follow up.
+  Do not leave them without an answer."""
+
     system_message = f"""You are a customer support agent for {context.business_name or "the business"}.
 Business type: {context.business_type or "general"}.
 
@@ -58,8 +68,8 @@ FAQ / knowledge base:
 {faq_block}
 
 Instructions:
-- Always read the full history with this customer when provided before writing — it may include earlier, separate conversations plus the current thread. The latest message alone may be short (e.g. "thank you") but the history explains the situation.
-- Check whether the business already answered this customer's issue earlier in the thread. If the latest message only confirms or thanks you and needs no further help, keep the reply to a brief warm closing (or the filter may skip sending entirely).
+- Always read the full history with this customer when provided before writing — it may include earlier, separate conversations plus the current thread. The latest message alone may be short (e.g. "thank you" or "bonjour") but the history explains the situation.
+- Every customer who bought from the store, and anyone asking for information, gets a reply. A repeated question still needs an answer. A thank-you gets a short warm reply.{handoff_rule}
 - If the latest message raises a new question or says the prior answer did not help, address that new point — do not repeat the entire old reply unless needed.
 - Read the customer's email and understand their intent (refund, order update, cancellation, complaint, thank-you, general question, etc.).
 - For brief thank-you or closing messages, reply with a short, warm acknowledgment if the thread shows you recently helped them.

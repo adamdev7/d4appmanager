@@ -191,7 +191,7 @@ def test_subscription_cancel_is_held_for_manual_review_without_ai():
         )
     )
     assert result.needs_manual_review is True
-    assert result.should_reply is False
+    assert result.should_reply is True
     assert result.category == "manual_review"
     assert ai.called_with is None
 
@@ -260,5 +260,44 @@ def test_parse_classification_json_manual_review_flag():
         '{"should_reply": true, "needs_manual_review": true, "reason": "Escalate", "category": "customer"}'
     )
     assert result.needs_manual_review is True
-    assert result.should_reply is False
+    assert result.should_reply is True
     assert result.category == "manual_review"
+
+
+def test_shopify_contact_form_exposes_the_customer():
+    from app.ai_email_assistant.email_filter import parse_shopify_contact_form
+
+    parsed = parse_shopify_contact_form(
+        "New customer message on September 21, 2026 at 8:30 pm",
+        "You received a new message from your online store's contact form. "
+        "Country Code: CA Name: Diane Email: dguthrie4922@hotmail.ca Phone: "
+        "Body: Where are they made and what currency do you charge?",
+    )
+    assert parsed is not None
+    name, address, message = parsed
+    assert name == "Diane"
+    assert address == "dguthrie4922@hotmail.ca"
+    assert "what currency" in message
+
+
+def test_information_request_is_answered_even_if_ai_skips():
+    ai = _FakeAI(
+        EmailFilterResult(
+            should_reply=False,
+            reason="The message does not contain a specific question",
+            category="other",
+        )
+    )
+    result = asyncio.run(
+        evaluate_email_filter(
+            _config(),
+            sender="Derek <derekecom7@gmail.com>",
+            sender_email="derekecom7@gmail.com",
+            subject="Luxory",
+            body="Bonjour Luxory?",
+            ai=ai,
+            known_customer=False,
+        )
+    )
+    assert result.should_reply is True
+    assert result.category == "customer"

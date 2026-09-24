@@ -270,6 +270,11 @@ function assistantInsight(item: InboxItem): string | null {
     return cat ? `Filtered · ${cat}` : "Filtered · no reply needed";
   }
   if (item.status === "manual_review") {
+    if (item.latest_reply?.status === "sent") {
+      return item.skip_reason
+        ? `Holding reply sent · admin still needed · ${item.skip_reason}`
+        : "Holding reply sent · admin still needed";
+    }
     return item.skip_reason
       ? `Manual review · ${item.skip_reason}`
       : "Manual review · an admin should reply";
@@ -1617,7 +1622,20 @@ export function AIEmailAssistantPage() {
                     </p>
                   )}
 
-                  {selected.status === "manual_review" && !composing && selected.latest_reply?.status !== "draft" && (
+                  {selected.status === "manual_review" &&
+                    !composing &&
+                    selected.latest_reply?.status === "sent" && (
+                    <p className="text-sm text-content-muted mb-3 w-full max-w-none">
+                      The customer was sent a note that your team is handling this
+                      {selected.skip_reason ? ` — ${selected.skip_reason}` : ""}.
+                      You still need to finish the cancellation, refund, or other request.
+                    </p>
+                  )}
+
+                  {selected.status === "manual_review" &&
+                    !composing &&
+                    selected.latest_reply?.status !== "draft" &&
+                    selected.latest_reply?.status !== "sent" && (
                     <p className="text-sm text-content-muted mb-3 w-full max-w-none">
                       Held for manual review
                       {selected.skip_reason ? ` — ${selected.skip_reason}` : ""}.

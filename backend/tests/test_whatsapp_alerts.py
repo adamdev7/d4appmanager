@@ -54,6 +54,7 @@ def test_format_manual_review_alert_is_plain_and_actionable():
     assert "<jane@shop.com>" not in text
     assert "📝 Cancel my subscription" in text
     assert "⚠️ Subscription cancel request" in text
+    assert "short note that your team is handling this" in text
     assert "👉 *Review this email*" in text
     link = (
         f"{settings.public_frontend_url.rstrip('/')}/modules/ai-email"

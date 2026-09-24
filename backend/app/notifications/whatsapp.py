@@ -189,7 +189,14 @@ def format_manual_review_alert(
         lines.append(f"✉️ {email}")
     elif not name:
         lines.append("👤 Customer")
-    lines.extend(["📝 " + subject_text, "", f"⚠️ {why}"])
+    lines.extend(
+        [
+            "📝 " + subject_text,
+            "",
+            f"⚠️ {why}",
+            "The customer is sent a short note that your team is handling this.",
+        ]
+    )
     link_id = (email_id or "").strip()
     if link_id:
         lines.extend(["", "👉 *Review this email*", manual_review_app_url(email_id=link_id, store_id=store_id)])

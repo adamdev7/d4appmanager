@@ -22,8 +22,10 @@ from app.ai_email_assistant.email_filter import (
     config_from_settings,
     conversation_looks_like_client,
     detect_manual_review_reason,
+    ensure_customer_is_answered,
     evaluate_email_filter,
     is_platform_sender,
+    parse_shopify_contact_form,
 )
 from app.ai_email_assistant.thread_context import format_customer_relationship
 from app.ai_email_assistant.order_context import (
@@ -559,6 +561,54 @@ class AIEmailAssistantService:
             latest_reply=latest,
         )
 
+    def _adopt_shopify_contact_form(self, db: Session, email: InboxEmail) -> None:
+        """Reply to the shopper named inside a Shopify contact-form notification."""
+        if not is_platform_sender(email.sender_email):
+            return
+        parsed = parse_shopify_contact_form(email.subject or "", email.body_text or "")
+        if not parsed:
+            return
+        name, address, message = parsed
+        email.sender = name or address
+        email.sender_email = address
+        email.body_text = message
+        snippet = " ".join(message.split())[:80]
+        if snippet:
+            email.subject = snippet
+        db.flush()
+
+    async def _queue_admin_handoff(
+        self,
+        db: Session,
+        email: InboxEmail,
+        reason: str,
+        settings_row: AIEmailAssistantSettings,
+    ) -> None:
+        """Flag a case for a teammate and still let a customer reply go out.
+
+        Status stays new until the holding reply is sent, then moves to manual_review
+        so the admin queue keeps the case after the customer has been answered.
+        """
+        note = (reason or "A teammate needs to finish this.").strip()
+        already_flagged = email.filter_category == "manual_review" and bool(email.skip_reason)
+        email.filter_category = "manual_review"
+        email.skip_reason = note
+        if email.status not in (
+            InboxEmailStatus.DRAFT_PENDING.value,
+            InboxEmailStatus.REPLIED.value,
+            InboxEmailStatus.MANUAL_REVIEW.value,
+        ):
+            email.status = InboxEmailStatus.NEW.value
+        db.commit()
+        if already_flagged:
+            return
+        try:
+            await self._notify_manual_review_whatsapp(db, settings_row, email, note)
+        except Exception:
+            logger.exception(
+                "WhatsApp manual-review alert failed for inbox %s", email.id
+            )
+
     async def _apply_email_filter(
         self,
         db: Session,
@@ -567,6 +617,7 @@ class AIEmailAssistantService:
         settings_row: AIEmailAssistantSettings,
     ) -> None:
         """Decide reply vs ignore using full thread history; mark ignored mail as read."""
+        self._adopt_shopify_contact_form(db, email)
         api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL)
         ai = AIService(model=settings_row.openai_model, api_key=api_key) if api_key else None
 
@@ -589,13 +640,13 @@ class AIEmailAssistantService:
 
         config = config_from_settings(settings_row)
 
+        platform = is_platform_sender(email.sender_email)
+
         # Even with the smart filter toggle off, use AI + full history to decide whether
         # the issue was already answered (reply vs leave as read).
         if not config.enabled:
-            if hold_reason:
-                await self._hold_for_manual_review(
-                    db, email, account, hold_reason, settings_row
-                )
+            if hold_reason and not platform:
+                await self._queue_admin_handoff(db, email, hold_reason, settings_row)
                 return
             if not ai:
                 return
@@ -614,7 +665,14 @@ class AIEmailAssistantService:
             result = apply_known_customer_guard(
                 result,
                 known_customer=known_customer,
-                platform_sender=is_platform_sender(email.sender_email),
+                platform_sender=platform,
+            )
+            result = ensure_customer_is_answered(
+                result,
+                subject=email.subject or "",
+                body=email.body_text or "",
+                known_customer=known_customer,
+                platform_sender=platform,
             )
         else:
             result = await evaluate_email_filter(
@@ -628,7 +686,24 @@ class AIEmailAssistantService:
                 known_customer=known_customer,
             )
 
-        if hold_reason or result.needs_manual_review or result.category == "manual_review":
+        # Cancellation, disputes, and similar cases still get a customer reply.
+        # The teammate alert stays on, and the row returns to manual review after send.
+        if (
+            not platform
+            and result.should_reply
+            and (hold_reason or result.needs_manual_review or result.category == "manual_review")
+        ):
+            await self._queue_admin_handoff(
+                db,
+                email,
+                hold_reason
+                or result.reason
+                or "A teammate needs to finish this. The customer still gets a reply.",
+                settings_row,
+            )
+            return
+
+        if (hold_reason or result.needs_manual_review or result.category == "manual_review") and not result.should_reply:
             await self._hold_for_manual_review(
                 db,
                 email,
@@ -788,7 +863,13 @@ class AIEmailAssistantService:
             reason = email.skip_reason or "left unread as not needing a reply"
             return f"Assistant filtered this conversation — {reason}"
         if email.status == InboxEmailStatus.MANUAL_REVIEW.value:
-            reason = email.skip_reason or "needs an admin before the AI replies"
+            reason = email.skip_reason or "a teammate still needs to finish this"
+            sent = any(r.status == AIReplyStatus.SENT.value for r in (email.replies or []))
+            if sent:
+                return (
+                    "Holding reply sent — the customer was told the team is handling this. "
+                    f"Admin still needed — {reason}"
+                )
             return f"Held for manual review — {reason}"
         if email.status == InboxEmailStatus.REPLIED.value:
             return "Assistant already replied in this thread via Gmail."
@@ -1621,6 +1702,9 @@ class AIEmailAssistantService:
 
         try:
             ai = self._ai_service(db, user, settings_row)
+            handoff_reason = None
+            if email.filter_category == "manual_review":
+                handoff_reason = email.skip_reason or "A teammate needs to finish this request."
             result = await ai.generate_reply(
                 sender=email.sender,
                 subject=email.subject,
@@ -1629,6 +1713,7 @@ class AIEmailAssistantService:
                 thread_context=thread_context,
                 order_context=order_context,
                 has_tracking_button=tracking_link is not None,
+                handoff_reason=handoff_reason,
                 model_override=settings_row.openai_model,
             )
         except OpenAIServiceError as exc:
@@ -1849,7 +1934,12 @@ class AIEmailAssistantService:
         reply.sent_at = datetime.now(UTC)
         reply.gmail_sent_message_id = send_result.get("id")
         reply.error_message = None
-        email.status = InboxEmailStatus.REPLIED.value
+        # A holding reply was sent. Keep the case in the admin queue so the
+        # cancellation, refund, or dispute is still finished by a person.
+        if email.filter_category == "manual_review":
+            email.status = InboxEmailStatus.MANUAL_REVIEW.value
+        else:
+            email.status = InboxEmailStatus.REPLIED.value
         email.processed_at = datetime.now(UTC)
         db.commit()
 

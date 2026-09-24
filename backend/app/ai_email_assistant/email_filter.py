@@ -154,20 +154,65 @@ def conversation_looks_like_client(
     return bool(_CLIENT_CONVERSATION_HINTS.search(f"{subject}\n{body}"))
 
 
+_HELP_GREETING = re.compile(
+    r"\b(hello|hi|hey|bonjour|bonsoir|good morning|good afternoon|good evening)\b",
+    re.I,
+)
+
+_SHOPIFY_CONTACT_FORM = re.compile(
+    r"Name:\s*(?P<name>.+?)\s+Email:\s*(?P<email>\S+@\S+)\s+Phone:\s*(?P<phone>.*?)\s+Body:\s*(?P<body>.+)",
+    re.I | re.S,
+)
+
+
+def parse_shopify_contact_form(subject: str, body: str) -> tuple[str, str, str] | None:
+    """Pull the shopper out of a Shopify 'new customer message' notification.
+
+    Those emails arrive from mailer@shopify.com, but the buyer wrote the form.
+    Returns (name, email, message) when the body has that form layout.
+    """
+    blob = f"{subject or ''}\n{body or ''}"
+    if "contact form" not in blob.lower() and "new customer message" not in blob.lower():
+        return None
+    match = _SHOPIFY_CONTACT_FORM.search(body or "")
+    if not match:
+        return None
+    address = match.group("email").strip().strip("<>").rstrip(".,;")
+    message = match.group("body").strip()
+    if "@" not in address or not message:
+        return None
+    return match.group("name").strip(), address, message
+
+
+def message_asks_for_help(subject: str = "", body: str = "") -> bool:
+    """True when a person is greeting the store or asking for information."""
+    text = f"{subject}\n{body}".strip()
+    if not text:
+        return False
+    if "?" in text or "？" in text:
+        return True
+    if _CLIENT_CONVERSATION_HINTS.search(text):
+        return True
+    return bool(_HELP_GREETING.search(text))
+
+
 def detect_manual_review_reason(
     *,
     subject: str = "",
     body: str = "",
     thread_context: str | None = None,
 ) -> str | None:
-    """Hold for an admin: subscription cancel, unrecognized charges, legal/dispute mail."""
+    """Topics a teammate must finish: cancellation, disputed charges, legal mail.
+
+    The customer still gets a reply. This only flags the case for the admin.
+    """
     blob = f"{subject}\n{body}\n{thread_context or ''}"
     if _SUBSCRIPTION_CANCEL.search(blob):
-        return "Subscription cancellation — an admin should handle this."
+        return "Subscription cancellation — a teammate needs to finish this."
     if _UNRECOGNIZED_CHARGE.search(blob):
-        return "Unrecognized or disputed charge — an admin should handle this."
+        return "Unrecognized or disputed charge — a teammate needs to finish this."
     if _ADMIN_SITUATIONS.search(blob):
-        return "This looks like a legal or dispute issue — an admin should handle this."
+        return "This looks like a legal or dispute issue — a teammate needs to finish this."
     return None
 
 
@@ -177,21 +222,66 @@ def apply_known_customer_guard(
     known_customer: bool,
     platform_sender: bool,
 ) -> EmailFilterResult:
-    """Never treat a buyer / returning sender as 'not a client' just because the AI guessed personal."""
+    """Buyers always get a reply. Sensitive topics still go to a teammate, but not in silence."""
     if result.needs_manual_review or result.category == "manual_review":
+        if platform_sender:
+            return EmailFilterResult(
+                should_reply=False,
+                reason=result.reason or "Platform mail does not get a customer reply.",
+                category="manual_review",
+                needs_manual_review=True,
+            )
         return EmailFilterResult(
-            should_reply=False,
-            reason=result.reason or "Needs an admin to review before replying.",
+            should_reply=True,
+            reason=result.reason
+            or "A teammate will handle the decision. The customer still gets a reply.",
             category="manual_review",
             needs_manual_review=True,
         )
-    if not known_customer or platform_sender or result.should_reply:
+    if platform_sender or result.should_reply:
         return result
-    if result.category in ("already_resolved", "acknowledgment"):
+    if not known_customer:
+        return result
+    if result.category in ("automated", "newsletter", "spam"):
         return result
     return EmailFilterResult(
         should_reply=True,
         reason="Sender is a known client (order or conversation history) — answering their email.",
+        category="customer",
+    )
+
+
+def ensure_customer_is_answered(
+    result: EmailFilterResult,
+    *,
+    subject: str,
+    body: str,
+    known_customer: bool,
+    platform_sender: bool,
+) -> EmailFilterResult:
+    """Purchasers and people asking for information are never left without a reply."""
+    if platform_sender or result.category in ("automated", "newsletter", "spam"):
+        return result
+    if result.should_reply:
+        return result
+    if not known_customer and not message_asks_for_help(subject, body):
+        return result
+    if result.needs_manual_review or result.category == "manual_review":
+        return EmailFilterResult(
+            should_reply=True,
+            reason=result.reason
+            or "A teammate will handle the decision. The customer still gets a reply.",
+            category="manual_review",
+            needs_manual_review=True,
+        )
+    return EmailFilterResult(
+        should_reply=True,
+        reason=result.reason
+        or (
+            "Sender is a known client — answering their email."
+            if known_customer
+            else "Customer is asking for information — answering their email."
+        ),
         category="customer",
     )
 
@@ -213,9 +303,9 @@ async def evaluate_email_filter(
         hold_reason = detect_manual_review_reason(
             subject=subject, body=body, thread_context=thread_context
         )
-        if hold_reason:
+        if hold_reason and not platform:
             return EmailFilterResult(
-                should_reply=False,
+                should_reply=True,
                 reason=hold_reason,
                 category="manual_review",
                 needs_manual_review=True,
@@ -235,8 +325,16 @@ async def evaluate_email_filter(
         subject=subject, body=body, thread_context=thread_context
     )
     if hold_reason:
+        # The teammate finishes the cancellation, dispute, or legal step.
+        # The customer still receives a reply that says so.
+        if platform:
+            return EmailFilterResult(
+                should_reply=False,
+                reason=hold_reason,
+                category="automated",
+            )
         return EmailFilterResult(
-            should_reply=False,
+            should_reply=True,
             reason=hold_reason,
             category="manual_review",
             needs_manual_review=True,
@@ -271,8 +369,15 @@ async def evaluate_email_filter(
     if result.category == "personal" and not config.filter_non_business:
         result = EmailFilterResult(should_reply=True, reason=result.reason, category="customer")
 
-    return apply_known_customer_guard(
+    result = apply_known_customer_guard(
         result, known_customer=known_customer, platform_sender=platform
+    )
+    return ensure_customer_is_answered(
+        result,
+        subject=subject,
+        body=body,
+        known_customer=known_customer,
+        platform_sender=platform,
     )
 
 
@@ -290,11 +395,16 @@ def parse_classification_json(raw: str) -> EmailFilterResult:
     category = data.get("category")
     needs_manual_review = bool(data.get("needs_manual_review")) or category == "manual_review"
     if needs_manual_review:
-        should_reply = False
-        category = "manual_review"
+        # Platform noise can stay silent. A person still gets a reply while a teammate
+        # handles the refund, cancellation, or dispute.
+        if category in ("automated", "newsletter", "spam"):
+            should_reply = False
+        else:
+            should_reply = True
+            category = "manual_review"
     reason = data.get("reason") or (
-        "Needs an admin to review before replying."
-        if needs_manual_review
+        "A teammate will handle the decision. The customer still gets a reply."
+        if needs_manual_review and should_reply
         else (None if should_reply else "Classified as not requiring a business reply")
     )
     return EmailFilterResult(

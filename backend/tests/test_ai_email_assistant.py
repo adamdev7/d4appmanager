@@ -88,7 +88,7 @@ def test_known_customer_guard_does_not_force_reply_to_shopify():
     assert guarded.should_reply is False
 
 
-def test_known_customer_guard_respects_already_resolved():
+def test_known_customer_guard_still_answers_a_repeat_question():
     from app.ai_email_assistant.email_filter import EmailFilterResult, apply_known_customer_guard
 
     skipped = EmailFilterResult(
@@ -97,10 +97,11 @@ def test_known_customer_guard_respects_already_resolved():
     guarded = apply_known_customer_guard(
         skipped, known_customer=True, platform_sender=False
     )
-    assert guarded.should_reply is False
+    assert guarded.should_reply is True
+    assert guarded.category == "customer"
 
 
-def test_known_customer_guard_does_not_auto_reply_manual_review():
+def test_known_customer_guard_replies_and_flags_manual_review():
     from app.ai_email_assistant.email_filter import EmailFilterResult, apply_known_customer_guard
 
     held = EmailFilterResult(
@@ -112,7 +113,7 @@ def test_known_customer_guard_does_not_auto_reply_manual_review():
     guarded = apply_known_customer_guard(
         held, known_customer=True, platform_sender=False
     )
-    assert guarded.should_reply is False
+    assert guarded.should_reply is True
     assert guarded.needs_manual_review is True
     assert guarded.category == "manual_review"
 
@@ -159,6 +160,26 @@ def test_build_reply_prompt_includes_thread_history_guidance():
         email_body="Thanks!",
         thread_context="--- Customer ---\nWhere is my order?\n\n--- Your business ---\nIt ships tomorrow.",
     )
-    assert "full conversation thread" in prompt.system_message.lower() or "already answered" in prompt.system_message.lower()
+    assert "full history" in prompt.system_message.lower()
+
+
+def test_build_reply_prompt_handoff_still_writes_to_the_customer():
+    ctx = BusinessContext(
+        business_name="Luxory",
+        business_type="e-commerce",
+        tone_of_voice="friendly",
+        rules="Escalate cash refunds to a human.",
+        policies="",
+        faq="",
+    )
+    prompt = build_reply_prompt(
+        context=ctx,
+        sender="jan@example.com",
+        subject="Refund",
+        email_body="Please refund the subscription charge.",
+        handoff_reason="Subscription cancellation — a teammate needs to finish this.",
+    )
+    assert "teammate must finish" in prompt.system_message.lower()
+    assert "still write a complete" in prompt.system_message.lower()
     assert "Where is my order?" in prompt.user_message
     assert "It ships tomorrow." in prompt.user_message

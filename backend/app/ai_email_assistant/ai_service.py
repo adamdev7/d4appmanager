@@ -50,6 +50,7 @@ class AIService:
         thread_context: str | None = None,
         order_context: str | None = None,
         has_tracking_button: bool = False,
+        handoff_reason: str | None = None,
         model_override: str | None = None,
     ) -> AIReplyResult:
         self._require_api_key()
@@ -62,6 +63,7 @@ class AIService:
             thread_context=thread_context,
             order_context=order_context,
             has_tracking_button=has_tracking_button,
+            handoff_reason=handoff_reason,
         )
         model = self._resolve_model(model_override)
         body = await self._chat_completion(
@@ -101,11 +103,11 @@ class AIService:
         customer_rule = ""
         if known_customer:
             customer_rule = """
-This sender is a known client: their email (for example a Gmail address) has prior chat history
-with this business and/or is linked to a Shopify order. They ARE a client.
-Do not classify them as personal, spam, or unrelated. should_reply must be true unless
-the latest message is only a thank-you that needs no reply, the issue is already fully answered,
-or needs_manual_review is true.
+This sender is a known client: their email has prior chat history with this business
+and/or is linked to a Shopify order. They ARE a client.
+should_reply must be true for every message from them, including thank-yous, greetings,
+repeated questions, and requests a teammate must finish.
+Do not classify them as personal, spam, already_resolved, or unrelated.
 """
 
         system_message = f"""You classify incoming emails for a {business_type or "business"} named "{business_name or "the business"}".
@@ -117,35 +119,31 @@ answered that issue, and whether the latest message raises anything new.
 
 Decide whether the business should send a customer support reply to the LATEST message.
 
-Set needs_manual_review true (and should_reply false, category "manual_review") when an ADMIN must
-handle the email instead of the AI, including:
+Set needs_manual_review true AND should_reply true (category "manual_review") when a teammate must
+finish the request, but the customer must still receive a reply. That includes:
 - Subscription / membership / auto-renew cancellation or pause requests
 - Unrecognized, unauthorized, or disputed charges / payments / fraud
-- Chargebacks, legal threats, or anything the business rules say a human must handle
-- Situations the rules below say not to promise, approve, or action without an admin
+- Chargebacks, legal threats, cash-refund requests, or anything the rules say a human must handle
+The reply (written later) only tells them the team that handles that matter will follow up.
+Never use should_reply false for these customer emails.
 
 Do NOT reply (should_reply: false) for:
 - Automated/system messages, no-reply senders, delivery receipts, security codes, password resets
-- Newsletters, marketing blasts, platform notifications (Shopify, PayPal, social media, etc.) sent FROM
-  those platforms — not customer emails that mention an order
+- Newsletters, marketing blasts, platform notifications (Shopify order alerts, PayPal, social media)
+  sent FROM those platforms — not a person writing in, and not a Shopify contact-form message
 - Spam or mail clearly unrelated to this business
-- Threads where the business already answered the customer's issue and the latest message does not
-  ask a new question, report a new problem, escalate, or request more help (category: already_resolved).
-  Examples: "ok thanks", "got it", "perfect", "thank you" after your reply already covered their request
-- Closing thank-you messages where no response is needed AND the thread is already fully resolved
-  (category: acknowledgment) — only if a polite one-line reply would add no value
 
 DO reply (should_reply: true) for:
-- First-contact questions or requests about orders, shipping, refunds, products, cancellations, complaints
-- A customer asking where their order is, even if the message is short
-- Follow-ups that raise a NEW question, say the previous answer did not help, report a new problem,
-  or ask for more action — even if the business already replied earlier in the thread (category: customer)
-- Customer thank-you messages when a brief acknowledgment is still appropriate (category: acknowledgment)
+- Anyone who bought from the store
+- Anyone asking for information, even a short or vague question ("where is my order", "bonjour", "what currency")
+- A customer repeating a question. That is not already resolved — they still need an answer
+- Thank-you or "it arrived" notes from a customer (a short warm reply)
+- Cancellations, refund requests, and disputes (should_reply true AND needs_manual_review true)
 {customer_rule}
-NEVER use category "personal" for customers who bought from or contacted this business.
-Use "customer", "acknowledgment", "already_resolved", or "manual_review".
+NEVER use category "personal" or "already_resolved" for a customer who bought from or wrote to this business.
+Use "customer" or "manual_review".
 
-Business reply rules (if these require a human, set needs_manual_review true):
+Business reply rules (if these require a human decision, set needs_manual_review true and should_reply true):
 {rules_block}
 
 Additional skip rules from the business owner (always respect these):
