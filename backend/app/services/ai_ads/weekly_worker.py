@@ -1,34 +1,42 @@
-"""Weekly creative generation worker. Does not auto-publish ads."""
+"""Weekly creative generation scheduler. Does not auto-publish ads.
+
+Each tick: finish/resume weekly runs whose job ended or was abandoned, then start a batch for
+every enabled store whose weekday + hour (store timezone) has passed this week and has no
+scheduled run yet. That one rule covers the on-time run, catch-up after downtime, and the
+first run right after the toggle is switched on.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import UTC, datetime
 
-from sqlalchemy import select
-
 from app.config import settings
-from app.core.openai_credentials import OPENAI_MODULE_AI_ADS, resolve_openai_api_key
-from app.db.models import CreativeGenerationJob, Store, StoreAIAdsSettings, User
 from app.db.session import SessionLocal
-from app.services.ai_ads.complete_creative import resolve_generation_counts
-from app.services.ai_ads.asset_store import CreativeAssetStore
-from app.services.ai_ads.job_runner import enqueue_generation_job
-from app.services.ai_ads.orchestrator import AdsAIOrchestrator
-from app.services.ai_ads.product_catalog import ShopifyProductCatalog
+from app.services.ai_ads.weekly_runs import reconcile_runs, schedule_due_runs
 
 logger = logging.getLogger(__name__)
 
 _stop: asyncio.Event | None = None
 _task: asyncio.Task | None = None
+_last_tick_at: datetime | None = None
+
+
+def scheduler_heartbeat() -> datetime | None:
+    return _last_tick_at
 
 
 def start_ai_ads_worker() -> None:
     global _stop, _task
     _stop = asyncio.Event()
     _task = asyncio.create_task(_loop())
+    logger.info(
+        "ai_ads weekly scheduler started enabled=%s hour=%s poll=%ss",
+        settings.ai_ad_weekly_scheduler_enabled,
+        settings.ai_ad_weekly_hour,
+        max(30, settings.ai_ad_poll_seconds),
+    )
 
 
 async def stop_ai_ads_worker() -> None:
@@ -58,90 +66,26 @@ async def _loop() -> None:
 
 
 async def _tick() -> None:
-    if not settings.ai_ad_generation_enabled:
-        return
-    today = datetime.now(UTC).strftime("%A").lower()
-    wanted = (settings.ai_ad_generation_day or "monday").strip().lower()
-    if today != wanted:
-        return
+    global _last_tick_at
+    _last_tick_at = datetime.now(UTC)
     db = SessionLocal()
     try:
-        rows = db.scalars(
-            select(StoreAIAdsSettings).where(StoreAIAdsSettings.weekly_generation_enabled.is_(True))
-        ).all()
-        for row in rows:
-            last = row.last_weekly_run_at
-            if last and last.date() == datetime.now(UTC).date():
-                continue
-            store = db.get(Store, row.store_id)
-            if not store:
-                continue
-            user = db.get(User, store.owner_id)
-            if not user:
-                continue
-            api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_ADS)
-            if not api_key:
-                row.last_weekly_error = "OpenAI API key is not configured"
-                db.commit()
-                continue
-            orch = AdsAIOrchestrator(db, user, store, api_key)
-            try:
-                await orch.sync_meta()
-                await orch.analyze_creatives()
-            except Exception as exc:
-                logger.warning("ai_ads weekly sync/analyze failed store=%s err=%s", store.id, exc)
-            product_id = None
-            client = orch.shopify_client()
-            if client:
-                try:
-                    catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
-                    products = await catalog.sync_store(client)
-                    if products:
-                        product_id = str(products[0].get("id"))
-                except Exception:
-                    product_id = None
-            if not product_id:
-                row.last_weekly_error = "No Shopify products available for weekly generation"
-                row.last_weekly_run_at = datetime.now(UTC)
-                db.commit()
-                continue
-            images, videos = resolve_generation_counts(
-                row.image_count,
-                row.video_count,
-                default_images=settings.ai_ad_image_count,
-                default_videos=settings.ai_ad_video_count,
-            )
-            if images + videos < 1:
-                row.last_weekly_error = "Weekly image and video counts are both 0"
-                row.last_weekly_run_at = datetime.now(UTC)
-                db.commit()
-                continue
-            job = CreativeGenerationJob(
-                store_id=store.id,
-                user_id=user.id,
-                status="QUEUED",
-                product_id=product_id,
-                request_json=json.dumps(
-                    {
-                        "product_id": product_id,
-                        "image_count": images,
-                        "video_count": videos,
-                        "styles": json.loads(row.creative_styles_json or "[]"),
-                        "audience": row.default_audience,
-                        "objective": row.default_objective,
-                        "placement": row.default_placement or "feed",
-                        "aspect_ratio": row.default_aspect_ratio or "4:5",
-                        "brand_style": row.brand_style,
-                        "source": "weekly_automation",
-                    }
-                ),
-                progress_message="Queued by weekly automation",
-            )
-            db.add(job)
-            row.last_weekly_run_at = datetime.now(UTC)
-            row.last_weekly_error = None
-            db.commit()
-            enqueue_generation_job(job.id, api_key)
-            logger.info("ai_ads weekly job queued store_id=%s job_id=%s", store.id, job.id)
+        try:
+            reconcile_runs(db)
+        except Exception:
+            logger.exception("ai_ads weekly reconcile failed")
+            db.rollback()
+        try:
+            from app.services.ai_ads.director.service import reconcile_reports
+
+            reconcile_reports(db)
+        except Exception:
+            logger.exception("ai_ads director reconcile failed")
+            db.rollback()
+        if not settings.ai_ad_weekly_scheduler_enabled:
+            return
+        started = schedule_due_runs(db)
+        if started:
+            logger.info("ai_ads weekly scheduler started %s run(s): %s", len(started), ", ".join(started))
     finally:
         db.close()

@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
+  Clapperboard,
   Compass,
   History,
   Images,
@@ -12,9 +13,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
-/** The four screens of the actual workflow, in the order an operator uses them. */
+/** The screens of the actual workflow, in the order an operator uses them. */
 const WORKFLOW = [
   { to: "/ai-ads", end: true, icon: LayoutDashboard, label: "Overview" },
+  { to: "/ai-ads/director", icon: Clapperboard, label: "Director" },
   { to: "/ai-ads/generate", icon: Sparkles, label: "Generate" },
   { to: "/ai-ads/creatives", icon: Images, label: "Library" },
   { to: "/ai-ads/progress", icon: History, label: "Jobs" },

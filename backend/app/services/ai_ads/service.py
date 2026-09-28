@@ -23,6 +23,7 @@ from app.core.openai_credentials import (
 )
 from app.db.models import (
     AIAdStrategy,
+    AIAdsWeeklyRun,
     AIRecommendation,
     BrandAvatar,
     CreativeAsset,
@@ -60,6 +61,7 @@ from app.services.ai_ads.media_io import imaging_available
 from app.services.ai_ads.exceptions import PILLOW_INSTALL_HINT, operator_error_message
 from app.notifications.whatsapp import whatsapp_public_payload
 from app.services.ai_ads.publisher import MetaCreativePublisher
+from app.services.ai_ads import weekly_runs
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +175,8 @@ class AIAdsService:
             "last_sync_at": row.last_sync_at.isoformat() if row.last_sync_at else None,
             "last_analyze_at": row.last_analyze_at.isoformat() if row.last_analyze_at else None,
             "last_weekly_run_at": row.last_weekly_run_at.isoformat() if row.last_weekly_run_at else None,
+            "last_weekly_error": row.last_weekly_error,
+            "weekly_schedule": self._weekly_schedule(db, user, store_id, row),
             "whatsapp_weekly_alerts_enabled": bool(
                 getattr(row, "whatsapp_weekly_alerts_enabled", False)
             ),
@@ -220,6 +224,42 @@ class AIAdsService:
             row.auto_publish = bool(body["auto_publish"]) and bool(settings.ai_ad_auto_publish)
         db.commit()
         return self.get_settings(db, user, store_id)
+
+    def _weekly_schedule(
+        self, db: Session, user: User, store_id: str, row: StoreAIAdsSettings
+    ) -> dict | None:
+        try:
+            return weekly_runs.schedule_status(db, user, db.get(Store, store_id), row)
+        except Exception:
+            logger.exception("AI Ads weekly schedule status failed store=%s", store_id)
+            db.rollback()
+            return None
+
+    def list_weekly_runs(self, db: Session, user: User, store_id: str, limit: int = 20) -> dict:
+        store = self.ensure_store(db, user, store_id)
+        row = self.get_or_create_settings(db, store_id)
+        runs = db.scalars(
+            select(AIAdsWeeklyRun)
+            .where(AIAdsWeeklyRun.store_id == store_id)
+            .order_by(desc(AIAdsWeeklyRun.created_at))
+            .limit(max(1, min(limit, 100)))
+        ).all()
+        return {
+            "runs": [weekly_runs.run_card(r) for r in runs],
+            "schedule": weekly_runs.schedule_status(db, user, store, row),
+        }
+
+    def run_weekly_now(self, db: Session, user: User, store_id: str) -> dict:
+        self.ensure_store(db, user, store_id)
+        self.get_or_create_settings(db, store_id)
+        try:
+            run = weekly_runs.create_run(db, store_id, trigger="manual")
+        except weekly_runs.WeeklyRunBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if not run:
+            raise HTTPException(status_code=409, detail="Could not queue the weekly batch. Try again.")
+        weekly_runs.start_run(run.id)
+        return weekly_runs.run_card(run)
 
     def overview(self, db: Session, user: User, store_id: str) -> dict:
         self.ensure_store(db, user, store_id)
@@ -468,6 +508,7 @@ class AIAdsService:
             "brand_style": body.get("brand_style") or settings_row.brand_style,
             "avatar_id": body.get("avatar_id"),
             "copy_language": body.get("copy_language") or "auto",
+            "director_concepts": [d for d in (body.get("director_concepts") or []) if isinstance(d, dict)][:6],
             "portfolio_mix": {
                 "winner_variation": settings_row.winner_pct,
                 "combination": settings_row.combination_pct,

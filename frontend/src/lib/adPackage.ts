@@ -125,6 +125,8 @@ export function pasteBlock(pkg: AIAdsAdPackage) {
   lines.push(`Conversion location: ${pkg.conversion_location}`);
   lines.push(`Conversion event: ${pkg.conversion_event}`);
   lines.push(`Special ad category: ${pkg.special_ad_category} (${pkg.special_ad_category_note})`);
+  if (pkg.ai_generated !== false) lines.push(`AI disclosure: ${pkg.ai_disclosure_note || "AI-generated creative"}`);
+  if (pkg.test_hypothesis) lines.push(`Test: ${pkg.test_hypothesis}${pkg.test_variable ? ` (variable: ${pkg.test_variable})` : ""}`);
   pkg.tracking_notes.forEach((n) => lines.push(`- ${n}`));
 
   section("AUDIENCE");

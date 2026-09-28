@@ -36,7 +36,20 @@ import type {
   AIAdsRecommendation,
   AIAdsSettings,
   AIAdsStrategy,
+  AIAdsWeeklyRun,
+  AIAdsWeeklyRunsResponse,
+  AIAdsWeeklySchedule,
 } from "@/lib/aiAdsTypes";
+import type {
+  DirectorAlternative,
+  DirectorChallenge,
+  DirectorOverview,
+  DirectorReport,
+  DirectorSettings,
+  DirectorSettingsUpdate,
+  DirectorSuggestion,
+  DirectorSuggestionEdit,
+} from "@/lib/directorTypes";
 import { compressProductPhoto } from "@/lib/compressImage";
 
 export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
@@ -59,6 +72,9 @@ export type {
   AIAdsRecommendation,
   AIAdsSettings,
   AIAdsStrategy,
+  AIAdsWeeklyRun,
+  AIAdsWeeklyRunsResponse,
+  AIAdsWeeklySchedule,
 };
 
 const API_BASE = "/api/v1";
@@ -1276,6 +1292,52 @@ export const api = {
       request<AIAdsSettings>(`/ai-ads/stores/${storeId}/settings`, {
         method: "PUT",
         body: JSON.stringify(data),
+      }),
+    listWeeklyRuns: (storeId: string, limit = 10) =>
+      request<AIAdsWeeklyRunsResponse>(`/ai-ads/stores/${storeId}/weekly-runs?limit=${limit}`),
+    runWeeklyNow: (storeId: string) =>
+      request<AIAdsWeeklyRun>(`/ai-ads/stores/${storeId}/weekly-runs/run-now`, { method: "POST" }),
+    getDirector: (storeId: string) =>
+      request<DirectorOverview>(`/ai-ads/stores/${storeId}/director`),
+    runDirector: (storeId: string) =>
+      request<DirectorReport>(`/ai-ads/stores/${storeId}/director/run`, { method: "POST" }),
+    updateDirectorSettings: (storeId: string, data: DirectorSettingsUpdate) =>
+      request<DirectorSettings>(`/ai-ads/stores/${storeId}/director/settings`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    editSuggestion: (storeId: string, suggestionId: string, data: DirectorSuggestionEdit) =>
+      request<DirectorSuggestion>(`/ai-ads/stores/${storeId}/director/suggestions/${suggestionId}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    dismissSuggestion: (storeId: string, suggestionId: string, reason = "") =>
+      request<DirectorSuggestion>(`/ai-ads/stores/${storeId}/director/suggestions/${suggestionId}/dismiss`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      }),
+    saveSuggestion: (storeId: string, suggestionId: string) =>
+      request<DirectorSuggestion>(`/ai-ads/stores/${storeId}/director/suggestions/${suggestionId}/save`, {
+        method: "POST",
+      }),
+    generateSuggestion: (storeId: string, suggestionId: string, overrideCap = false) =>
+      request<{ suggestion: DirectorSuggestion; job: AIAdsJob }>(
+        `/ai-ads/stores/${storeId}/director/suggestions/${suggestionId}/generate`,
+        { method: "POST", body: JSON.stringify({ override_cap: overrideCap }) }
+      ),
+    challengeRequest: (storeId: string, data: Record<string, unknown>) =>
+      request<DirectorChallenge>(`/ai-ads/stores/${storeId}/director/challenge`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    saveDirectorAlternative: (
+      storeId: string,
+      alternative: DirectorAlternative,
+      requestBody: Record<string, unknown>
+    ) =>
+      request<DirectorSuggestion>(`/ai-ads/stores/${storeId}/director/challenge/save-alternative`, {
+        method: "POST",
+        body: JSON.stringify({ alternative, request: requestBody }),
       }),
     saveOpenAIKey: (apiKey: string) =>
       request<{

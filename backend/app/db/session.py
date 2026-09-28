@@ -911,6 +911,35 @@ def _migrate_ai_ads_ad_package_column() -> None:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS ad_package_json TEXT"))
 
 
+def _migrate_ai_ads_director_columns() -> None:
+    """Creative Director: hypotheses on concepts and multi-job weekly batches."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    tables: dict[str, list[tuple[str, str]]] = {
+        "ai_ads_concepts": [
+            ("hypothesis", "TEXT DEFAULT ''"),
+            ("test_variable", "VARCHAR(64) DEFAULT ''"),
+            ("director_suggestion_id", "VARCHAR(36)"),
+        ],
+        "ai_ads_weekly_runs": [
+            ("job_ids_json", "TEXT DEFAULT '[]'"),
+            ("director_report_id", "VARCHAR(36)"),
+        ],
+    }
+    for table, additions in tables.items():
+        if table not in insp.get_table_names():
+            continue
+        cols = {c["name"] for c in insp.get_columns(table)}
+        with engine.begin() as conn:
+            for name, col_type in additions:
+                if name in cols:
+                    continue
+                if dialect == "sqlite":
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+                elif dialect == "postgresql":
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {col_type}"))
+
+
 def _migrate_ai_ads_owner_columns() -> None:
     """Tie generated creatives (including video specs) to the account that created them."""
     insp = inspect(engine)
@@ -1274,4 +1303,5 @@ def init_db() -> None:
     _migrate_ai_ads_catalog_columns()
     _migrate_ai_ads_catalog_photo_bytes()
     _migrate_ai_ads_ad_package_column()
+    _migrate_ai_ads_director_columns()
     _migrate_shared_whatsapp_connection()

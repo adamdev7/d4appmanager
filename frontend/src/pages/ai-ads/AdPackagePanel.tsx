@@ -306,6 +306,28 @@ export function AdPackagePanel({
         </p>
       )}
 
+      {pkg.ai_generated !== false && (
+        <div className="flex items-start gap-2 rounded-xl border border-brand-500/20 bg-brand-500/5 px-4 py-3 text-xs">
+          <Badge variant="brand" className="shrink-0">
+            AI-generated
+          </Badge>
+          <span className="text-content-muted">
+            {pkg.ai_disclosure_note ||
+              "Made with generative AI. Keep Meta's AI info label on and never present an AI person as a real customer."}
+          </span>
+        </div>
+      )}
+
+      {pkg.test_hypothesis && (
+        <p className="rounded-xl border border-border px-4 py-3 text-xs">
+          <span className="font-medium text-content">Test: </span>
+          <span className="text-content-muted">
+            {pkg.test_hypothesis}
+            {pkg.test_variable ? ` · variable: ${pkg.test_variable}` : ""}
+          </span>
+        </p>
+      )}
+
       {pkg.warnings.length > 0 && (
         <ul className="space-y-1 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-800 dark:text-amber-300">
           {pkg.warnings.map((w) => (

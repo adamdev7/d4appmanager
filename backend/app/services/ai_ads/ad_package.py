@@ -50,6 +50,10 @@ SPECIAL_AD_CATEGORY_NOTE = (
     "Jewelry does not fall under Credit, Employment, Housing, Social issues, elections or politics. "
     "Double-check before publishing if the campaign promotes financing or anything outside the product."
 )
+AI_DISCLOSURE_NOTE = (
+    "This creative was made with generative AI. In Ads Manager, keep Meta's \"AI info\" label on when "
+    "people or scenes look real, and never present an AI person as a real customer."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +179,10 @@ class AdPackage(BaseModel):
     placement_notes: str = ""
     special_ad_category: str = "None"
     special_ad_category_note: str = SPECIAL_AD_CATEGORY_NOTE
+    ai_generated: bool = True
+    ai_disclosure_note: str = AI_DISCLOSURE_NOTE
+    test_hypothesis: str = ""
+    test_variable: str = ""
 
     warnings: list[str] = Field(default_factory=list)
     product_facts: dict[str, Any] = Field(default_factory=dict)
@@ -204,6 +212,8 @@ class AdPackageInputs:
     capi_enabled: bool = False
     send_initiate_checkout: bool = False
     created_on: date | None = None
+    hypothesis: str = ""
+    test_variable: str = ""
 
 
 def product_facts(product: ProductContext) -> dict[str, Any]:
@@ -755,6 +765,8 @@ def assemble_package(data: dict[str, Any], inputs: AdPackageInputs, language: Co
         placements=list(placements),
         aspect_ratio=aspect,
         placement_notes=placement_notes,
+        test_hypothesis=inputs.hypothesis,
+        test_variable=inputs.test_variable,
         product_facts=inputs.facts,
     )
     apply_tracking(pkg)
@@ -894,7 +906,17 @@ async def regenerate_field(
 def apply_edits(existing: AdPackage | None, raw: dict[str, Any]) -> AdPackage:
     """Operator edits. Kept even when over the soft limits (flagged), capped at Meta's hard limits."""
     base = existing.model_dump() if existing else {}
-    protected = {"product_facts", "version", "generated_at", "status", "error", "warnings", "tracking_notes"}
+    protected = {
+        "product_facts",
+        "version",
+        "generated_at",
+        "status",
+        "error",
+        "warnings",
+        "tracking_notes",
+        "ai_generated",
+        "ai_disclosure_note",
+    }
     merged = {**base, **{k: v for k, v in raw.items() if k not in protected}}
     previous_name = (existing.ad_name if existing else "") or ""
     previous_content = (existing.utm.utm_content if existing else "") or ""
@@ -994,6 +1016,8 @@ def build_inputs(
         capi_enabled=bool(capi and capi.enabled),
         send_initiate_checkout=bool(capi and capi.send_initiate_checkout),
         created_on=local_date(asset.created_at, getattr(store, "timezone", None)),
+        hypothesis=str(getattr(concept, "hypothesis", "") or "")[:500],
+        test_variable=str(getattr(concept, "test_variable", "") or "")[:64],
     )
 
 

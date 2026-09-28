@@ -86,6 +86,17 @@ Use performance (ROAS, CTR, CPA, spend) as associations, not causation.
 Borrow winning offer-look traits — do NOT clone those ads or catalog photos.
 Do not invent product facts, discounts, or reviews.
 Keep image_prompt specific, product-accurate, photorealistic, and text-free.
+People on screen are AI-generated: never present them as real customers (no "I've worn it for months",
+no reviews or star ratings, no "customers say").
+
+Every concept carries a test:
+- hypothesis: one testable sentence tying this ad to one change ("Gift angle beats quality angle for necklaces under $100").
+- test_variable: exactly one of hook, angle, visual, format, audience, offer, emotion.
+
+When director_concepts are provided, they are the creative director's approved brief. Execute them
+in order: each director concept gets its own image_count IMAGE and video_count VIDEO ads that keep its
+hook, angle, emotion, and ad type direction (you may polish wording, never add claims), and reuse its
+hypothesis and test_variable.
 """
 
 CREATIVE_STRATEGY = f"""{SHARED_RULES}

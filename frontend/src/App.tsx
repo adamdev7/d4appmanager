@@ -23,6 +23,7 @@ import { MetaCapiPage } from "@/pages/modules/MetaCapiPage";
 import { AIAdsLayout } from "@/pages/ai-ads/AIAdsLayout";
 import { AIAdsDashboardPage } from "@/pages/ai-ads/AIAdsDashboardPage";
 import { CreativesPage } from "@/pages/ai-ads/CreativesPage";
+import { DirectorPage } from "@/pages/ai-ads/DirectorPage";
 import { GeneratePage } from "@/pages/ai-ads/GeneratePage";
 import { GenerationProgressPage } from "@/pages/ai-ads/GenerationProgressPage";
 import { StrategyPage } from "@/pages/ai-ads/StrategyPage";
@@ -69,6 +70,7 @@ export default function App() {
                 <Route path="/modules/ai-ads" element={<Navigate to="/ai-ads" replace />} />
                 <Route path="/ai-ads" element={<AIAdsLayout />}>
                   <Route index element={<AIAdsDashboardPage />} />
+                  <Route path="director" element={<DirectorPage />} />
                   <Route path="creatives" element={<CreativesPage />} />
                   <Route path="generate" element={<GeneratePage />} />
                   <Route path="progress" element={<GenerationProgressPage />} />

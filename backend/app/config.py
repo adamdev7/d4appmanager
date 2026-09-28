@@ -123,7 +123,12 @@ class Settings(BaseSettings):
     ai_creative_model: str = "gpt-6-astra"
     ai_image_model: str = ""
     ai_video_model: str = ""
-    ai_ad_generation_enabled: bool = False
+    # Server-wide kill switch for weekly batches; each store still opts in from AI Ads → Settings.
+    ai_ad_weekly_scheduler_enabled: bool = True
+    ai_ad_weekly_hour: int = 6
+    # Used when a store has no Shopify timezone yet (stores default to "UTC" until synced).
+    ai_ad_weekly_default_timezone: str = "America/Toronto"
+    # Default weekday for new stores only; the per-store generation_day decides when runs happen.
     ai_ad_generation_day: str = "monday"
     ai_ad_image_count: int = 2
     ai_ad_video_count: int = 1
@@ -133,6 +138,12 @@ class Settings(BaseSettings):
     ai_ad_exploration_pct: float = 0.2
     ai_ad_experimental_pct: float = 0.1
     ai_ad_poll_seconds: int = 60
+    # Creative Director. Costs are estimates (USD) shown next to suggestions and used for the weekly cap.
+    ai_director_enabled: bool = True
+    ai_ad_cost_image_usd: float = 0.25
+    ai_ad_cost_video_usd: float = 1.00
+    ai_ad_cost_plan_usd: float = 0.05
+    ai_ad_cost_director_run_usd: float = 0.20
 
     # Autopilot scheduler tick (seconds between checks for due user automations)
     automation_poll_seconds: int = 60

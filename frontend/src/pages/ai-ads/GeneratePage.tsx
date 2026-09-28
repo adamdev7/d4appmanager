@@ -21,6 +21,8 @@ import { Select } from "@/components/ui/Select";
 import { PageLoader } from "@/components/ui/Loading";
 import { GenerationStudio } from "@/pages/ai-ads/GenerationStudio";
 import { JobHistoryList, isLiveJob } from "@/pages/ai-ads/JobHistory";
+import { DirectorChallengePanel } from "@/pages/ai-ads/DirectorChallengePanel";
+import type { DirectorChallenge } from "@/lib/directorTypes";
 import { cn } from "@/lib/cn";
 
 const STYLES = [
@@ -75,6 +77,7 @@ export function GeneratePage() {
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [challenge, setChallenge] = useState<DirectorChallenge | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -163,24 +166,40 @@ export function GeneratePage() {
     }
   }
 
-  async function submit() {
+  function requestBody() {
+    return {
+      product_id: productId,
+      image_count: imageCount,
+      video_count: videoCount,
+      styles,
+      audience,
+      objective,
+      placement,
+      aspect_ratio: aspect,
+      brand_style: brandStyle,
+      avatar_id: avatarId || undefined,
+      copy_language: copyLanguage,
+    };
+  }
+
+  async function submit(skipChallenge = false) {
     if (!storeId || !productId) return;
     setSubmitting(true);
     setError("");
+    setChallenge(null);
     try {
-      const created = await api.aiAds.createGenerationJob(storeId, {
-        product_id: productId,
-        image_count: imageCount,
-        video_count: videoCount,
-        styles,
-        audience,
-        objective,
-        placement,
-        aspect_ratio: aspect,
-        brand_style: brandStyle,
-        avatar_id: avatarId || undefined,
-        copy_language: copyLanguage,
-      });
+      if (!skipChallenge) {
+        try {
+          const review = await api.aiAds.challengeRequest(storeId, requestBody());
+          if (review.verdict === "reconsider" && (review.notes.length > 0 || review.alternative)) {
+            setChallenge(review);
+            return;
+          }
+        } catch {
+          // The second opinion is advisory; never block a generation on it.
+        }
+      }
+      const created = await api.aiAds.createGenerationJob(storeId, requestBody());
       setLiveJob(created);
       navigate(`/ai-ads/progress/${created.job_id || created.id}`);
     } catch (e) {
@@ -618,11 +637,25 @@ export function GeneratePage() {
               size="lg"
               onClick={() => void submit()}
               isLoading={submitting}
-              disabled={blocked}
+              disabled={blocked || Boolean(challenge)}
             >
               <Sparkles className="h-4 w-4" />
               Generate {mixLabel.toLowerCase()}
             </Button>
+            {submitting && !liveJob && (
+              <p className="mt-2 text-xs text-content-subtle">The Creative Director is giving a quick second opinion…</p>
+            )}
+
+            {challenge && (
+              <DirectorChallengePanel
+                storeId={storeId}
+                challenge={challenge}
+                requestBody={requestBody()}
+                onGenerateAsked={() => void submit(true)}
+                onJobStarted={(jobId) => navigate(`/ai-ads/progress/${jobId}`)}
+                onClose={() => setChallenge(null)}
+              />
+            )}
 
             <p className="mt-3 text-xs text-content-subtle">
               {liveJob

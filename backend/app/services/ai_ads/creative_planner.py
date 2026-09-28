@@ -175,8 +175,10 @@ class CreativePlanner:
         avatar: BrandAvatar | None = None,
         job_id: str | None = None,
         user_id: str | None = None,
+        director_concepts: list[dict[str, Any]] | None = None,
     ) -> tuple[AIAdStrategy, list[tuple[CreativeConcept, Any]]]:
         """One model call: strategy + complete image and video ads."""
+        director_concepts = [d for d in (director_concepts or []) if isinstance(d, dict)][:6]
         total = image_count + video_count
         if total <= 0:
             strategy_row = AIAdStrategy(
@@ -209,6 +211,7 @@ class CreativePlanner:
             "objective": objective,
             "brand_style": brand_style or None,
             "avatar": None,
+            "director_concepts": director_concepts or None,
         }
         if avatar and avatar.active:
             payload["avatar"] = {
@@ -236,8 +239,15 @@ class CreativePlanner:
             "Videos never have voiceover. "
             "Copy is not enough — each IMAGE needs a unique full-frame NEW scene featuring the locked product. "
             "Do not brief a retouch, crop, or color-grade of the catalog photo.\n"
-            "Assign IMAGE portfolio_bucket from image_portfolio_buckets in order, VIDEO from video_portfolio_buckets.\n\n"
-            f"{json.dumps(payload, default=str)[:12000]}"
+            "Assign IMAGE portfolio_bucket from image_portfolio_buckets in order, VIDEO from video_portfolio_buckets.\n"
+            + (
+                "director_concepts is the creative director's brief: return IMAGE ads in director-concept order "
+                "(each concept's image_count), then VIDEO ads the same way, keeping each hook, angle, and hypothesis.\n"
+                if director_concepts
+                else ""
+            )
+            + "Every concept includes hypothesis and test_variable.\n\n"
+            f"{json.dumps(payload, default=str)[:14000]}"
         )
         try:
             plan = await self.client.complete_json(
@@ -287,6 +297,23 @@ class CreativePlanner:
         images = diversify_concepts(images, product, media_type="IMAGE", styles=styles)
         videos = diversify_concepts(videos, product, media_type="VIDEO", styles=styles)
 
+        image_owners = [d for d in director_concepts for _ in range(max(0, int(d.get("image_count") or 0)))]
+        video_owners = [d for d in director_concepts for _ in range(max(0, int(d.get("video_count") or 0)))]
+        owners = [
+            image_owners[i] if i < len(image_owners) else None for i in range(len(images))
+        ] + [video_owners[i] if i < len(video_owners) else None for i in range(len(videos))]
+        if director_concepts:
+            from app.services.ai_ads.ad_types import get_ad_type
+
+            for concept, owner in zip(images + videos, owners):
+                if not owner:
+                    continue
+                concept.style = get_ad_type(owner.get("ad_type")).style
+                if concept.rationale.startswith("Fallback"):
+                    concept.hook = str(owner.get("hook") or concept.hook)
+                    concept.angle = str(owner.get("angle") or concept.angle)
+                    concept.concept_name = str(owner.get("concept_name") or concept.concept_name)
+
         strategy_row = AIAdStrategy(
             store_id=self.store_id,
             product_id=product.product_id,
@@ -308,7 +335,8 @@ class CreativePlanner:
         db.refresh(strategy_row)
 
         paired: list[tuple[CreativeConcept, Any]] = []
-        for concept in images + videos:
+        for concept, owner in zip(images + videos, owners):
+            owner = owner or {}
             row = CreativeConcept(
                 store_id=self.store_id,
                 user_id=user_id,
@@ -329,6 +357,9 @@ class CreativePlanner:
                 source_creative_ids_json=json.dumps(concept.source_creative_ids or []),
                 expected_strength=concept.expected_strength,
                 portfolio_bucket=concept.portfolio_bucket,
+                hypothesis=str(owner.get("hypothesis") or concept.hypothesis or "")[:2000],
+                test_variable=str(owner.get("test_variable") or concept.test_variable or "")[:64],
+                director_suggestion_id=owner.get("suggestion_id"),
                 status="DRAFT",
             )
             db.add(row)

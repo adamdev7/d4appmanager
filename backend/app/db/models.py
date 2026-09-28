@@ -909,6 +909,41 @@ class CreativeGenerationJob(Base):
     )
 
 
+class AIAdsWeeklyRun(Base):
+    """One weekly-automation batch (scheduled, catch-up, or Run now) with per-step outcomes."""
+
+    __tablename__ = "ai_ads_weekly_runs"
+    # schedule_key is the ISO week for scheduled/catch-up runs and NULL for Run now, so the
+    # database itself refuses a second scheduled batch in the same week.
+    __table_args__ = (UniqueConstraint("store_id", "schedule_key", name="uq_ai_ads_weekly_run_week"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    trigger: Mapped[str] = mapped_column(String(16), default="schedule")
+    week_key: Mapped[str] = mapped_column(String(16), default="")
+    schedule_key: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="QUEUED", index=True)
+    steps_json: Mapped[str] = mapped_column(Text, default="[]")
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    # Every job of the batch (a Director brief can span several products); job_id is the first.
+    job_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    director_report_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    product_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    product_title: Mapped[str] = mapped_column(String(512), default="")
+    images_requested: Mapped[int] = mapped_column(Integer, default=0)
+    videos_requested: Mapped[int] = mapped_column(Integer, default=0)
+    images_generated: Mapped[int] = mapped_column(Integer, default=0)
+    videos_generated: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class CreativeConcept(Base):
     __tablename__ = "ai_ads_concepts"
 
@@ -937,7 +972,135 @@ class CreativeConcept(Base):
     source_recommendation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     expected_strength: Mapped[str] = mapped_column(String(32), default="")
     portfolio_bucket: Mapped[str] = mapped_column(String(32), default="")
+    hypothesis: Mapped[str] = mapped_column(Text, default="")
+    test_variable: Mapped[str] = mapped_column(String(64), default="")
+    director_suggestion_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="DRAFT")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AIDirectorSettings(Base):
+    """Creative Director preferences per store. The Director suggests; the owner decides."""
+
+    __tablename__ = "ai_ads_director_settings"
+    __table_args__ = (UniqueConstraint("store_id", name="uq_ai_ads_director_settings_store"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # When on, the weekly batch executes the Director's brief instead of fixed counts.
+    drive_weekly: Mapped[bool] = mapped_column(Boolean, default=True)
+    challenge_requests: Mapped[bool] = mapped_column(Boolean, default=True)
+    aggressiveness: Mapped[str] = mapped_column(String(16), default="balanced")
+    weekly_credit_cap_usd: Mapped[float] = mapped_column(Float, default=15.0)
+    priority_product_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    excluded_product_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    # Offers the owner confirmed exist: [{"id", "label", "details"}]. Only these may appear in ads.
+    offers_json: Mapped[str] = mapped_column(Text, default="[]")
+    never_do_json: Mapped[str] = mapped_column(Text, default="[]")
+    margin_floor_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    low_stock_threshold: Mapped[int] = mapped_column(Integer, default=3)
+    copy_language: Mapped[str] = mapped_column(String(8), default="auto")
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AIDirectorReport(Base):
+    """One Director pass: context digest, weekly brief, alerts, and audience/offer ideas."""
+
+    __tablename__ = "ai_ads_director_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    trigger: Mapped[str] = mapped_column(String(16), default="manual")
+    week_key: Mapped[str] = mapped_column(String(16), default="")
+    status: Mapped[str] = mapped_column(String(16), default="QUEUED", index=True)
+    progress: Mapped[str] = mapped_column(String(255), default="")
+    brief_json: Mapped[str] = mapped_column(Text, default="{}")
+    alerts_json: Mapped[str] = mapped_column(Text, default="[]")
+    audience_ideas_json: Mapped[str] = mapped_column(Text, default="[]")
+    offer_ideas_json: Mapped[str] = mapped_column(Text, default="[]")
+    context_json: Mapped[str] = mapped_column(Text, default="{}")
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    model_used: Mapped[str] = mapped_column(String(64), default="")
+    weekly_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AIDirectorSuggestion(Base):
+    """An idea-board concept. Status tracks the owner's decision so the Director learns from it."""
+
+    __tablename__ = "ai_ads_director_suggestions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    report_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="new")
+    status: Mapped[str] = mapped_column(String(16), default="NEW", index=True)
+    in_brief: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_experiment: Mapped[bool] = mapped_column(Boolean, default=False)
+    concept_name: Mapped[str] = mapped_column(String(255), default="")
+    ad_type: Mapped[str] = mapped_column(String(32), default="LIFESTYLE")
+    product_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    product_title: Mapped[str] = mapped_column(String(512), default="")
+    image_count: Mapped[int] = mapped_column(Integer, default=1)
+    video_count: Mapped[int] = mapped_column(Integer, default=0)
+    hook: Mapped[str] = mapped_column(Text, default="")
+    hook_type: Mapped[str] = mapped_column(String(32), default="")
+    angle: Mapped[str] = mapped_column(Text, default="")
+    emotion: Mapped[str] = mapped_column(String(64), default="")
+    funnel: Mapped[str] = mapped_column(String(16), default="prospecting")
+    audience: Mapped[str] = mapped_column(Text, default="")
+    occasion: Mapped[str] = mapped_column(String(64), default="")
+    why: Mapped[str] = mapped_column(Text, default="")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    hypothesis: Mapped[str] = mapped_column(Text, default="")
+    test_variable: Mapped[str] = mapped_column(String(64), default="")
+    test_design: Mapped[str] = mapped_column(Text, default="")
+    test_budget: Mapped[str] = mapped_column(String(64), default="")
+    ad_name: Mapped[str] = mapped_column(String(255), default="")
+    script_json: Mapped[str] = mapped_column(Text, default="{}")
+    scores_json: Mapped[str] = mapped_column(Text, default="{}")
+    flags_json: Mapped[str] = mapped_column(Text, default="[]")
+    estimated_cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    source_creative_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    dismiss_reason: Mapped[str] = mapped_column(Text, default="")
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    outcome_json: Mapped[str] = mapped_column(Text, default="{}")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AIAdsPlaybookEntry(Base):
+    """Learning-loop memory: open hypotheses, confirmed learnings, and owner preferences."""
+
+    __tablename__ = "ai_ads_playbook"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    store_id: Mapped[str] = mapped_column(String(36), ForeignKey("stores.id", ondelete="CASCADE"), index=True)
+    # hypothesis | learning | preference
+    kind: Mapped[str] = mapped_column(String(16), default="hypothesis", index=True)
+    statement: Mapped[str] = mapped_column(Text, default="")
+    # open | supported | refuted | inconclusive (hypotheses); active (learnings, preferences)
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    source: Mapped[str] = mapped_column(String(32), default="director")
+    suggestion_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    evidence_json: Mapped[str] = mapped_column(Text, default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

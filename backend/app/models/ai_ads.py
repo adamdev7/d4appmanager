@@ -92,3 +92,50 @@ class AIAdsAdPackageRegenerateRequest(BaseModel):
 
 class AIAdsAdPackageUpdate(BaseModel):
     package: dict[str, Any]
+
+
+class DirectorOffer(BaseModel):
+    id: str | None = None
+    label: str = ""
+    details: str = ""
+
+
+class DirectorSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    drive_weekly: bool | None = None
+    challenge_requests: bool | None = None
+    aggressiveness: Literal["safe", "balanced", "bold"] | None = None
+    weekly_credit_cap_usd: float | None = Field(default=None, ge=0, le=10000)
+    priority_product_ids: list[str] | None = None
+    excluded_product_ids: list[str] | None = None
+    offers: list[DirectorOffer] | None = None
+    never_do: list[str] | None = None
+    margin_floor_pct: float | None = Field(default=None, ge=0, le=95)
+    low_stock_threshold: int | None = Field(default=None, ge=0, le=1000)
+    copy_language: Literal["auto", "en", "fr"] | None = None
+
+
+class DirectorSuggestionEdit(BaseModel):
+    concept_name: str | None = None
+    ad_type: str | None = None
+    product_id: str | None = None
+    hook: str | None = None
+    angle: str | None = None
+    audience: str | None = None
+    hypothesis: str | None = None
+    test_design: str | None = None
+    image_count: int | None = Field(default=None, ge=0, le=4)
+    video_count: int | None = Field(default=None, ge=0, le=2)
+
+
+class DirectorDismissRequest(BaseModel):
+    reason: str = ""
+
+
+class DirectorGenerateRequest(BaseModel):
+    override_cap: bool = False
+
+
+class DirectorSaveAlternativeRequest(BaseModel):
+    alternative: dict[str, Any]
+    request: dict[str, Any] = Field(default_factory=dict)

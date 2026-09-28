@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/Switch";
 import { PageLoader } from "@/components/ui/Loading";
 import { OpenAIModuleKeyCard } from "@/components/settings/OpenAIModuleKeyCard";
 import { cn } from "@/lib/cn";
+import { WeeklyRunsPanel } from "@/pages/ai-ads/WeeklyRunsPanel";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
@@ -24,6 +25,7 @@ export function AIAdsSettingsPage() {
   const [error, setError] = useState("");
   const [avatarName, setAvatarName] = useState("");
   const [avatarDesc, setAvatarDesc] = useState("");
+  const [runsRefreshKey, setRunsRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!storeId) {
@@ -37,15 +39,18 @@ export function AIAdsSettingsPage() {
       .finally(() => setLoading(false));
   }, [storeId]);
 
-  async function save() {
-    if (!storeId || !settings) return;
+  async function save(): Promise<boolean> {
+    if (!storeId || !settings) return false;
     setSaving(true);
     setError("");
     try {
       setSettings(await api.aiAds.updateSettings(storeId, settings));
       setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      setRunsRefreshKey((k) => k + 1);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
+      return false;
     } finally {
       setSaving(false);
     }
@@ -222,8 +227,8 @@ export function AIAdsSettingsPage() {
             onChange={(e) => setSettings({ ...settings, meta_page_id: e.target.value || null })}
           />
           <p className="rounded-lg bg-surface-muted/60 px-3 py-2.5 text-xs text-content-subtle">
-            Weekly runs also need <code>AI_AD_GENERATION_ENABLED=true</code> on the server.
-            Auto-publish is{" "}
+            Runs at about 6:00 AM store time on the chosen day, once per week. If the server was
+            down, the missed run starts as soon as it is back. Auto-publish is{" "}
             {settings.env_auto_publish ? "allowed by server config" : "disabled globally"}, and
             human approval is required either way.
           </p>
@@ -234,6 +239,9 @@ export function AIAdsSettingsPage() {
             {savedAt && !saving && (
               <span className="text-xs text-content-subtle">Saved at {savedAt}</span>
             )}
+          </div>
+          <div className="border-t border-border pt-5">
+            <WeeklyRunsPanel storeId={storeId} refreshKey={runsRefreshKey} beforeRun={save} />
           </div>
         </div>
       </Card>

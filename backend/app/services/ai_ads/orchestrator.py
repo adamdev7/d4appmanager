@@ -276,6 +276,7 @@ class AdsAIOrchestrator:
             brand_style = str(request.get("brand_style") or "")
             avatar_id = request.get("avatar_id")
             mix = request.get("portfolio_mix")
+            director_concepts = request.get("director_concepts") or None
 
             job.total_items = image_count + video_count
             self._progress(
@@ -420,6 +421,7 @@ class AdsAIOrchestrator:
                 avatar=avatar,
                 job_id=job.id,
                 user_id=self.user.id,
+                director_concepts=director_concepts,
             )
             job.strategy_id = strategy.id
             self._progress(
@@ -629,16 +631,25 @@ class AdsAIOrchestrator:
             )
         finally:
             if (job.status or "").upper() in {"COMPLETED", "PARTIAL", "FAILED"}:
+                whatsapp: tuple[str, str] | None = None
                 try:
                     from app.notifications.whatsapp import notify_weekly_ads_generation
 
-                    await notify_weekly_ads_generation(self.db, self.user, self.store, job)
+                    whatsapp = await notify_weekly_ads_generation(self.db, self.user, self.store, job)
                 except Exception:
                     logger.exception(
                         "WhatsApp weekly ads recap failed store=%s job=%s",
                         self.store.id,
                         job.id,
                     )
+                    whatsapp = ("failed", "WhatsApp recap crashed; the ads were kept.")
+                try:
+                    from app.services.ai_ads.weekly_runs import finalize_run_for_job
+
+                    finalize_run_for_job(self.db, job, whatsapp=whatsapp)
+                except Exception:
+                    logger.exception("ai_ads weekly run finalize failed job=%s", job.id)
+                    self.db.rollback()
 
     async def _render_one_creative(
         self,

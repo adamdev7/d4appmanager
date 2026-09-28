@@ -219,6 +219,8 @@ class CreativeConceptModel(BaseModel):
     source_creative_ids: list[str] = Field(default_factory=list)
     expected_strength: str = ""
     portfolio_bucket: str = ""
+    hypothesis: str = ""
+    test_variable: str = ""
 
 
 class ConceptBatch(BaseModel):

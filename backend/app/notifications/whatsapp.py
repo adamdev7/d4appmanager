@@ -805,9 +805,12 @@ def _product_title(db: Session, store_id: str, product_id: str | None) -> str:
     return (row.title if row else "") or ""
 
 
-def _weekly_recap_items(db: Session, job: CreativeGenerationJob) -> tuple[int, int, list[str], int]:
+def _weekly_recap_items(
+    db: Session, job: CreativeGenerationJob, others: list[CreativeGenerationJob] | None = None
+) -> tuple[int, int, list[str], int]:
+    jobs = [job] + [j for j in others or [] if j.id != job.id]
     assets = db.scalars(
-        select(CreativeAsset).where(CreativeAsset.job_id == job.id)
+        select(CreativeAsset).where(CreativeAsset.job_id.in_([j.id for j in jobs]))
     ).all()
     ready = [a for a in assets if (a.status or "").upper() != "FAILED"]
     failed = sum(1 for a in assets if (a.status or "").upper() == "FAILED")
@@ -823,8 +826,9 @@ def _weekly_recap_items(db: Session, job: CreativeGenerationJob) -> tuple[int, i
             if name:
                 label = f"{kind}: {name}"
         items.append(label)
-    if not items and job.completed_items:
-        images = images or max(0, int(job.completed_items) - videos)
+    completed = sum(int(j.completed_items or 0) for j in jobs)
+    if not items and completed:
+        images = images or max(0, completed - videos)
     return images, videos, items, failed
 
 
@@ -833,30 +837,47 @@ async def notify_weekly_ads_generation(
     user: User,
     store: Store,
     job: CreativeGenerationJob,
-) -> None:
-    """Ping the owner when a weekly AI Ads batch finishes. Failures are stored, not raised."""
+) -> tuple[str, str]:
+    """Ping the owner when a weekly AI Ads batch finishes. Failures are returned, not raised.
+
+    Returns (status, detail) where status is "ok", "skipped", or "failed".
+    """
     if not _job_is_weekly(job):
-        return
+        return "skipped", ""
     if (job.status or "").upper() not in {"COMPLETED", "PARTIAL", "FAILED"}:
-        return
+        return "skipped", ""
     try:
         ads = db.scalar(select(StoreAIAdsSettings).where(StoreAIAdsSettings.store_id == store.id))
     except Exception:
         logger.exception("WhatsApp weekly recap skipped: could not load AI Ads settings")
         db.rollback()
-        return
+        return "failed", "Could not load AI Ads settings for the WhatsApp recap."
+    from app.services.ai_ads.weekly_runs import jobs_all_terminal, run_for_job, run_jobs
+
+    # A Director-driven week can have one job per product: recap once, when the last one ends.
+    run = run_for_job(db, job.id)
+    siblings = (run_jobs(db, run) if run else []) or [job]
+    if len(siblings) > 1 and not jobs_all_terminal(siblings):
+        return "skipped", "Waiting for the other jobs of this weekly run."
     if not ads or not getattr(ads, "whatsapp_weekly_alerts_enabled", False):
-        return
-    images, videos, items, failed = _weekly_recap_items(db, job)
+        return "skipped", "WhatsApp alerts are off."
+    images, videos, items, failed = _weekly_recap_items(db, job, siblings)
+    statuses = {(j.status or "").upper() for j in siblings}
+    status = job.status
+    if len(siblings) > 1:
+        status = "FAILED" if statuses == {"FAILED"} else ("COMPLETED" if statuses == {"COMPLETED"} else "PARTIAL")
+    product_title = (run.product_title if run and len(siblings) > 1 else "") or _product_title(
+        db, store.id, job.product_id
+    )
     text = format_weekly_ads_recap(
         store_name=store.name,
-        status=job.status,
-        product_title=_product_title(db, store.id, job.product_id),
+        status=status,
+        product_title=product_title,
         image_count=images,
         video_count=videos,
         items=items,
         failed_count=failed,
-        error=job.error_message,
+        error="; ".join(j.error_message for j in siblings if j.error_message) or None,
     )
     result = await send_user_whatsapp(db, user, text)
     if not result.ok:
@@ -866,3 +887,5 @@ async def notify_weekly_ads_generation(
             job.id,
             result.error,
         )
+        return "failed", result.error or "WhatsApp did not accept the message."
+    return "ok", "Recap sent on WhatsApp."

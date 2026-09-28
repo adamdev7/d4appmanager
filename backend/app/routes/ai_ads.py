@@ -13,12 +13,19 @@ from app.models.ai_ads import (
     AIAdsPublishRequest,
     AIAdsSettingsUpdate,
     AIAdsStrategyRequest,
+    DirectorDismissRequest,
+    DirectorGenerateRequest,
+    DirectorSaveAlternativeRequest,
+    DirectorSettingsUpdate,
+    DirectorSuggestionEdit,
 )
 from app.models.ai_email_assistant import OpenAIKeyStatusResponse, SetOpenAIKeyBody
+from app.services.ai_ads.director.service import DirectorService
 from app.services.ai_ads.service import AIAdsService
 
 router = APIRouter()
 _service = AIAdsService()
+_director = DirectorService()
 
 
 @router.get("/stores/{store_id}/overview")
@@ -355,6 +362,116 @@ async def update_settings(
     db: Session = Depends(get_db),
 ):
     return _service.update_settings(db, user, store_id, body.model_dump(exclude_unset=True))
+
+
+@router.get("/stores/{store_id}/weekly-runs")
+async def list_weekly_runs(
+    store_id: str,
+    limit: int = 20,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.list_weekly_runs(db, user, store_id, limit=limit)
+
+
+@router.post("/stores/{store_id}/weekly-runs/run-now")
+async def run_weekly_now(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.run_weekly_now(db, user, store_id)
+
+
+@router.get("/stores/{store_id}/director")
+async def director_overview(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _director.overview(db, user, store_id)
+
+
+@router.post("/stores/{store_id}/director/run")
+async def director_run(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _director.run_now(db, user, store_id)
+
+
+@router.put("/stores/{store_id}/director/settings")
+async def director_settings(
+    store_id: str,
+    body: DirectorSettingsUpdate,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _director.update_settings(db, user, store_id, body.model_dump(exclude_unset=True))
+
+
+@router.patch("/stores/{store_id}/director/suggestions/{suggestion_id}")
+async def director_edit_suggestion(
+    store_id: str,
+    suggestion_id: str,
+    body: DirectorSuggestionEdit,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _director.edit_suggestion(db, user, store_id, suggestion_id, body.model_dump(exclude_unset=True))
+
+
+@router.post("/stores/{store_id}/director/suggestions/{suggestion_id}/dismiss")
+async def director_dismiss(
+    store_id: str,
+    suggestion_id: str,
+    body: DirectorDismissRequest,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _director.dismiss(db, user, store_id, suggestion_id, body.reason)
+
+
+@router.post("/stores/{store_id}/director/suggestions/{suggestion_id}/save")
+async def director_save(
+    store_id: str,
+    suggestion_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _director.save_for_later(db, user, store_id, suggestion_id)
+
+
+@router.post("/stores/{store_id}/director/suggestions/{suggestion_id}/generate")
+async def director_generate(
+    store_id: str,
+    suggestion_id: str,
+    body: DirectorGenerateRequest,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _director.generate(db, user, store_id, suggestion_id, override_cap=body.override_cap)
+
+
+@router.post("/stores/{store_id}/director/challenge")
+async def director_challenge(
+    store_id: str,
+    body: AIAdsGenerationJobRequest,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return await _director.challenge(db, user, store_id, body.model_dump())
+
+
+@router.post("/stores/{store_id}/director/challenge/save-alternative")
+async def director_save_alternative(
+    store_id: str,
+    body: DirectorSaveAlternativeRequest,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _director.save_alternative(db, user, store_id, body.model_dump())
 
 
 @router.get("/openai-key", response_model=OpenAIKeyStatusResponse)

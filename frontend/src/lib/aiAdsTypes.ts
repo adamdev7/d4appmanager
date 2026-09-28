@@ -186,6 +186,10 @@ export type AIAdsAdPackage = {
   placement_notes: string;
   special_ad_category: string;
   special_ad_category_note: string;
+  ai_generated?: boolean;
+  ai_disclosure_note?: string;
+  test_hypothesis?: string;
+  test_variable?: string;
   warnings: string[];
 };
 
@@ -280,6 +284,62 @@ export type AIAdsSettings = {
   video_model?: string;
   whatsapp_weekly_alerts_enabled?: boolean;
   whatsapp_configured?: boolean;
+  last_weekly_run_at?: string | null;
+  last_weekly_error?: string | null;
+  weekly_schedule?: AIAdsWeeklySchedule | null;
+};
+
+export type AIAdsWeeklyRunStatus = "QUEUED" | "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED";
+
+export type AIAdsWeeklyStep = {
+  key: "preflight" | "meta_sync" | "products" | "director" | "stills" | "videos" | "whatsapp";
+  label: string;
+  status: "pending" | "running" | "ok" | "warning" | "failed" | "skipped";
+  detail: string;
+  at: string | null;
+};
+
+export type AIAdsWeeklyRun = {
+  id: string;
+  trigger: "schedule" | "catch_up" | "manual";
+  week_key: string;
+  status: AIAdsWeeklyRunStatus;
+  steps: AIAdsWeeklyStep[];
+  job_id: string | null;
+  job_ids?: string[];
+  director_report_id?: string | null;
+  product_id: string | null;
+  product_title: string;
+  images_requested: number;
+  videos_requested: number;
+  images_generated: number;
+  videos_generated: number;
+  error_message: string | null;
+  scheduled_for: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string | null;
+};
+
+export type AIAdsWeeklySchedule = {
+  enabled: boolean;
+  scheduler_enabled: boolean;
+  scheduler_alive: boolean;
+  scheduler_last_tick_at: string | null;
+  timezone: string;
+  hour: number;
+  generation_day: string;
+  next_run_at: string | null;
+  catching_up: boolean;
+  last_run_at: string | null;
+  last_run_status: AIAdsWeeklyRunStatus | null;
+  last_error: string | null;
+  problems: { level: "error" | "warning"; message: string }[];
+};
+
+export type AIAdsWeeklyRunsResponse = {
+  runs: AIAdsWeeklyRun[];
+  schedule: AIAdsWeeklySchedule;
 };
 
 export type AIAdsAdset = {
