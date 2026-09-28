@@ -894,6 +894,23 @@ def _migrate_ai_ads_catalog_photo_bytes() -> None:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS image_bytes BYTEA"))
 
 
+def _migrate_ai_ads_ad_package_column() -> None:
+    """Meta Ads Manager copy package stored with each generated creative."""
+    insp = inspect(engine)
+    table = "ai_ads_creative_assets"
+    if table not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns(table)}
+    if "ad_package_json" in cols:
+        return
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN ad_package_json TEXT"))
+        elif dialect == "postgresql":
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS ad_package_json TEXT"))
+
+
 def _migrate_ai_ads_owner_columns() -> None:
     """Tie generated creatives (including video specs) to the account that created them."""
     insp = inspect(engine)
@@ -1256,4 +1273,5 @@ def init_db() -> None:
     _migrate_ai_ads_owner_columns()
     _migrate_ai_ads_catalog_columns()
     _migrate_ai_ads_catalog_photo_bytes()
+    _migrate_ai_ads_ad_package_column()
     _migrate_shared_whatsapp_connection()

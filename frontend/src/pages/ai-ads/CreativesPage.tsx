@@ -26,6 +26,8 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Select";
 import { PageLoader } from "@/components/ui/Loading";
+import { cn } from "@/lib/cn";
+import { packageHint } from "@/lib/adPackage";
 import {
   CreativeFrame,
   CreativeViewer,
@@ -34,7 +36,6 @@ import {
   previewFromMeta,
   type AdPreviewModel,
 } from "@/pages/ai-ads/CreativeViewer";
-import { cn } from "@/lib/cn";
 
 type SourceFilter = "generated" | "meta";
 
@@ -52,6 +53,7 @@ export function CreativesPage() {
   const [busyId, setBusyId] = useState("");
   const [bulk, setBulk] = useState(false);
   const [viewer, setViewer] = useState<AdPreviewModel | null>(null);
+  const [viewerCreativeId, setViewerCreativeId] = useState<string | null>(null);
   const [publishFor, setPublishFor] = useState<AIAdsGeneratedCreative | null>(null);
   const [adsets, setAdsets] = useState<AIAdsAdset[]>([]);
   const [adsetId, setAdsetId] = useState("");
@@ -103,6 +105,7 @@ export function CreativesPage() {
       if (kind === "delete") {
         await api.aiAds.deleteCreative(storeId, id);
         setViewer(null);
+        setViewerCreativeId(null);
       }
       await load();
     } catch (e) {
@@ -299,7 +302,10 @@ export function CreativesPage() {
                 key={c.id}
                 creative={c}
                 busy={busyId === c.id}
-                onOpen={() => setViewer(previewFromGenerated(c))}
+                onOpen={() => {
+                  setViewer(previewFromGenerated(c));
+                  setViewerCreativeId(c.id);
+                }}
                 onApprove={() => void act(c.id, "approve")}
                 onReject={() => void act(c.id, "reject")}
                 onRegen={() => void act(c.id, "regenerate")}
@@ -323,12 +329,35 @@ export function CreativesPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           {meta.map((c) => (
-            <MetaCard key={c.id} creative={c} onOpen={() => setViewer(previewFromMeta(c))} />
+            <MetaCard key={c.id} creative={c} onOpen={() => {
+              setViewerCreativeId(null);
+              setViewer(previewFromMeta(c));
+            }} />
           ))}
         </div>
       )}
 
-      {viewer && <CreativeViewer ad={viewer} onClose={() => setViewer(null)} />}
+      {viewer && (
+        <CreativeViewer
+          ad={viewer}
+          onClose={() => {
+            setViewer(null);
+            setViewerCreativeId(null);
+          }}
+          creative={
+            viewerCreativeId ? generated.find((c) => c.id === viewerCreativeId) ?? null : null
+          }
+          storeId={storeId}
+          onCreativeChange={(next) => {
+            setLib((prev) =>
+              prev
+                ? { ...prev, generated: prev.generated.map((c) => (c.id === next.id ? next : c)) }
+                : prev
+            );
+            setViewer(previewFromGenerated(next));
+          }}
+        />
+      )}
 
       {publishFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -497,6 +526,7 @@ function GeneratedCard({
       <p className="text-xs text-content-subtle">
         {creative.video_url ? "MP4 ready" : creative.preview_url ? "Image ready" : "No file"}
         {creative.ai_score != null ? ` · AI score ${creative.ai_score}/100` : ""}
+        {packageHint(creative.ad_package) ? ` · ${packageHint(creative.ad_package)}` : ""}
       </p>
       {creative.failure_reason && (
         <p className="text-sm text-amber-600 dark:text-amber-400">{creative.failure_reason}</p>

@@ -6,6 +6,8 @@ from app.core.upload_limits import MAX_UPLOAD_PART_BYTES
 from app.db.models import User
 from app.db.session import get_db
 from app.models.ai_ads import (
+    AIAdsAdPackageRegenerateRequest,
+    AIAdsAdPackageUpdate,
     AIAdsAvatarUpsert,
     AIAdsGenerationJobRequest,
     AIAdsPublishRequest,
@@ -264,6 +266,28 @@ async def regenerate_creative(
     db: Session = Depends(get_db),
 ):
     return _service.regenerate(db, user, store_id, creative_id)
+
+
+@router.post("/stores/{store_id}/creatives/{creative_id}/ad-package")
+async def regenerate_ad_package(
+    store_id: str,
+    creative_id: str,
+    body: AIAdsAdPackageRegenerateRequest,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return await _service.regenerate_ad_package(db, user, store_id, creative_id, body.model_dump())
+
+
+@router.put("/stores/{store_id}/creatives/{creative_id}/ad-package")
+async def save_ad_package(
+    store_id: str,
+    creative_id: str,
+    body: AIAdsAdPackageUpdate,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return _service.save_ad_package(db, user, store_id, creative_id, body.package)
 
 
 @router.delete("/stores/{store_id}/creatives/{creative_id}")

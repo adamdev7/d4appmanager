@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, Pause, Play, SkipBack, SkipForward, X } from "lucide-react";
+import { useStore } from "@/context/StoreContext";
 import type { AIAdsGeneratedCreative, AIAdsMetaCreative } from "@/lib/aiAdsTypes";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
+import { AdPackagePanel } from "@/pages/ai-ads/AdPackagePanel";
 
 export type AdPreviewModel = {
   kind: "generated" | "meta";
@@ -278,9 +280,15 @@ function CreativeStage({ ad, compact }: { ad: AdPreviewModel; compact: boolean }
 export function CreativeViewer({
   ad,
   onClose,
+  creative,
+  storeId,
+  onCreativeChange,
 }: {
   ad: AdPreviewModel;
   onClose: () => void;
+  creative?: AIAdsGeneratedCreative | null;
+  storeId?: string | null;
+  onCreativeChange?: (next: AIAdsGeneratedCreative) => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -289,6 +297,10 @@ export function CreativeViewer({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const { activeStore, stores } = useStore();
+  const resolvedStoreId = storeId ?? activeStore?.id ?? stores[0]?.id ?? null;
+  const showPackage = Boolean(creative && resolvedStoreId && ad.kind === "generated");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -302,7 +314,10 @@ export function CreativeViewer({
         role="dialog"
         aria-modal="true"
         aria-labelledby="creative-viewer-title"
-        className="relative w-full max-w-3xl max-h-[92vh] overflow-y-auto rounded-xl border border-border bg-surface p-5 shadow-elevated"
+        className={cn(
+          "relative w-full max-h-[92vh] overflow-y-auto rounded-xl border border-border bg-surface p-5 shadow-elevated",
+          showPackage ? "max-w-6xl" : "max-w-3xl"
+        )}
       >
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
@@ -329,41 +344,60 @@ export function CreativeViewer({
 
         <div
           className={cn(
-            "mx-auto w-full",
-            ad.type === "VIDEO" || ad.aspectRatio === "9:16"
-              ? "max-w-sm"
-              : ad.aspectRatio === "16:9"
-                ? "max-w-3xl"
-                : "max-w-md"
+            showPackage && "grid items-start gap-6 lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)]"
           )}
         >
-          <CreativeFrame ad={ad} />
-        </div>
+          <div className={cn(showPackage && "lg:sticky lg:top-0")}>
+            <div
+              className={cn(
+                "mx-auto w-full",
+                ad.type === "VIDEO" || ad.aspectRatio === "9:16"
+                  ? "max-w-sm"
+                  : ad.aspectRatio === "16:9"
+                    ? "max-w-3xl"
+                    : "max-w-md"
+              )}
+            >
+              <CreativeFrame ad={ad} />
+            </div>
 
-        {ad.type === "VIDEO" && !ad.videoUrl && ad.storyboard?.scenes?.length ? (
-          <StoryboardPlayer storyboard={ad.storyboard} previewUrl={ad.previewUrl} />
-        ) : null}
+            {ad.type === "VIDEO" && !ad.videoUrl && ad.storyboard?.scenes?.length ? (
+              <StoryboardPlayer storyboard={ad.storyboard} previewUrl={ad.previewUrl} />
+            ) : null}
 
-        <dl className="mt-4 space-y-2 text-sm">
-          {ad.hook && (
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-content-subtle">Hook</dt>
-              <dd className="text-content">{ad.hook}</dd>
+            <dl className="mt-4 space-y-2 text-sm">
+              {ad.hook && (
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-content-subtle">Hook</dt>
+                  <dd className="text-content">{ad.hook}</dd>
+                </div>
+              )}
+              {ad.visualDirection && (
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-content-subtle">Visual direction</dt>
+                  <dd className="text-content-muted">{ad.visualDirection}</dd>
+                </div>
+              )}
+            </dl>
+
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <DownloadCreativeButton ad={ad} size="md" />
+              <Button variant="secondary" onClick={onClose}>
+                Close
+              </Button>
+            </div>
+          </div>
+
+          {showPackage && creative && resolvedStoreId && (
+            <div className="min-w-0 border-t border-border pt-5 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+              <AdPackagePanel
+                key={creative.id}
+                storeId={resolvedStoreId}
+                creative={creative}
+                onCreativeChange={onCreativeChange}
+              />
             </div>
           )}
-          {ad.visualDirection && (
-            <div>
-              <dt className="text-xs uppercase tracking-wide text-content-subtle">Visual direction</dt>
-              <dd className="text-content-muted">{ad.visualDirection}</dd>
-            </div>
-          )}
-        </dl>
-
-        <div className="mt-5 flex flex-wrap justify-end gap-2">
-          <DownloadCreativeButton ad={ad} size="md" />
-          <Button variant="secondary" onClick={onClose}>
-            Close
-          </Button>
         </div>
       </div>
     </div>

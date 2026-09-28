@@ -125,8 +125,68 @@ export type AIAdsGeneratedCreative = {
       voiceover?: string | null;
     }>;
   } | null;
+  ad_package?: AIAdsAdPackage | null;
   failure_reason?: string | null;
   created_at?: string | null;
+};
+
+export type AIAdsCopyLanguage = "en" | "fr";
+
+export type AIAdsCopyVariant = {
+  angle: string;
+  label: string;
+  text: string;
+};
+
+export type AIAdsAdAudience = {
+  interests: string[];
+  age_min: number;
+  age_max: number;
+  genders: string;
+  notes: string;
+  lookalike_ideas: string[];
+  retargeting_ideas: string[];
+};
+
+export type AIAdsAdPackage = {
+  version: number;
+  status: "READY" | "GENERATING" | "FAILED";
+  error?: string | null;
+  language: AIAdsCopyLanguage;
+  generated_at?: string | null;
+  updated_at?: string | null;
+  edited?: boolean;
+  angle: string;
+  primary_text: string;
+  headline: string;
+  description: string;
+  cta: string;
+  display_link: string;
+  primary_text_variants: AIAdsCopyVariant[];
+  headline_variants: AIAdsCopyVariant[];
+  ad_name: string;
+  base_url?: string | null;
+  destination_url?: string | null;
+  url_parameters: string;
+  utm: {
+    utm_source: string;
+    utm_medium: string;
+    utm_campaign: string;
+    utm_content: string;
+    utm_term: string;
+  };
+  campaign_objective: string;
+  campaign_objective_label: string;
+  conversion_location: string;
+  conversion_event: string;
+  tracking_notes: string[];
+  audience: AIAdsAdAudience;
+  placements: string[];
+  aspect_ratio: string;
+  placement_notes: string;
+  special_ad_category: string;
+  special_ad_category_note: string;
+  warnings: string[];
 };
 
 export type AIAdsJobLogEntry = {

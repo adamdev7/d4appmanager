@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 
@@ -36,6 +37,19 @@ from app.db.models import (
     User,
 )
 from app.integrations.shopify.client import ShopifyClient
+from app.services.ai_ads.ad_package import (
+    AdPackage,
+    apply_edits,
+    build_inputs,
+    generate_for_asset,
+    is_regenerable,
+    load_package,
+    merge_facts,
+    package_card,
+    product_facts,
+    regenerate_field,
+    sync_asset_copy,
+)
 from app.services.ai_ads.complete_creative import clamp_generation_counts, resolve_generation_counts
 from app.services.ai_ads.job_progress import append_job_progress, parse_job_log
 from app.services.ai_ads.job_runner import enqueue_generation_job, is_job_running, request_cancel
@@ -43,7 +57,7 @@ from app.services.ai_ads.orchestrator import AdsAIOrchestrator
 from app.services.ai_ads.asset_store import CreativeAssetStore
 from app.services.ai_ads.product_catalog import ShopifyProductCatalog, enqueue_catalog_sync
 from app.services.ai_ads.media_io import imaging_available
-from app.services.ai_ads.exceptions import PILLOW_INSTALL_HINT
+from app.services.ai_ads.exceptions import PILLOW_INSTALL_HINT, operator_error_message
 from app.notifications.whatsapp import whatsapp_public_payload
 from app.services.ai_ads.publisher import MetaCreativePublisher
 
@@ -453,6 +467,7 @@ class AIAdsService:
             "aspect_ratio": aspect,
             "brand_style": body.get("brand_style") or settings_row.brand_style,
             "avatar_id": body.get("avatar_id"),
+            "copy_language": body.get("copy_language") or "auto",
             "portfolio_mix": {
                 "winner_variation": settings_row.winner_pct,
                 "combination": settings_row.combination_pct,
@@ -724,7 +739,96 @@ class AIAdsService:
             "aspect_ratio": asset.aspect_ratio or settings_row.default_aspect_ratio,
             "brand_style": settings_row.brand_style or "",
         }
+        existing_package = load_package(asset.ad_package_json)
+        if existing_package and existing_package.status == "READY":
+            body["copy_language"] = existing_package.language
         return self.create_generation_job(db, user, store_id, body)
+
+    def _package_context(
+        self, db: Session, store: Store, asset: CreativeAsset, existing: AdPackage | None
+    ) -> tuple[dict[str, Any], CreativeConcept | None, dict[str, Any]]:
+        catalog = ShopifyProductCatalog(db, store, CreativeAssetStore(store.id))
+        ctx = catalog.load_context(asset.product_id) if asset.product_id else None
+        facts = merge_facts(product_facts(ctx) if ctx else {}, existing.product_facts if existing else None)
+        if not facts.get("title"):
+            raise HTTPException(
+                status_code=400,
+                detail="This creative's product is no longer in the catalog. Sync products, then try again.",
+            )
+        concept = db.get(CreativeConcept, asset.concept_id) if asset.concept_id else None
+        request: dict[str, Any] = {}
+        job = db.get(CreativeGenerationJob, asset.job_id) if asset.job_id else None
+        if job and job.request_json:
+            try:
+                request = json.loads(job.request_json) or {}
+            except json.JSONDecodeError:
+                request = {}
+        return facts, concept, request
+
+    async def regenerate_ad_package(
+        self, db: Session, user: User, store_id: str, creative_id: str, body: dict
+    ) -> dict:
+        """Regenerate the full package (same image), or one field/variant when `field` is set."""
+        store = self.ensure_store(db, user, store_id)
+        asset = self._owned_asset(db, user, store_id, creative_id)
+        orch = self._orch(db, user, store)
+        existing = load_package(asset.ad_package_json)
+        facts, concept, request = self._package_context(db, store, asset, existing)
+        field_key = str(body.get("field") or "").strip()
+        model = settings.resolved_ai_creative_model
+        try:
+            if field_key:
+                if not is_regenerable(field_key):
+                    raise HTTPException(status_code=400, detail=f"Cannot regenerate field '{field_key}'")
+                if not existing or not existing.primary_text:
+                    raise HTTPException(status_code=400, detail="Generate the full ad copy first")
+                inputs = build_inputs(db, store, asset, facts, concept=concept, request=request)
+                pkg = await regenerate_field(orch.client, inputs, existing, field_key, model=model)
+                pkg.product_facts = facts
+                asset.ad_package_json = pkg.model_dump_json()
+                sync_asset_copy(asset, pkg)
+            else:
+                language = body.get("language") or (existing.language if existing else None)
+                await generate_for_asset(
+                    orch.client,
+                    db,
+                    store,
+                    asset,
+                    facts,
+                    model=model,
+                    concept=concept,
+                    request=request,
+                    language=language,
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "ai_ads ad package regenerate failed store_id=%s asset=%s field=%s err=%s",
+                store_id,
+                creative_id,
+                field_key or "all",
+                str(exc)[:300],
+            )
+            raise HTTPException(status_code=502, detail=operator_error_message(exc)) from exc
+        db.commit()
+        db.refresh(asset)
+        return _asset_card(asset)
+
+    def save_ad_package(
+        self, db: Session, user: User, store_id: str, creative_id: str, package: dict
+    ) -> dict:
+        asset = self._owned_asset(db, user, store_id, creative_id)
+        existing = load_package(asset.ad_package_json)
+        try:
+            pkg = apply_edits(existing, package)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid ad package: {exc.errors()[:3]}") from exc
+        asset.ad_package_json = pkg.model_dump_json()
+        sync_asset_copy(asset, pkg)
+        db.commit()
+        db.refresh(asset)
+        return _asset_card(asset)
 
     def delete_creative(self, db: Session, user: User, store_id: str, creative_id: str) -> dict:
         asset = self._owned_asset(db, user, store_id, creative_id)
@@ -1014,6 +1118,7 @@ def _asset_card(a: CreativeAsset | None, detail: bool = False) -> dict:
         "width": a.width,
         "height": a.height,
         "storyboard": _storyboard_preview(a),
+        "ad_package": package_card(a.ad_package_json),
         "failure_reason": a.failure_reason,
         "meta_ad_id": a.meta_ad_id,
         "created_at": a.created_at.isoformat() if a.created_at else None,

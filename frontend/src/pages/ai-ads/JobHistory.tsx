@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { cn } from "@/lib/cn";
+import { packageHint } from "@/lib/adPackage";
 import {
   CreativeFrame,
   CreativeViewer,
@@ -160,8 +161,11 @@ export function FinishedJobDetail({
   replaying?: boolean;
 }) {
   const [viewer, setViewer] = useState<AIAdsGeneratedCreative | null>(null);
+  const [overrides, setOverrides] = useState<Record<string, AIAdsGeneratedCreative>>({});
   const [showLog, setShowLog] = useState(false);
-  const creatives = (job.creatives || []) as AIAdsGeneratedCreative[];
+  const creatives = ((job.creatives || []) as AIAdsGeneratedCreative[]).map(
+    (c) => overrides[c.id] || c
+  );
   const log = (job.progress_log || []) as AIAdsJobLogEntry[];
   const status = String(job.status);
   const ready = creatives.filter((c) => c.status === "READY" || c.status === "APPROVED");
@@ -229,6 +233,7 @@ export function FinishedJobDetail({
                       <p className="text-xs text-content-subtle mt-0.5">
                         {c.status}
                         {c.video_url ? " · MP4" : c.preview_url ? " · image" : ""}
+                        {packageHint(c.ad_package) ? ` · ${packageHint(c.ad_package)}` : ""}
                       </p>
                     </div>
                     <DownloadCreativeButton ad={ad} />
@@ -273,7 +278,15 @@ export function FinishedJobDetail({
       )}
 
       {viewer && (
-        <CreativeViewer ad={previewFromGenerated(viewer)} onClose={() => setViewer(null)} />
+        <CreativeViewer
+          ad={previewFromGenerated(viewer)}
+          onClose={() => setViewer(null)}
+          creative={viewer}
+          onCreativeChange={(next) => {
+            setViewer(next);
+            setOverrides((prev) => ({ ...prev, [next.id]: next }));
+          }}
+        />
       )}
     </Card>
   );

@@ -982,6 +982,7 @@ class CreativeAsset(Base):
     ai_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     score_breakdown_json: Mapped[str] = mapped_column(Text, default="{}")
     video_spec_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ad_package_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     meta_published_creative_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     meta_ad_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

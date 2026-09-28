@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { cn } from "@/lib/cn";
+import { packageHint } from "@/lib/adPackage";
 import {
   CreativeFrame,
   CreativeViewer,
@@ -17,7 +18,8 @@ const STAGES = [
   { id: "product", label: "Locking product photos", match: ["product"] },
   { id: "learn", label: "Studying your Meta ads", match: ["sync", "learn"] },
   { id: "plan", label: "Writing the concepts", match: ["plan"] },
-  { id: "render", label: "Rendering the video", match: ["image", "video"] },
+  { id: "render", label: "Rendering the creative", match: ["image", "video"] },
+  { id: "copy", label: "Writing Ads Manager copy", match: ["copy"] },
   { id: "done", label: "Finishing up", match: ["done", "error"] },
 ] as const;
 
@@ -231,6 +233,7 @@ export function GenerationStudio({
                   {c.status}
                   {c.video_url ? " · MP4 ready" : c.type === "VIDEO" ? " · video" : ""}
                   {!c.preview_url && c.status === "GENERATING" ? " · rendering…" : ""}
+                  {packageHint(c.ad_package) ? ` · ${packageHint(c.ad_package)}` : ""}
                 </p>
               </button>
             ))}
@@ -286,7 +289,12 @@ export function GenerationStudio({
         </div>
       )}
       {viewer && (
-        <CreativeViewer ad={previewFromGenerated(viewer)} onClose={() => setViewer(null)} />
+        <CreativeViewer
+          ad={previewFromGenerated(viewer)}
+          onClose={() => setViewer(null)}
+          creative={viewer}
+          onCreativeChange={setViewer}
+        />
       )}
     </Card>
   );

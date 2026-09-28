@@ -21,8 +21,10 @@ import type {
   MetaCapiStats,
 } from "@/lib/metaCapiTypes";
 import type {
+  AIAdsAdPackage,
   AIAdsAdset,
   AIAdsAvatar,
+  AIAdsCopyLanguage,
   AIAdsGeneratedCreative,
   AIAdsJob,
   AIAdsJobLogEntry,
@@ -42,8 +44,10 @@ export type { ManualInvestment, ManualInvestmentsResponse };
 export type { AdsAiReport, AdsDashboard, AdsPeriod, AdsSettings };
 export type { MetaCapiEvent, MetaCapiEventsResponse, MetaCapiSettings, MetaCapiStats };
 export type {
+  AIAdsAdPackage,
   AIAdsAdset,
   AIAdsAvatar,
+  AIAdsCopyLanguage,
   AIAdsGeneratedCreative,
   AIAdsJob,
   AIAdsJobLogEntry,
@@ -1173,6 +1177,7 @@ export const api = {
         aspect_ratio?: string;
         brand_style?: string;
         avatar_id?: string;
+        copy_language?: "auto" | AIAdsCopyLanguage;
       }
     ) =>
       request<AIAdsJob>(`/ai-ads/stores/${storeId}/generation-jobs`, {
@@ -1216,7 +1221,7 @@ export const api = {
       return request<AIAdsLibrary>(`/ai-ads/stores/${storeId}/creatives${q ? `?${q}` : ""}`);
     },
     getCreative: (storeId: string, creativeId: string) =>
-      request<Record<string, unknown>>(`/ai-ads/stores/${storeId}/creatives/${creativeId}`),
+      request<AIAdsGeneratedCreative>(`/ai-ads/stores/${storeId}/creatives/${creativeId}`),
     approveCreative: (storeId: string, creativeId: string) =>
       request<AIAdsGeneratedCreative>(`/ai-ads/stores/${storeId}/creatives/${creativeId}/approve`, {
         method: "POST",
@@ -1236,6 +1241,20 @@ export const api = {
       ),
     listAdsets: (storeId: string) =>
       request<AIAdsAdset[]>(`/ai-ads/stores/${storeId}/adsets`),
+    regenerateAdPackage: (
+      storeId: string,
+      creativeId: string,
+      data: { language?: "auto" | AIAdsCopyLanguage; field?: string } = {}
+    ) =>
+      request<AIAdsGeneratedCreative>(`/ai-ads/stores/${storeId}/creatives/${creativeId}/ad-package`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    saveAdPackage: (storeId: string, creativeId: string, pkg: AIAdsAdPackage) =>
+      request<AIAdsGeneratedCreative>(`/ai-ads/stores/${storeId}/creatives/${creativeId}/ad-package`, {
+        method: "PUT",
+        body: JSON.stringify({ package: pkg }),
+      }),
     publishCreative: (
       storeId: string,
       creativeId: string,

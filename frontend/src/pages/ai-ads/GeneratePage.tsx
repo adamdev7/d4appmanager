@@ -68,6 +68,7 @@ export function GeneratePage() {
   const [aspect, setAspect] = useState("4:5");
   const [avatarId, setAvatarId] = useState("");
   const [brandStyle, setBrandStyle] = useState("");
+  const [copyLanguage, setCopyLanguage] = useState<"auto" | "en" | "fr">("auto");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [liveJob, setLiveJob] = useState<AIAdsJob | null>(null);
   const [loading, setLoading] = useState(true);
@@ -178,6 +179,7 @@ export function GeneratePage() {
         aspect_ratio: aspect,
         brand_style: brandStyle,
         avatar_id: avatarId || undefined,
+        copy_language: copyLanguage,
       });
       setLiveJob(created);
       navigate(`/ai-ads/progress/${created.job_id || created.id}`);
@@ -479,10 +481,22 @@ export function GeneratePage() {
           >
             <Input
               label="Target audience"
-              placeholder="e.g. women 30–45 with lower back pain from desk work"
+              placeholder="e.g. women 30–45 gifting a ring for an anniversary"
               value={audience}
               onChange={(e) => setAudience(e.target.value)}
             />
+            <div className="mt-3">
+              <Select
+                label="Ad copy language"
+                value={copyLanguage}
+                onChange={(e) => setCopyLanguage(e.target.value as "auto" | "en" | "fr")}
+                hint="Auto follows the product listing. Pick Français for natural Québec copy."
+              >
+                <option value="auto">Auto (product language)</option>
+                <option value="en">English</option>
+                <option value="fr">Français (Québec)</option>
+              </Select>
+            </div>
             <button
               type="button"
               onClick={() => setShowAdvanced((v) => !v)}
@@ -575,6 +589,7 @@ export function GeneratePage() {
               {salesTextOn && imageCount
                 ? "sales angles ship with a headline and CTA on the still; the rest stay clean plates."
                 : `clean plates with no burned-in text${videoCount ? " or voice" : ""}, so you add captions yourself.`}
+              {" Ads Manager copy is written with each render."}
             </CardDescription>
 
             <ul className="mt-4 space-y-2">

@@ -1,3 +1,5 @@
+from typing import Any, Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -53,6 +55,7 @@ class AIAdsGenerationJobRequest(BaseModel):
     aspect_ratio: str | None = None
     brand_style: str | None = None
     avatar_id: str | None = None
+    copy_language: Literal["auto", "en", "fr"] | None = None
 
     @field_validator("image_count")
     @classmethod
@@ -78,3 +81,14 @@ class AIAdsPublishRequest(BaseModel):
     adset_id: str
     page_id: str | None = None
     activate: bool = False
+
+
+class AIAdsAdPackageRegenerateRequest(BaseModel):
+    """Omit `field` to regenerate the whole package. `field` examples: headline, primary_text_variants.1."""
+
+    language: Literal["auto", "en", "fr"] | None = None
+    field: str | None = None
+
+
+class AIAdsAdPackageUpdate(BaseModel):
+    package: dict[str, Any]

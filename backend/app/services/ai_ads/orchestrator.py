@@ -24,6 +24,13 @@ from app.db.models import (
 )
 from app.integrations.meta.client import MetaAdsClient
 from app.integrations.shopify.client import ShopifyClient
+from app.services.ai_ads.ad_package import (
+    failed_package,
+    generate_for_asset,
+    pending_package,
+    product_facts,
+    resolve_copy_language,
+)
 from app.services.ai_ads.complete_creative import (
     build_image_prompt,
     build_video_prompt,
@@ -549,6 +556,19 @@ class AdsAIOrchestrator:
                         detail=f"{job.completed_items} of {job.total_items} creatives ready.",
                         pct=done_pct,
                     )
+                    self._progress(
+                        job,
+                        step="copy",
+                        title=f"Writing Ads Manager copy for {concept.concept_name or kind.lower()}",
+                        detail="Primary text, headlines, A/B variants, and targeting.",
+                        pct=min(96, done_pct + 1),
+                    )
+                    await self._attach_ad_package(
+                        asset=asset,
+                        concept=concept,
+                        product=product,
+                        request=request,
+                    )
                 else:
                     asset.status = "FAILED"
                     asset.failure_reason = operator_error_message(last_exc)[:500]
@@ -757,6 +777,41 @@ class AdsAIOrchestrator:
         asset.score_breakdown_json = score.breakdown.model_dump_json()
         asset.status = "READY"
         concept.status = "READY"
+
+    async def _attach_ad_package(
+        self,
+        *,
+        asset: CreativeAsset,
+        concept: Any,
+        product: ProductContext,
+        request: dict[str, Any],
+    ) -> None:
+        """Ads Manager copy for a finished creative. Never fails the render: the image stays READY."""
+        facts = product_facts(product)
+        language = resolve_copy_language(request.get("copy_language"), facts)
+        asset.ad_package_json = pending_package(language, facts).model_dump_json()
+        self.db.commit()
+        try:
+            await generate_for_asset(
+                self.client,
+                self.db,
+                self.store,
+                asset,
+                facts,
+                model=settings.resolved_ai_creative_model,
+                concept=concept,
+                request=request,
+                language=language,
+            )
+        except Exception as exc:
+            logger.warning(
+                "ai_ads ad package failed store_id=%s asset=%s err=%s",
+                self.store.id,
+                asset.id,
+                str(exc)[:300],
+            )
+            asset.ad_package_json = failed_package(language, operator_error_message(exc)).model_dump_json()
+        self.db.commit()
 
     def _raise_if_cancelled(self, job: CreativeGenerationJob) -> None:
         from app.services.ai_ads.job_runner import is_cancel_requested
