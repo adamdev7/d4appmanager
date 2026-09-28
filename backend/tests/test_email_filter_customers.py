@@ -341,3 +341,50 @@ def test_information_request_is_answered_even_if_ai_skips():
     )
     assert result.should_reply is True
     assert result.category == "customer"
+
+
+def test_shopify_customer_message_replies_to_the_customer_not_shopify():
+    from app.ai_email_assistant.email_filter import customer_reply_address
+
+    body = (
+        "You received a new message from your online store's contact form. "
+        "Country Code: CA Id: ContactForm-ANzZ4bDNLVHVmNWU1S__contact_form_UwiCkQ "
+        "Name: Francesca Lupo Email: francesluporosa@gmail.com Phone: 4162616064 "
+        "Body: I am a cancer survivor and wanted to ask about the bracelet."
+    )
+    assert (
+        customer_reply_address(
+            sender_email="mailer@shopify.com",
+            subject="New customer message on September 22, 2026 at 3:16 pm",
+            body=body,
+        )
+        == "francesluporosa@gmail.com"
+    )
+
+
+def test_shopify_customer_message_falls_back_to_reply_to_header():
+    from app.ai_email_assistant.email_filter import customer_reply_address
+
+    assert (
+        customer_reply_address(
+            sender_email="mailer@shopify.com",
+            subject="New customer message on September 22, 2026",
+            body="You received a new message from your online store's contact form.",
+            reply_to="Diane <dguthrie4922@hotmail.ca>",
+        )
+        == "dguthrie4922@hotmail.ca"
+    )
+
+
+def test_shopify_message_without_customer_address_is_never_sent_to_shopify():
+    from app.ai_email_assistant.email_filter import customer_reply_address
+
+    assert (
+        customer_reply_address(
+            sender_email="mailer@shopify.com",
+            subject="New customer message",
+            body="You received a new message from your online store's contact form.",
+            reply_to="mailer@shopify.com",
+        )
+        is None
+    )

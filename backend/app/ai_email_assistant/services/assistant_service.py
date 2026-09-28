@@ -21,10 +21,12 @@ from app.ai_email_assistant.email_filter import (
     apply_known_customer_guard,
     config_from_settings,
     conversation_looks_like_client,
+    customer_reply_address,
     detect_manual_review_reason,
     ensure_customer_is_answered,
     evaluate_email_filter,
     is_platform_sender,
+    is_shopify_customer_message,
     parse_shopify_contact_form,
 )
 from app.ai_email_assistant.thread_context import format_customer_relationship
@@ -569,12 +571,10 @@ class AIEmailAssistantService:
         if not parsed:
             return
         name, address, message = parsed
-        email.sender = name or address
+        email.sender = f"{name} <{address}>" if name else address
         email.sender_email = address
-        email.body_text = message
-        snippet = " ".join(message.split())[:80]
-        if snippet:
-            email.subject = snippet
+        if message:
+            email.body_text = message
         db.flush()
 
     async def _queue_admin_handoff(
@@ -1094,8 +1094,20 @@ class AIEmailAssistantService:
                 ):
                     detail = await client.get_message(account, msg_id)
                     if detail:
-                        exists.sender = detail.sender
-                        exists.sender_email = client.parse_sender_email(detail.sender)
+                        sender_email = client.parse_sender_email(detail.sender)
+                        sender = detail.sender
+                        if is_platform_sender(sender_email):
+                            customer = customer_reply_address(
+                                sender_email=sender_email,
+                                subject=detail.subject,
+                                body=detail.body_text,
+                                reply_to=detail.reply_to,
+                            )
+                            if customer:
+                                sender_email = customer
+                                sender = customer
+                        exists.sender = sender
+                        exists.sender_email = sender_email
                         exists.subject = detail.subject
                         exists.body_text = detail.body_text
                     exists.status = InboxEmailStatus.NEW.value
@@ -1120,13 +1132,24 @@ class AIEmailAssistantService:
                     continue
 
             sender_email = client.parse_sender_email(detail.sender)
+            sender = detail.sender
+            if is_platform_sender(sender_email):
+                customer = customer_reply_address(
+                    sender_email=sender_email,
+                    subject=detail.subject,
+                    body=detail.body_text,
+                    reply_to=detail.reply_to,
+                )
+                if customer:
+                    sender_email = customer
+                    sender = customer
             row = InboxEmail(
                 user_id=user.id,
                 store_id=store.id,
                 gmail_account_id=account.id,
                 gmail_message_id=detail.message_id,
                 thread_id=detail.thread_id,
-                sender=detail.sender,
+                sender=sender,
                 sender_email=sender_email,
                 subject=detail.subject,
                 body_text=detail.body_text,
@@ -1370,14 +1393,26 @@ class AIEmailAssistantService:
                     skipped_already += 1
                 continue
 
+            scan_sender = analysis.customer_sender
+            scan_email = analysis.customer_email
+            if is_platform_sender(scan_email):
+                customer = customer_reply_address(
+                    sender_email=scan_email,
+                    subject=analysis.subject,
+                    body=analysis.latest_body,
+                    reply_to=analysis.reply_to,
+                )
+                if customer:
+                    scan_sender = customer
+                    scan_email = customer
             row = InboxEmail(
                 user_id=user.id,
                 store_id=store.id,
                 gmail_account_id=account.id,
                 gmail_message_id=analysis.latest_message_id,
                 thread_id=analysis.thread_id,
-                sender=analysis.customer_sender,
-                sender_email=analysis.customer_email,
+                sender=scan_sender,
+                sender_email=scan_email,
                 subject=analysis.subject,
                 body_text=analysis.latest_body,
                 status=InboxEmailStatus.NEW.value,
@@ -1906,12 +1941,37 @@ class AIEmailAssistantService:
                 await client.mark_thread_as_read(account, email.thread_id)
                 raise HTTPException(status_code=400, detail=reply.error_message)
 
+        self._adopt_shopify_contact_form(db, email)
+        recipient = customer_reply_address(
+            sender_email=email.sender_email,
+            subject=email.subject or "",
+            body=email.body_text or "",
+        )
+        if not recipient:
+            reply.status = AIReplyStatus.DRAFT.value
+            reply.error_message = (
+                "Could not find the customer's email in this Shopify message, "
+                "so nothing was sent to Shopify. Reply to the customer directly."
+            )
+            email.status = InboxEmailStatus.MANUAL_REVIEW.value
+            email.filter_category = "manual_review"
+            email.skip_reason = reply.error_message
+            db.commit()
+            raise HTTPException(status_code=400, detail=reply.error_message)
+        if recipient != email.sender_email:
+            email.sender_email = recipient
+            db.commit()
+
         tracking_link = self._tracking_link_from_reply(reply)
         store = db.get(Store, email.store_id) if email.store_id else None
+        reply_subject = email.subject or ""
+        if is_shopify_customer_message(reply_subject, ""):
+            brand = (settings_row.business_name or getattr(store, "name", "") or "").strip()
+            reply_subject = f"Your message to {brand}" if brand else "Your message to our store"
         send_result = await client.send_thread_reply(
             account,
-            to=email.sender_email,
-            subject=email.subject,
+            to=recipient,
+            subject=reply_subject,
             body_text=render_reply_text(body, tracking_link=tracking_link),
             body_html=render_reply_html(
                 body,

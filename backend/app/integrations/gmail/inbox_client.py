@@ -66,6 +66,7 @@ class GmailMessageSummary:
     subject: str
     body_text: str
     snippet: str
+    reply_to: str = ""
 
 
 @dataclass
@@ -82,6 +83,7 @@ class ThreadHistoryAnalysis:
     customer_email: str
     latest_body: str
     message_count: int
+    reply_to: str = ""
 
 
 class GmailInboxClient:
@@ -239,14 +241,22 @@ class GmailInboxClient:
         latest_from_customer = not last.is_from_business
 
         # Subject comes from Gmail metadata if available; fall back to first line
+        # Prefer the latest *customer* message as the one to answer
+        customer_msgs = [m for m in messages if not m.is_from_business]
+        focus = customer_msgs[-1] if customer_msgs else last
+
         subject = "(no subject)"
+        reply_to = ""
         token = await self._token(account)
         if token:
             async with httpx.AsyncClient(timeout=30) as client:
                 meta = await client.get(
                     f"{GMAIL_API}/threads/{thread_id}",
                     headers={"Authorization": f"Bearer {token}"},
-                    params={"format": "metadata", "metadataHeaders": ["From", "Subject"]},
+                    params={
+                        "format": "metadata",
+                        "metadataHeaders": ["From", "Subject", "Reply-To"],
+                    },
                 )
                 if meta.status_code < 400:
                     raw = meta.json().get("messages") or []
@@ -256,10 +266,14 @@ class GmailInboxClient:
                             for h in raw[-1].get("payload", {}).get("headers", [])
                         }
                         subject = headers.get("subject") or subject
-
-        # Prefer the latest *customer* message as the one to answer
-        customer_msgs = [m for m in messages if not m.is_from_business]
-        focus = customer_msgs[-1] if customer_msgs else last
+                        for item in raw:
+                            if item.get("id") != focus.message_id:
+                                continue
+                            focus_headers = {
+                                h["name"].lower(): h["value"]
+                                for h in item.get("payload", {}).get("headers", [])
+                            }
+                            reply_to = focus_headers.get("reply-to", "")
 
         return ThreadHistoryAnalysis(
             thread_id=thread_id,
@@ -272,6 +286,7 @@ class GmailInboxClient:
             customer_email=self.parse_sender_email(focus.from_header),
             latest_body=focus.body_text,
             message_count=len(messages),
+            reply_to=reply_to,
         )
 
     async def get_thread_conversation(
@@ -454,6 +469,7 @@ class GmailInboxClient:
             subject=subject,
             body_text=body_text or snippet,
             snippet=snippet,
+            reply_to=headers.get("reply-to", ""),
         )
 
     def _extract_body(self, payload: dict) -> str:

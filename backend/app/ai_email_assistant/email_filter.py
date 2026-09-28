@@ -159,29 +159,64 @@ _HELP_GREETING = re.compile(
     re.I,
 )
 
-_SHOPIFY_CONTACT_FORM = re.compile(
-    r"Name:\s*(?P<name>.+?)\s+Email:\s*(?P<email>\S+@\S+)\s+Phone:\s*(?P<phone>.*?)\s+Body:\s*(?P<body>.+)",
-    re.I | re.S,
+_FORM_EMAIL = re.compile(r"\bE-?mail\s*:\s*<?(?P<email>[^\s<>]+@[^\s<>]+?)>?(?=\s|$)", re.I)
+_FORM_NAME = re.compile(
+    r"\bName\s*:\s*(?P<name>.+?)(?=\s+(?:E-?mail|Phone|Body|Country Code|Id)\s*:|\n|$)",
+    re.I,
 )
+_FORM_BODY = re.compile(r"\b(?:Body|Message|Comment)\s*:\s*(?P<body>.+)", re.I | re.S)
+
+
+def is_shopify_customer_message(subject: str, body: str) -> bool:
+    blob = f"{subject or ''}\n{body or ''}".lower()
+    return (
+        "contact form" in blob
+        or "new customer message" in blob
+        or "customer message" in (subject or "").lower()
+    )
 
 
 def parse_shopify_contact_form(subject: str, body: str) -> tuple[str, str, str] | None:
     """Pull the shopper out of a Shopify 'new customer message' notification.
 
     Those emails arrive from mailer@shopify.com, but the buyer wrote the form.
-    Returns (name, email, message) when the body has that form layout.
+    Returns (name, email, message). Name or message may be empty; email is required.
     """
-    blob = f"{subject or ''}\n{body or ''}"
-    if "contact form" not in blob.lower() and "new customer message" not in blob.lower():
+    if not is_shopify_customer_message(subject, body):
         return None
-    match = _SHOPIFY_CONTACT_FORM.search(body or "")
-    if not match:
+    text = body or ""
+    email_match = _FORM_EMAIL.search(text)
+    if not email_match:
         return None
-    address = match.group("email").strip().strip("<>").rstrip(".,;")
-    message = match.group("body").strip()
-    if "@" not in address or not message:
+    address = email_match.group("email").strip().rstrip(".,;")
+    if "@" not in address or is_platform_sender(address):
         return None
-    return match.group("name").strip(), address, message
+    name_match = _FORM_NAME.search(text)
+    body_match = _FORM_BODY.search(text)
+    name = name_match.group("name").strip() if name_match else ""
+    message = body_match.group("body").strip() if body_match else ""
+    return name, address.lower(), message
+
+
+def customer_reply_address(
+    *,
+    sender_email: str,
+    subject: str = "",
+    body: str = "",
+    reply_to: str = "",
+) -> str | None:
+    """Who a reply must go to. Never a Shopify/platform mailbox."""
+    if sender_email and not is_platform_sender(sender_email):
+        return sender_email.lower()
+    parsed = parse_shopify_contact_form(subject, body)
+    if parsed:
+        return parsed[1]
+    from email.utils import parseaddr
+
+    _, reply_addr = parseaddr(reply_to or "")
+    if reply_addr and "@" in reply_addr and not is_platform_sender(reply_addr):
+        return reply_addr.lower()
+    return None
 
 
 def message_asks_for_help(subject: str = "", body: str = "") -> bool:
