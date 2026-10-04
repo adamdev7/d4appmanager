@@ -3,6 +3,7 @@ export type MetaCapiSettings = {
   meta_pixel_id: string | null;
   meta_token_masked: string | null;
   has_access_token: boolean;
+  account_token_ready?: boolean;
   use_analytics_token: boolean;
   test_event_code: string | null;
   event_id_scheme: string;

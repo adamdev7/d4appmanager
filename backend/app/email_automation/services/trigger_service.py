@@ -95,6 +95,22 @@ class EmailTriggerService:
 
         context = build_template_context(payload, store.name)
         subject = resolve_template_text(rule.template.subject, context)
+        already = self._db.scalar(
+            select(EmailSendLog.id).where(
+                EmailSendLog.store_id == store.id,
+                EmailSendLog.event_type == event_type.value,
+                EmailSendLog.recipient == recipient,
+                EmailSendLog.subject == subject,
+                EmailSendLog.status == EmailSendStatus.SENT.value,
+            )
+        )
+        if already:
+            return {
+                "event_type": event_type.value,
+                "status": "skipped",
+                "reason": "already_sent",
+                "recipient": recipient,
+            }
         inner_html = resolve_template_text(rule.template.body_html, context)
         theme = getattr(store, "email_theme_color", None) or DEFAULT_THEME_COLOR
         logo = absolute_logo_url(getattr(store, "email_logo_path", None), settings.app_url)

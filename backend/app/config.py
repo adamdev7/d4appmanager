@@ -107,7 +107,8 @@ class Settings(BaseSettings):
 
     # OpenAI — each AI module stores its own user key (server-side only)
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"
+    # Recommended text model: near-flagship quality at a fraction of Astra's token price.
+    openai_model: str = "gpt-6.1-sol"
     openai_max_retries: int = 3
     openai_timeout_seconds: int = 60
 
@@ -118,9 +119,10 @@ class Settings(BaseSettings):
     # AI Ads engine — models are env-configurable; never hard-code in call sites
     openai_image_model: str = "gpt-image-2"
     openai_video_model: str = "sora-2"
-    ai_strategy_model: str = "gpt-6-astra"
-    ai_analysis_model: str = "gpt-6-astra"
-    ai_creative_model: str = "gpt-6-astra"
+    # Blank follows openai_model. A store can override all three from AI Ads settings.
+    ai_strategy_model: str = ""
+    ai_analysis_model: str = ""
+    ai_creative_model: str = ""
     ai_image_model: str = ""
     ai_video_model: str = ""
     # Server-wide kill switch for weekly batches; each store still opts in from AI Ads → Settings.
@@ -195,14 +197,29 @@ class Settings(BaseSettings):
 
     @property
     def resolved_ai_strategy_model(self) -> str:
-        return (self.ai_strategy_model or self.openai_model).strip()
+        from app.core.openai_models import peek_text_model
+
+        override = peek_text_model()
+        if override:
+            return override
+        return (self.ai_strategy_model or self.openai_model or "gpt-6.1-sol").strip()
 
     @property
     def resolved_ai_analysis_model(self) -> str:
+        from app.core.openai_models import peek_text_model
+
+        override = peek_text_model()
+        if override:
+            return override
         return (self.ai_analysis_model or self.resolved_ai_strategy_model).strip()
 
     @property
     def resolved_ai_creative_model(self) -> str:
+        from app.core.openai_models import peek_text_model
+
+        override = peek_text_model()
+        if override:
+            return override
         return (self.ai_creative_model or self.resolved_ai_strategy_model).strip()
 
     @property

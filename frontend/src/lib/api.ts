@@ -284,7 +284,43 @@ export type TrackOrderResult = {
   last_updated_at: string | null;
 };
 
+export type TextModelChoice = {
+  id: string;
+  name: string;
+  tag: string;
+  blurb: string;
+  input_per_mtok: number;
+  output_per_mtok: number;
+  recommended: boolean;
+};
+
+export type MetaConnection = {
+  store_id: string;
+  meta_configured: boolean;
+  meta_token_masked: string | null;
+  meta_ad_account_id: string | null;
+  meta_pixel_id: string | null;
+  pixel_configured: boolean;
+  capi_has_override_token: boolean;
+};
+
 export const api = {
+  connections: {
+    models: () =>
+      request<{ default_model: string; models: TextModelChoice[] }>("/connections/models"),
+    getMeta: (storeId: string) =>
+      request<MetaConnection>(`/connections/meta?store_id=${encodeURIComponent(storeId)}`),
+    saveMeta: (storeId: string, data: object) =>
+      request<MetaConnection>(`/connections/meta?store_id=${encodeURIComponent(storeId)}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      }),
+    testMeta: (storeId: string, data: object) =>
+      request<{ ok: boolean; message: string; account_name?: string | null }>(
+        `/connections/meta/test?store_id=${encodeURIComponent(storeId)}`,
+        { method: "POST", body: JSON.stringify(data) }
+      ),
+  },
   auth: {
     login: (email: string, password: string) =>
       request<{
@@ -1051,6 +1087,13 @@ export const api = {
         method: "PUT",
         body: JSON.stringify({ api_key: apiKey }),
       }),
+    openaiKeyStatus: () =>
+      request<{
+        openai_configured: boolean;
+        openai_key_masked: string | null;
+        openai_key_is_user_owned: boolean;
+        openai_uses_server_fallback: boolean;
+      }>("/ads/openai-key"),
     deleteOpenAIKey: () =>
       request<{
         openai_configured: boolean;
@@ -1354,6 +1397,13 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ alternative, request: requestBody }),
       }),
+    openaiKeyStatus: () =>
+      request<{
+        openai_configured: boolean;
+        openai_key_masked: string | null;
+        openai_key_is_user_owned: boolean;
+        openai_uses_server_fallback: boolean;
+      }>("/ai-ads/openai-key"),
     saveOpenAIKey: (apiKey: string) =>
       request<{
         openai_configured: boolean;

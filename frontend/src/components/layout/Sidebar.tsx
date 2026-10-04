@@ -9,6 +9,8 @@ import {
   Headphones,
   Settings,
   Store,
+  KeyRound,
+  PlugZap,
   ChevronLeft,
   X,
   Megaphone,
@@ -36,6 +38,8 @@ const settingsNav = [
   { to: "/settings", icon: Settings, label: "General" },
   { to: "/settings/stores", icon: Store, label: "Stores" },
   { to: "/settings/gmail", icon: Mail, label: "Gmail" },
+  { to: "/settings/meta", icon: PlugZap, label: "Meta" },
+  { to: "/settings/api-keys", icon: KeyRound, label: "API keys" },
 ];
 
 type SidebarProps = {

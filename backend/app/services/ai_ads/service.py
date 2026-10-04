@@ -66,6 +66,12 @@ from app.services.ai_ads import weekly_runs
 logger = logging.getLogger(__name__)
 
 
+def _store_text_model(row: StoreAIAdsSettings) -> str:
+    from app.core.openai_models import effective_text_model, server_text_fallback
+
+    return effective_text_model(getattr(row, "text_model", None), fallback=server_text_fallback())
+
+
 class AIAdsService:
     def ensure_store(self, db: Session, user: User, store_id: str) -> Store:
         store = db.get(Store, store_id)
@@ -188,9 +194,11 @@ class AIAdsService:
             "openai_key_masked": openai["openai_key_masked"],
             "openai_key_is_user_owned": openai["openai_key_is_user_owned"],
             "openai_uses_server_fallback": openai["openai_uses_server_fallback"],
-            "strategy_model": settings.resolved_ai_strategy_model,
-            "analysis_model": settings.resolved_ai_analysis_model,
-            "creative_model": settings.resolved_ai_creative_model,
+            "text_model": getattr(row, "text_model", None),
+            "strategy_model": _store_text_model(row),
+            "analysis_model": _store_text_model(row),
+            "creative_model": _store_text_model(row),
+            "default_model": settings.openai_model,
             "image_model": settings.resolved_ai_image_model,
             "video_model": settings.resolved_ai_video_model,
         }
@@ -218,6 +226,15 @@ class AIAdsService:
         for key, attr in mapping.items():
             if key in body and body[key] is not None:
                 setattr(row, attr, body[key])
+        if "text_model" in body:
+            from app.core.openai_models import normalize_stored_model
+
+            try:
+                row.text_model = normalize_stored_model(
+                    body.get("text_model"), current=row.text_model
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         if "creative_styles" in body and body["creative_styles"] is not None:
             row.creative_styles_json = json.dumps(list(body["creative_styles"]))
         if "auto_publish" in body and body["auto_publish"] is not None:

@@ -71,9 +71,19 @@ class MetaCapiService:
             return hint
         return "••••" if has_secret else None
 
-    def _settings_dict(self, row: StoreMetaCapiSettings) -> dict[str, Any]:
+    def _settings_dict(
+        self, row: StoreMetaCapiSettings, db: Session | None = None
+    ) -> dict[str, Any]:
+        account_ready = False
+        if db is not None:
+            analytics = db.scalar(
+                select(StoreAnalyticsSettings).where(
+                    StoreAnalyticsSettings.store_id == row.store_id
+                )
+            )
+            account_ready = bool(analytics and analytics.meta_access_token_encrypted)
         configured = bool(row.meta_pixel_id) and (
-            bool(row.meta_access_token_encrypted) or bool(row.use_analytics_token)
+            bool(row.meta_access_token_encrypted) or account_ready
         )
         return {
             "enabled": bool(row.enabled),
@@ -82,6 +92,7 @@ class MetaCapiService:
                 row.meta_access_token_hint, bool(row.meta_access_token_encrypted)
             ),
             "has_access_token": bool(row.meta_access_token_encrypted),
+            "account_token_ready": account_ready,
             "use_analytics_token": bool(row.use_analytics_token),
             "test_event_code": row.test_event_code,
             "event_id_scheme": row.event_id_scheme or "order_id",
@@ -96,7 +107,7 @@ class MetaCapiService:
     def get_settings(self, db: Session, user: User, store_id: str) -> dict[str, Any]:
         self._ensure_store(db, user, store_id)
         row = self.get_or_create_settings(db, store_id)
-        return self._settings_dict(row)
+        return self._settings_dict(row, db)
 
     def update_settings(
         self, db: Session, user: User, store_id: str, body: dict[str, Any]
@@ -173,7 +184,7 @@ class MetaCapiService:
 
         db.commit()
         db.refresh(row)
-        return self._settings_dict(row)
+        return self._settings_dict(row, db)
 
     def _resolve_access_token(self, db: Session, row: StoreMetaCapiSettings) -> str | None:
         if row.meta_access_token_encrypted:
@@ -182,19 +193,16 @@ class MetaCapiService:
             except Exception:
                 logger.exception("Failed to decrypt Meta CAPI token for store %s", row.store_id)
                 return None
-        if row.use_analytics_token:
-            analytics = db.scalar(
-                select(StoreAnalyticsSettings).where(
-                    StoreAnalyticsSettings.store_id == row.store_id
+        analytics = db.scalar(
+            select(StoreAnalyticsSettings).where(StoreAnalyticsSettings.store_id == row.store_id)
+        )
+        if analytics and analytics.meta_access_token_encrypted:
+            try:
+                return decrypt_value(analytics.meta_access_token_encrypted)
+            except Exception:
+                logger.exception(
+                    "Failed to decrypt account Meta token for store %s", row.store_id
                 )
-            )
-            if analytics and analytics.meta_access_token_encrypted:
-                try:
-                    return decrypt_value(analytics.meta_access_token_encrypted)
-                except Exception:
-                    logger.exception(
-                        "Failed to decrypt Analytics Meta token for store %s", row.store_id
-                    )
         return None
 
     async def test_connection(
@@ -254,7 +262,7 @@ class MetaCapiService:
 
     def get_stats(self, db: Session, user: User, store_id: str) -> dict[str, Any]:
         self._ensure_store(db, user, store_id)
-        settings = self._settings_dict(self.get_or_create_settings(db, store_id))
+        settings = self._settings_dict(self.get_or_create_settings(db, store_id), db)
 
         now = datetime.now(UTC)
         start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)

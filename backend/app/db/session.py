@@ -1280,6 +1280,29 @@ def _migrate_whatsapp_multi_connections() -> None:
             )
         )
 
+def _migrate_option_text_models() -> None:
+    """Per-option text model columns. Blank means the recommended default."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    tables = {
+        "store_ads_settings": "openai_model",
+        "store_ai_ads_settings": "text_model",
+    }
+    with engine.begin() as conn:
+        for table, column in tables.items():
+            if table not in insp.get_table_names():
+                continue
+            cols = {c["name"] for c in insp.get_columns(table)}
+            if column in cols:
+                continue
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(64)"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} VARCHAR(64)")
+                )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401
 
@@ -1305,3 +1328,4 @@ def init_db() -> None:
     _migrate_ai_ads_ad_package_column()
     _migrate_ai_ads_director_columns()
     _migrate_shared_whatsapp_connection()
+    _migrate_option_text_models()

@@ -86,6 +86,19 @@ class AdsAIOrchestrator:
         self.api_key = api_key
         self.client = AdsOpenAIClient(api_key, store_id=store.id)
         self.assets = CreativeAssetStore(store.id)
+        from app.core.openai_models import use_text_model
+        from app.db.models import StoreAIAdsSettings
+
+        row = db.scalar(
+            select(StoreAIAdsSettings).where(StoreAIAdsSettings.store_id == store.id)
+        )
+        # Held for the job/request so strategy, analysis, and copy share this store's model.
+        from app.core.openai_models import server_text_fallback
+
+        self._text_model = use_text_model(
+            row.text_model if row else None, fallback=server_text_fallback()
+        )
+        self._text_model.__enter__()
 
     def meta_client(self) -> MetaAdsClient | None:
         analytics = self.db.scalar(

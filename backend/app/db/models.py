@@ -631,6 +631,8 @@ class StoreAdsSettings(Base):
     weekly_ai_reports: Mapped[bool] = mapped_column(Boolean, default=False)
     last_daily_report_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_weekly_report_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Blank uses the recommended text model (best result per token).
+    openai_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -769,6 +771,8 @@ class StoreAIAdsSettings(Base):
     last_weekly_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Recap on WhatsApp when the weekly generation job finishes (shared user connection)
     whatsapp_weekly_alerts_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # One text model for strategy, analysis, and creative copy. Blank uses the recommended default.
+    text_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_product_catalog_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

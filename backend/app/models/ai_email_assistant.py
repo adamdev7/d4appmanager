@@ -34,7 +34,7 @@ class AIEmailAssistantSettingsResponse(AIEmailAssistantSettingsUpdate):
     openai_key_masked: str | None = None
     openai_key_is_user_owned: bool = False
     openai_uses_server_fallback: bool = False
-    default_model: str = "gpt-4o-mini"
+    default_model: str = "gpt-6.1-sol"
     automation_last_run_at: str | None = None
     automation_last_error: str | None = None
     # Falls back to this when tracking_page_url is blank

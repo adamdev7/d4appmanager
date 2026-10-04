@@ -275,6 +275,31 @@ async def run_pipeline(
     max_images: int | None = None,
     max_videos: int | None = None,
 ) -> AIDirectorReport:
+    from app.core.openai_models import server_text_fallback, use_text_model
+
+    ads_row = db.scalar(select(StoreAIAdsSettings).where(StoreAIAdsSettings.store_id == store.id))
+    with use_text_model(ads_row.text_model if ads_row else None, fallback=server_text_fallback()):
+        return await _run_pipeline_body(
+            db,
+            store,
+            user,
+            api_key,
+            report,
+            max_images=max_images,
+            max_videos=max_videos,
+        )
+
+
+async def _run_pipeline_body(
+    db: Session,
+    store: Store,
+    user: User,
+    api_key: str,
+    report: AIDirectorReport,
+    *,
+    max_images: int | None = None,
+    max_videos: int | None = None,
+) -> AIDirectorReport:
     """Context -> ideation -> guardrails/novelty -> critique -> board, brief, alerts. Commits as it goes."""
     report.status = "RUNNING"
     report.started_at = report.started_at or _now()
@@ -469,7 +494,7 @@ async def _execute_report(report_id: str) -> None:
         api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_ADS) if user else None
         if not store or not user or not api_key:
             report.status = "FAILED"
-            report.error_message = "Add your OpenAI API key in AI Ads → Settings, then run the Director again."
+            report.error_message = "Add your OpenAI API key under Settings → API keys, then run the Director again."
             report.finished_at = _now()
             db.commit()
             return

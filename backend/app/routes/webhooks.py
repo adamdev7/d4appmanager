@@ -60,45 +60,67 @@ async def shopify_webhook(request: Request, db: Session = Depends(get_db)):
 
     automation_results: list[dict] = []
     meta_capi_result: dict | None = None
+    failures: list[str] = []
     if store and topic != "app/uninstalled":
         try:
             payload = json.loads(body)
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON webhook payload for %s", shop_domain)
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON")
+
+        try:
             order_row = OrderTrackingSyncService(db).upsert_from_webhook(store.id, topic, payload)
             db.commit()
+        except Exception:
+            logger.exception("Tracking sync failed for %s topic %s", shop_domain, topic)
+            db.rollback()
+            order_row = None
+            failures.append("tracking")
 
-            if order_row and order_row.tracking_number:
-                try:
-                    await CarrierEnrichmentService(db).enrich_if_enabled(store.id, order_row.id)
-                    db.commit()
-                except Exception:
-                    logger.exception(
-                        "Carrier enrichment failed for store %s order %s",
-                        store.id,
-                        order_row.id,
-                    )
-
-            # Queue Meta CAPI Purchase ASAP (async send) — do not block Shopify
+        if order_row and order_row.tracking_number:
             try:
-                meta_capi_result = _meta_capi.enqueue_from_webhook(
-                    db,
-                    store=store,
-                    topic=topic,
-                    payload=payload,
-                    webhook_id=webhook_id,
-                )
+                await CarrierEnrichmentService(db).enrich_if_enabled(store.id, order_row.id)
+                db.commit()
             except Exception:
-                logger.exception("Meta CAPI enqueue failed for %s topic %s", shop_domain, topic)
-                meta_capi_result = {"queued": False, "reason": "error"}
+                logger.exception(
+                    "Carrier enrichment failed for store %s order %s",
+                    store.id,
+                    order_row.id,
+                )
+                db.rollback()
 
-            trigger = EmailTriggerService(db)
-            automation_results = await trigger.process_shopify_webhook(
+        try:
+            meta_capi_result = _meta_capi.enqueue_from_webhook(
+                db,
+                store=store,
+                topic=topic,
+                payload=payload,
+                webhook_id=webhook_id,
+            )
+        except Exception:
+            logger.exception("Meta CAPI enqueue failed for %s topic %s", shop_domain, topic)
+            db.rollback()
+            meta_capi_result = {"queued": False, "reason": "error"}
+            failures.append("meta_capi")
+
+        try:
+            automation_results = await EmailTriggerService(db).process_shopify_webhook(
                 store_id=store.id,
                 topic=topic,
                 payload=payload,
             )
-        except json.JSONDecodeError:
-            logger.warning("Invalid JSON webhook payload for %s", shop_domain)
+            if any(row.get("status") == "failed" for row in automation_results):
+                failures.append("email")
         except Exception:
             logger.exception("Email automation failed for %s topic %s", shop_domain, topic)
+            db.rollback()
+            failures.append("email")
+
+    if failures:
+        # Shopify retries non-2xx. Tracking upserts, CAPI claims, and sent emails are idempotent.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Webhook step failed: {', '.join(failures)}",
+        )
 
     return {"ok": True, "automation": automation_results, "meta_capi": meta_capi_result}

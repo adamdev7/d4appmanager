@@ -6,6 +6,7 @@ from app.routes import (
     ai_email_assistant,
     analytics,
     auth,
+    connections,
     dashboard,
     email_automation,
     gmail,
@@ -24,6 +25,7 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(stores.router, prefix="/stores", tags=["stores"])
 api_router.include_router(gmail.router, prefix="/gmail", tags=["gmail"])
+api_router.include_router(connections.router, prefix="/connections", tags=["connections"])
 api_router.include_router(
     email_automation.router, prefix="/email-automation", tags=["email-automation"]
 )

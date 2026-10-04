@@ -2,13 +2,12 @@ from pydantic import BaseModel, Field
 
 
 class AdsSettingsUpdate(BaseModel):
-    """Ads module prefs. Meta token/account can also be saved here (shared with Analytics)."""
+    """Ads module prefs. Meta credentials live in account settings."""
 
-    meta_access_token: str | None = None
-    meta_ad_account_id: str | None = None
     ai_reports_consent: bool | None = None
     daily_ai_reports: bool | None = None
     weekly_ai_reports: bool | None = None
+    openai_model: str | None = None
 
 
 class AdsMetaTestRequest(BaseModel):

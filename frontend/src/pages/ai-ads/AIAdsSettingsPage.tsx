@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Switch } from "@/components/ui/Switch";
 import { PageLoader } from "@/components/ui/Loading";
-import { OpenAIModuleKeyCard } from "@/components/settings/OpenAIModuleKeyCard";
+import { ModelSelect } from "@/components/settings/ModelSelect";
 import { cn } from "@/lib/cn";
 import { WeeklyRunsPanel } from "@/pages/ai-ads/WeeklyRunsPanel";
 
@@ -93,8 +93,8 @@ export function AIAdsSettingsPage() {
             <CardTitle>Connections</CardTitle>
           </div>
           <CardDescription>
-            Meta tokens live in Ads / Analytics settings. OpenAI for this module is stored
-            separately from AI Email Assistant and Ads reports.
+            Meta and the OpenAI key live in account settings. The model here is used for strategy,
+            analysis, and ad copy.
           </CardDescription>
         </CardHeader>
         <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
@@ -109,30 +109,22 @@ export function AIAdsSettingsPage() {
           <Connection label="Video model" ok>
             {settings.video_model || "sora-2"}
           </Connection>
-          <Connection label="Strategy model" ok>
+          <Connection label="Text model" ok>
             {settings.strategy_model}
           </Connection>
         </dl>
+        <div className="mt-4 flex flex-wrap gap-4 text-sm">
+          <Link to="/settings/meta" className="font-medium text-brand-600 hover:underline">
+            Meta settings
+          </Link>
+          <Link to="/settings/api-keys" className="font-medium text-brand-600 hover:underline">
+            API keys
+          </Link>
+        </div>
         <div className="mt-5 border-t border-border pt-5">
-          <OpenAIModuleKeyCard
-            status={settings}
-            moduleName="AI Ads"
-            description="Used only to generate and analyze creatives in AI Ads. Removing it will not disconnect AI Email Assistant."
-            onSave={api.aiAds.saveOpenAIKey}
-            onRemove={api.aiAds.deleteOpenAIKey}
-            onStatus={(status) =>
-              setSettings((prev) =>
-                prev
-                  ? {
-                      ...prev,
-                      openai_configured: status.openai_configured,
-                      openai_key_masked: status.openai_key_masked,
-                      openai_key_is_user_owned: status.openai_key_is_user_owned,
-                      openai_uses_server_fallback: status.openai_uses_server_fallback,
-                    }
-                  : prev
-              )
-            }
+          <ModelSelect
+            value={settings.text_model || settings.default_model || "gpt-6.1-sol"}
+            onChange={(id) => setSettings({ ...settings, text_model: id })}
           />
         </div>
       </Card>

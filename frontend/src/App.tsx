@@ -13,6 +13,8 @@ import { DashboardPage } from "@/pages/dashboard/DashboardPage";
 import { GeneralSettingsPage } from "@/pages/settings/GeneralSettingsPage";
 import { StoresSettingsPage } from "@/pages/settings/StoresSettingsPage";
 import { GmailSettingsPage } from "@/pages/settings/GmailSettingsPage";
+import { MetaSettingsPage } from "@/pages/settings/MetaSettingsPage";
+import { ApiKeysSettingsPage } from "@/pages/settings/ApiKeysSettingsPage";
 import { EmailAutomationPage } from "@/pages/modules/EmailAutomationPage";
 import { AIEmailAssistantPage } from "@/pages/modules/AIEmailAssistantPage";
 import { ModulePlaceholderPage } from "@/pages/modules/ModulePlaceholderPage";
@@ -61,6 +63,8 @@ export default function App() {
                 <Route path="/settings" element={<GeneralSettingsPage />} />
                 <Route path="/settings/stores" element={<StoresSettingsPage />} />
                 <Route path="/settings/gmail" element={<GmailSettingsPage />} />
+                <Route path="/settings/meta" element={<MetaSettingsPage />} />
+                <Route path="/settings/api-keys" element={<ApiKeysSettingsPage />} />
                 <Route path="/modules/ai-email" element={<AIEmailAssistantPage />} />
                 <Route path="/modules/email" element={<EmailAutomationPage />} />
                 <Route path="/modules/tracking" element={<TrackingPage />} />

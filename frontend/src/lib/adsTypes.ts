@@ -76,6 +76,8 @@ export type AdsSettings = {
   openai_key_masked: string | null;
   openai_key_is_user_owned: boolean;
   openai_uses_server_fallback: boolean;
+  openai_model?: string | null;
+  default_model?: string;
 };
 
 export type AdsPreviousPeriod = {

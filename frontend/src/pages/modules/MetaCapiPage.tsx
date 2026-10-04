@@ -104,7 +104,6 @@ export function MetaCapiPage() {
   const [enabled, setEnabled] = useState(false);
   const [pixelId, setPixelId] = useState("");
   const [token, setToken] = useState("");
-  const [useAnalyticsToken, setUseAnalyticsToken] = useState(true);
   const [testCode, setTestCode] = useState("");
   const [eventIdScheme, setEventIdScheme] = useState("order_id");
   const [triggerTopic, setTriggerTopic] = useState("orders/paid");
@@ -164,7 +163,6 @@ export function MetaCapiPage() {
       setSettings(s.settings);
       setEnabled(Boolean(s.settings.enabled));
       setPixelId(s.settings.meta_pixel_id ?? "");
-      setUseAnalyticsToken(Boolean(s.settings.use_analytics_token));
       setTestCode(s.settings.test_event_code ?? "");
       setEventIdScheme(s.settings.event_id_scheme || "order_id");
       setTriggerTopic(s.settings.trigger_topic || "orders/paid");
@@ -209,8 +207,6 @@ export function MetaCapiPage() {
     try {
       const payload: Record<string, unknown> = {
         enabled,
-        meta_pixel_id: pixelId.trim() || null,
-        use_analytics_token: useAnalyticsToken,
         event_id_scheme: eventIdScheme,
         trigger_topic: triggerTopic,
         api_version: apiVersion.trim() || "v25.0",
@@ -797,10 +793,10 @@ export function MetaCapiPage() {
         <div className="space-y-6 max-w-2xl">
           <Card padding="lg">
             <CardHeader>
-              <CardTitle>Meta CAPI connection</CardTitle>
+              <CardTitle>Server-side purchases</CardTitle>
               <CardDescription>
-                Pixel ID + Conversions API access token from Events Manager (or reuse Analytics
-                Marketing token).
+                Pixel ID and the shared Meta token live in account settings. Paste a token here
+                only when this Pixel needs a different Conversions API token.
               </CardDescription>
             </CardHeader>
             <div className="space-y-4">
@@ -814,14 +810,21 @@ export function MetaCapiPage() {
                 <Switch checked={enabled} onChange={setEnabled} />
               </div>
 
+              <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-3 space-y-1">
+                <p className="text-sm font-medium text-content">
+                  Pixel {settings?.meta_pixel_id || "not set"}
+                </p>
+                <p className="text-xs text-content-muted">
+                  {settings?.account_token_ready
+                    ? "Using the account Meta token unless you save an override below."
+                    : "Add the Meta token and Pixel under Settings → Meta."}{" "}
+                  <Link to="/settings/meta" className="text-brand-600 hover:underline font-medium">
+                    Open Meta settings
+                  </Link>
+                </p>
+              </div>
               <Input
-                label="Meta Pixel ID"
-                placeholder="1234567890"
-                value={pixelId}
-                onChange={(e) => setPixelId(e.target.value)}
-              />
-              <Input
-                label="CAPI access token"
+                label="Override CAPI token"
                 type="password"
                 placeholder={
                   settings?.meta_token_masked
@@ -834,17 +837,6 @@ export function MetaCapiPage() {
               {settings?.meta_token_masked && (
                 <p className="text-xs text-content-muted">Stored token {settings.meta_token_masked}</p>
               )}
-
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-sm font-medium text-content">Fall back to Analytics Meta token</p>
-                  <p className="text-xs text-content-muted">
-                    If no dedicated CAPI token is saved, use the Marketing API token from Ads /
-                    Analytics.
-                  </p>
-                </div>
-                <Switch checked={useAnalyticsToken} onChange={setUseAnalyticsToken} />
-              </div>
 
               <div className="flex items-center justify-between gap-4">
                 <div>

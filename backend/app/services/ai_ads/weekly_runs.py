@@ -320,7 +320,7 @@ async def execute_run(run_id: str) -> None:
                 db,
                 run,
                 "preflight",
-                "No OpenAI API key. Add one in AI Ads → Settings, then use Run now.",
+                "No OpenAI API key. Add one under Settings → API keys, then use Run now.",
             )
             return
         if not imaging_available():

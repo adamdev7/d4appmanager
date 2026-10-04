@@ -176,25 +176,13 @@ class AdsService:
             "openai_key_masked": openai["openai_key_masked"],
             "openai_key_is_user_owned": openai["openai_key_is_user_owned"],
             "openai_uses_server_fallback": openai["openai_uses_server_fallback"],
+            "openai_model": ads.openai_model,
+            "default_model": settings.openai_model,
         }
 
     def update_settings(self, db: Session, user: User, store_id: str, body: dict) -> dict:
         self._ensure_store(db, user, store_id)
-        analytics = self.get_or_create_analytics_settings(db, store_id)
         ads = self.get_or_create_ads_settings(db, store_id)
-
-        if body.get("meta_access_token") is not None:
-            token = str(body["meta_access_token"]).strip()
-            if token:
-                analytics.meta_access_token_encrypted = encrypt_value(token)
-                analytics.meta_access_token_hint = mask_api_key_hint(token)
-            else:
-                analytics.meta_access_token_encrypted = None
-                analytics.meta_access_token_hint = None
-
-        if body.get("meta_ad_account_id") is not None:
-            account = str(body["meta_ad_account_id"]).strip().replace("act_", "")
-            analytics.meta_ad_account_id = account or None
 
         if body.get("ai_reports_consent") is not None:
             ads.ai_reports_consent = bool(body["ai_reports_consent"])
@@ -217,6 +205,16 @@ class AdsService:
                     detail="Enable AI report consent before turning on weekly reports",
                 )
             ads.weekly_ai_reports = bool(body["weekly_ai_reports"])
+
+        if "openai_model" in body:
+            from app.core.openai_models import normalize_stored_model
+
+            try:
+                ads.openai_model = normalize_stored_model(
+                    body.get("openai_model"), current=ads.openai_model
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         db.commit()
         return self.get_settings(db, user, store_id)
@@ -1372,7 +1370,7 @@ class AdsService:
         if not api_key:
             raise HTTPException(
                 status_code=400,
-                detail="Add your OpenAI API key in Ads settings first",
+                detail="Add your OpenAI API key in Settings → API keys",
             )
 
         dashboard = await self.get_dashboard(
@@ -1397,7 +1395,9 @@ class AdsService:
         system, user_msg = self._build_ai_prompt(
             dashboard, report_type, analytics=analytics_snapshot
         )
-        model = settings.openai_model
+        from app.core.openai_models import effective_text_model
+
+        model = effective_text_model(ads_settings.openai_model, fallback=settings.openai_model)
         ai = AIService(model=model, api_key=api_key)
 
         try:

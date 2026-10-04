@@ -21,6 +21,7 @@ class AIAdsSettingsUpdate(BaseModel):
     creative_styles: list[str] | None = None
     meta_page_id: str | None = None
     whatsapp_weekly_alerts_enabled: bool | None = None
+    text_model: str | None = None
 
     @field_validator("image_count")
     @classmethod

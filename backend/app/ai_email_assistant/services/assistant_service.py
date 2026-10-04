@@ -203,10 +203,15 @@ class AIEmailAssistantService:
         api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL)
         if not api_key:
             raise OpenAIServiceError(
-                user_message="Add your OpenAI API key in AI Email Assistant settings before using AI features.",
+                user_message="Add your OpenAI API key under Settings → API keys before using AI features.",
                 stop_autopilot=True,
             )
-        return AIService(model=settings_row.openai_model, api_key=api_key)
+        from app.core.openai_models import effective_text_model
+
+        return AIService(
+            model=effective_text_model(settings_row.openai_model, fallback=settings.openai_model),
+            api_key=api_key,
+        )
 
     @staticmethod
     def _http_status_for_ai_error(exc: OpenAIServiceError) -> int:
@@ -304,7 +309,14 @@ class AIEmailAssistantService:
         row.faq = data.faq
         row.auto_send_enabled = data.auto_send_enabled
         row.gmail_account_id = data.gmail_account_id
-        row.openai_model = data.openai_model
+        from app.core.openai_models import normalize_stored_model
+
+        try:
+            row.openai_model = normalize_stored_model(
+                data.openai_model, current=row.openai_model
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         row.email_filter_enabled = data.email_filter_enabled
         row.filter_automated_emails = data.filter_automated_emails
         row.filter_non_business_emails = data.filter_non_business_emails

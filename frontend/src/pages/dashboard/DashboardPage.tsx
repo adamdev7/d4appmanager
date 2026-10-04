@@ -4,6 +4,8 @@ import {
   Settings,
   Store,
   Mail,
+  PlugZap,
+  KeyRound,
   Sparkles,
   Package,
   BarChart3,
@@ -201,6 +203,20 @@ export function DashboardPage() {
             >
               <Mail className="h-4 w-4" />
               Manage Gmail
+            </Link>
+            <Link
+              to="/settings/meta"
+              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 xl:px-4 xl:py-2.5 text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
+            >
+              <PlugZap className="h-4 w-4" />
+              Manage Meta
+            </Link>
+            <Link
+              to="/settings/api-keys"
+              className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 xl:px-4 xl:py-2.5 text-content-muted hover:bg-surface-muted hover:text-content transition-colors"
+            >
+              <KeyRound className="h-4 w-4" />
+              API keys
             </Link>
           </div>
         </div>

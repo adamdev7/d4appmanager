@@ -277,6 +277,8 @@ export type AIAdsSettings = {
   openai_key_masked: string | null;
   openai_key_is_user_owned?: boolean;
   openai_uses_server_fallback?: boolean;
+  text_model?: string | null;
+  default_model?: string;
   strategy_model: string;
   analysis_model: string;
   creative_model: string;

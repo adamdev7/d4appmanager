@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type TextareaHTMLAttributes } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   Sparkles,
@@ -11,7 +11,6 @@ import {
   Check,
   AlertCircle,
   Filter,
-  KeyRound,
   Bot,
   Building2,
   CheckCircle2,
@@ -28,6 +27,7 @@ import {
 import { useStore } from "@/context/StoreContext";
 import { api } from "@/lib/api";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
+import { ModelSelect } from "@/components/settings/ModelSelect";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Switch } from "@/components/ui/Switch";
@@ -527,6 +527,7 @@ function inboxItemFromApi(email: {
 export function AIEmailAssistantPage() {
   const { activeStore, stores, setActiveStoreId } = useStore();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const linkedEmailId = searchParams.get("email");
   const linkedStoreId = searchParams.get("store");
   const linkedFilter = searchParams.get("filter");
@@ -543,8 +544,6 @@ export function AIEmailAssistantPage() {
   const [selectedId, setSelectedId] = useState<string | null>(linkedEmailId);
   const [draftEdit, setDraftEdit] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
-  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
-  const [savingOpenaiKey, setSavingOpenaiKey] = useState(false);
   const [runningAutomation, setRunningAutomation] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
   const sendLockRef = useRef<string | null>(null);
@@ -926,58 +925,6 @@ export function AIEmailAssistantPage() {
     }
   };
 
-  const applyKeyStatus = (status: {
-    openai_configured: boolean;
-    openai_key_masked: string | null;
-    openai_key_is_user_owned: boolean;
-    openai_uses_server_fallback: boolean;
-  }) => {
-    setSettings((prev) =>
-      prev
-        ? {
-            ...prev,
-            openai_configured: status.openai_configured,
-            openai_key_masked: status.openai_key_masked,
-            openai_key_is_user_owned: status.openai_key_is_user_owned,
-            openai_uses_server_fallback: status.openai_uses_server_fallback,
-          }
-        : prev
-    );
-  };
-
-  const saveOpenaiKey = async () => {
-    const trimmed = openaiKeyInput.trim();
-    if (!trimmed) {
-      setError("Paste your OpenAI API key to save it.");
-      return;
-    }
-    setSavingOpenaiKey(true);
-    setError("");
-    try {
-      const status = await api.aiEmailAssistant.saveOpenAIKey(trimmed);
-      setOpenaiKeyInput("");
-      applyKeyStatus(status);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save API key");
-    } finally {
-      setSavingOpenaiKey(false);
-    }
-  };
-
-  const removeOpenaiKey = async () => {
-    setSavingOpenaiKey(true);
-    setError("");
-    try {
-      const status = await api.aiEmailAssistant.deleteOpenAIKey();
-      setOpenaiKeyInput("");
-      applyKeyStatus(status);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remove API key");
-    } finally {
-      setSavingOpenaiKey(false);
-    }
-  };
-
   const saveSettings = async () => {
     if (!settings) return;
     const storeId = activeStore?.id;
@@ -1100,7 +1047,7 @@ export function AIEmailAssistantPage() {
         {
           done: settings.openai_configured,
           label: "Add OpenAI API key",
-          action: () => setTab("settings"),
+          action: () => navigate("/settings/api-keys"),
         },
         {
           done: Boolean(settings.business_name.trim()),
@@ -2083,7 +2030,7 @@ export function AIEmailAssistantPage() {
                       · Finish setup:{" "}
                       {!stats.gmail_connected && "connect Gmail"}
                       {!stats.gmail_connected && !stats.openai_configured && " and "}
-                      {!stats.openai_configured && "add your OpenAI key"} in Settings.
+                      {!stats.openai_configured && "add your OpenAI key"} under Settings → API keys.
                     </li>
                   )}
                 </ul>
@@ -2099,8 +2046,8 @@ export function AIEmailAssistantPage() {
           <div>
             <h2 className="text-lg font-semibold text-content">Your business</h2>
             <p className="text-sm text-content-muted mt-1 leading-relaxed">
-              Tell the AI how your store sounds and what customers usually ask. Keep this short —
-              API keys and autopilot live under Settings.
+              Tell the AI how your store sounds and what customers usually ask. Keep this short.
+              The API key lives under Settings → API keys. Autopilot stays on this page.
             </p>
           </div>
 
@@ -2203,66 +2150,28 @@ export function AIEmailAssistantPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <KeyRound className="h-4 w-4 text-brand-600 dark:text-brand-400" />
-                OpenAI API key
-              </CardTitle>
+              <CardTitle>OpenAI</CardTitle>
               <CardDescription>
-                Required for drafting replies in this module only. Stored encrypted — billed by
-                OpenAI on your account. AI Ads has its own key under AI Ads → Settings.
+                The key is saved on your account. This store picks which model drafts replies.
+                Sol is the default: close to flagship quality, and much cheaper per token.
               </CardDescription>
             </CardHeader>
             <div className="space-y-4">
-              {settings.openai_key_is_user_owned && settings.openai_key_masked && (
-                <div className="flex items-center justify-between rounded-lg bg-surface-muted px-3 py-2 text-sm">
-                  <span className="text-content-muted">Saved key</span>
-                  <span className="font-mono text-content">{settings.openai_key_masked}</span>
-                </div>
-              )}
-              {settings.openai_uses_server_fallback && !settings.openai_key_is_user_owned && (
-                <p className="text-xs text-content-muted rounded-lg bg-surface-muted px-3 py-2">
-                  Using a temporary shared key for development. Add your own key for production.
-                </p>
-              )}
-              <div className="space-y-1.5">
-                <label htmlFor="openai-api-key" className="block text-sm font-medium text-content">
-                  {settings.openai_key_is_user_owned ? "Replace key" : "API key"}
-                </label>
-                <input
-                  id="openai-api-key"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  placeholder="sk-..."
-                  value={openaiKeyInput}
-                  onChange={(e) => setOpenaiKeyInput(e.target.value)}
-                  className={cn(
-                    "flex h-10 w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm font-mono text-content",
-                    "placeholder:text-content-subtle focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
-                  )}
-                />
-                <p className="text-xs text-content-subtle">
-                  Get a key at{" "}
-                  <a
-                    href="https://platform.openai.com/api-keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-brand-600 hover:underline"
-                  >
-                    platform.openai.com/api-keys
-                  </a>
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={saveOpenaiKey} disabled={savingOpenaiKey || !openaiKeyInput.trim()}>
-                  {savingOpenaiKey ? "Saving…" : settings.openai_key_is_user_owned ? "Update key" : "Save key"}
-                </Button>
-                {settings.openai_key_is_user_owned && (
-                  <Button variant="outline" onClick={removeOpenaiKey} disabled={savingOpenaiKey}>
-                    Remove
-                  </Button>
+              <div className="flex flex-wrap items-center gap-3">
+                <Badge variant={settings.openai_configured ? "success" : "warning"}>
+                  {settings.openai_configured ? "API key ready" : "API key needed"}
+                </Badge>
+                {settings.openai_key_is_user_owned && settings.openai_key_masked && (
+                  <span className="font-mono text-xs text-content-muted">{settings.openai_key_masked}</span>
                 )}
+                <Link to="/settings/api-keys" className="text-sm font-medium text-brand-600 hover:underline">
+                  Manage API keys
+                </Link>
               </div>
+              <ModelSelect
+                value={settings.openai_model || settings.default_model || "gpt-6.1-sol"}
+                onChange={(id) => setSettings({ ...settings, openai_model: id })}
+              />
             </div>
           </Card>
 
@@ -2524,15 +2433,6 @@ export function AIEmailAssistantPage() {
                 onChange={(v) => setSettings({ ...settings, verify_gmail_thread_before_reply: v })}
                 label="Skip if we already sent last"
                 description="If your latest message is already in the thread, don’t reply again"
-              />
-              <Input
-                label="AI model (optional)"
-                hint={`Default: ${settings.default_model}`}
-                placeholder={settings.default_model}
-                value={settings.openai_model ?? ""}
-                onChange={(e) =>
-                  setSettings({ ...settings, openai_model: e.target.value || null })
-                }
               />
             </div>
           </Card>

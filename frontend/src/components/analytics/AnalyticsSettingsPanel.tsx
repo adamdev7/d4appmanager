@@ -1,13 +1,11 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   CalendarRange,
-  ExternalLink,
   KeyRound,
-  PlugZap,
   RefreshCw,
   Repeat,
   Save,
-  TestTube2,
   Trash2,
   Wallet,
   CircleDollarSign,
@@ -34,8 +32,6 @@ type Props = {
 };
 
 export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
-  const [metaToken, setMetaToken] = useState("");
-  const [adAccountId, setAdAccountId] = useState("");
   const [shippingCost, setShippingCost] = useState("0");
   const [feePercent, setFeePercent] = useState("0");
   const [feeFixed, setFeeFixed] = useState("0");
@@ -54,15 +50,12 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
   const [stripeAccounts, setStripeAccounts] = useState<AnalyticsStripeAccount[]>([]);
   const [freshWebhookSecret, setFreshWebhookSecret] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [testResult, setTestResult] = useState("");
 
   useEffect(() => {
     if (!settings) return;
-    setAdAccountId(settings.meta_ad_account_id ?? "");
     setShippingCost(String(settings.default_shipping_cost));
     setFeePercent(String(settings.transaction_fee_percent));
     setFeeFixed(String(settings.transaction_fee_fixed));
@@ -85,7 +78,6 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
       }))
     );
     if (settings.mrr_webhook_secret) setFreshWebhookSecret(settings.mrr_webhook_secret);
-    setMetaToken("");
   }, [settings]);
 
   const save = async (extra?: Record<string, unknown>) => {
@@ -94,7 +86,6 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
     setMessage("");
     try {
       const payload: Record<string, unknown> = {
-        meta_ad_account_id: adAccountId.trim() || null,
         default_shipping_cost: parseFloat(shippingCost) || 0,
         transaction_fee_percent: parseFloat(feePercent) || 0,
         transaction_fee_fixed: parseFloat(feeFixed) || 0,
@@ -110,7 +101,6 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
         mrr_manual_churn_pct: parseFloat(mrrChurn) || 0,
         ...extra,
       };
-      if (metaToken.trim()) payload.meta_access_token = metaToken.trim();
       const saved = await api.analytics.updateSettings(storeId, payload);
 
       const originalAccounts = settings?.stripe_accounts ?? [];
@@ -127,7 +117,6 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
         accounts = (res.accounts as AnalyticsStripeAccount[]) ?? accounts;
       }
 
-      setMetaToken("");
       if (saved.mrr_webhook_secret) setFreshWebhookSecret(saved.mrr_webhook_secret);
       setStripeAccounts(accounts);
       if (saved.display_currency) setDisplayCurrency(saved.display_currency.toUpperCase());
@@ -135,37 +124,6 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save settings");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const testMeta = async () => {
-    setTesting(true);
-    setTestResult("");
-    setError("");
-    try {
-      const res = await api.analytics.testMeta(storeId, {
-        meta_access_token: metaToken.trim() || undefined,
-        meta_ad_account_id: adAccountId.trim() || undefined,
-      });
-      setTestResult(res.message);
-      if (!res.ok) setError(res.message);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Connection test failed");
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const clearMetaToken = async () => {
-    setSaving(true);
-    try {
-      await api.analytics.updateSettings(storeId, { meta_access_token: "" });
-      setMessage("Meta access token removed.");
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remove token");
     } finally {
       setSaving(false);
     }
@@ -573,70 +531,19 @@ export function AnalyticsSettingsPanel({ storeId, settings, onSaved }: Props) {
 
       <Card padding="lg">
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <PlugZap className="h-5 w-5 text-brand-600" />
-            <CardTitle>Meta (Facebook) Ads</CardTitle>
-          </div>
+          <CardTitle>Meta ad spend</CardTitle>
           <CardDescription>
-            Connect your Meta Marketing API to track ad spend, ROAS, and campaign performance.
+            Spend and ROAS use the store Meta connection. Change the token or ad account in
+            account settings.
           </CardDescription>
         </CardHeader>
-
-        <div className="space-y-4">
-          <div className="flex flex-wrap gap-2 items-center">
-            <Badge variant={settings?.meta_configured ? "success" : "muted"}>
-              {settings?.meta_configured ? "Connected" : "Not connected"}
-            </Badge>
-            {settings?.meta_token_masked && (
-              <span className="text-xs text-content-muted">Token: {settings.meta_token_masked}</span>
-            )}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-content mb-1.5">Access token</label>
-            <Input
-              type="password"
-              placeholder={settings?.meta_token_masked ? "Enter new token to replace" : "EAAxxxx…"}
-              value={metaToken}
-              onChange={(e) => setMetaToken(e.target.value)}
-            />
-            <p className="text-xs text-content-subtle mt-1">
-              Create a long-lived token in{" "}
-              <a
-                href="https://developers.facebook.com/tools/explorer/"
-                target="_blank"
-                rel="noreferrer"
-                className="text-brand-600 hover:underline inline-flex items-center gap-0.5"
-              >
-                Graph API Explorer <ExternalLink className="h-3 w-3" />
-              </a>{" "}
-              with <code className="text-xs">ads_read</code>.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-content mb-1.5">Ad account ID</label>
-            <Input
-              placeholder="1234567890 (without act_ prefix)"
-              value={adAccountId}
-              onChange={(e) => setAdAccountId(e.target.value)}
-            />
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" onClick={testMeta} disabled={testing}>
-              <TestTube2 className="h-4 w-4 mr-1.5" />
-              {testing ? "Testing…" : "Test connection"}
-            </Button>
-            {settings?.meta_token_masked && (
-              <Button type="button" variant="ghost" onClick={clearMetaToken} disabled={saving}>
-                Remove token
-              </Button>
-            )}
-          </div>
-          {testResult && !error && (
-            <p className="text-sm text-emerald-600 dark:text-emerald-400">{testResult}</p>
-          )}
+        <div className="flex flex-wrap items-center gap-3">
+          <Badge variant={settings?.meta_configured ? "success" : "muted"}>
+            {settings?.meta_configured ? "Connected" : "Not connected"}
+          </Badge>
+          <Link to="/settings/meta" className="text-sm font-medium text-brand-600 hover:underline">
+            Open Meta settings
+          </Link>
         </div>
       </Card>
 
