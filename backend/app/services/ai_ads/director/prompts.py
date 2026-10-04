@@ -72,7 +72,10 @@ Rules for every concept:
   French (not France French, not translated English).
 - why: ONE line citing the data behind it.
 
-Also return 3-5 audience_ideas (interest, lookalike, retargeting, broad) and up to 4 offer_ideas.
+Also return 3-5 audience_ideas and up to 4 offer_ideas.
+Each audience idea must use these keys: name (required short label), segment_type
+(exactly one of interest, lookalike, retargeting, broad), description, why.
+Each offer idea must use these keys: label (required), offer_id, description, why.
 An offer idea that is not in confirmed_offers must leave offer_id empty; the owner will confirm it.
 """
 
@@ -81,7 +84,9 @@ CRITIQUE = f"""{DIRECTOR_RULES}
 Task: CRITIQUE & SELECT. You receive candidate concepts (with novelty scores computed against
 past ads and any guardrail flags). Be a tough reviewer.
 
-For every candidate return a review (index = position in candidates):
+For every candidate return a review object. Use these keys: index (0-based position in
+candidates), brand_fit, novelty, predicted_performance, production_cost, risk, keep,
+verdict, improved_hook.
 - brand_fit, novelty, predicted_performance (from playbook, meta winners/losers, feedback),
   production_cost (5 = cheap), risk (5 = risky: policy, truthfulness, off-brand) — each 1-5.
 - keep=false for weak, repetitive, off-brand, or risky ideas; verdict says why in one line.
@@ -90,15 +95,16 @@ For every candidate return a review (index = position in candidates):
 Then write the weekly brief:
 - headline: one line ("Push the pearl necklace before Mother's Day").
 - summary: 2-4 sentences on what to make this week and WHY, citing data.
-- picks: the concepts to produce this week, within budget.remaining_usd using each candidate's
-  estimated_cost_usd, and within budget.max_images / budget.max_videos. Mix ad types, products,
-  angles, and audiences. reason cites data.
+- picks: objects with index and reason. Choose the concepts to produce this week, within
+  budget.remaining_usd using each candidate's estimated_cost_usd, and within budget.max_images /
+  budget.max_videos. Mix ad types, products, angles, and audiences. reason cites data.
 - testing_plan: one variable at a time, what to compare, how long, and a recommended daily test
   budget range per ad set in the store currency (a range, labeled as a suggestion).
 - naming_convention: a simple ad naming pattern for Ads Manager.
 
-playbook_updates: only for open hypotheses (by id) where feedback / outcomes give real evidence;
-status supported, refuted, or inconclusive; evidence cites the numbers. Otherwise return [].
+playbook_updates: only for open hypotheses where feedback / outcomes give real evidence.
+Each object has hypothesis_id, status (supported, refuted, or inconclusive), and evidence
+citing the numbers. Otherwise return [].
 """
 
 CHALLENGE = f"""{DIRECTOR_RULES}
@@ -106,9 +112,9 @@ CHALLENGE = f"""{DIRECTOR_RULES}
 Task: CHALLENGE a manual generation request from the owner before it runs.
 You get the request, the relevant slice of the context, and pre-computed checks.
 - verdict "go" when the request is reasonable; "reconsider" when data says it is weak or risky.
-- notes: at most 4 short, direct sentences ("This angle underperformed the last 3 times: CTR 0.6%
-  vs 1.4% account median."). No praise padding. Empty when there is nothing useful to add.
-- alternative: only when you have a clearly better option or a strong add-on (different ad type,
-  hook, angle, audience, or product), with why citing data. Otherwise null.
+- notes: an array of at most 4 short, direct sentences ("This angle underperformed the last 3
+  times: CTR 0.6% vs 1.4% account median."). No praise padding. Empty when there is nothing useful to add.
+- alternative: only when you have a clearly better option or a strong add-on. Use an object with
+  ad_type, hook, angle, audience, product_id, and why citing data. Otherwise null.
 The owner can always override and generate exactly what they asked.
 """

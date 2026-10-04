@@ -28,6 +28,7 @@ from app.services.ai_ads.complete_creative import STYLE_PLAYBOOKS
 from app.services.ai_ads.director import calendar, context as ctx, costs, engine, memory, service
 from app.services.ai_ads.director.schemas import (
     BriefPick,
+    ChallengeResult,
     ConceptReview,
     CritiqueResult,
     DirectorConcept,
@@ -100,6 +101,97 @@ def test_ideation_fills_missing_concept_name():
     assert result.concepts[0].concept_name == "She films the unboxing at the kitchen table"
     assert result.concepts[1].concept_name == "Clasp close-up"
     assert result.concepts[2].concept_name == "Morning light"
+
+
+def test_ideation_accepts_audience_type_and_input_value():
+    result = IdeationResult.model_validate(
+        {
+            "concepts": [],
+            "audience_ideas": [
+                {"type": "Interest", "input_value": "Jewelry lovers"},
+                {"type": "Lookalike", "input_value": "Engaged shoppers"},
+                {"type": "Retargeting", "input_value": "Website visitors"},
+                {"type": "Broad", "input_value": "All jewelry buyers"},
+            ],
+            "offer_ideas": [{"name": "Free shipping over 75", "id": "offer-1"}],
+        }
+    )
+    assert [(a.name, a.segment_type) for a in result.audience_ideas] == [
+        ("Jewelry lovers", "interest"),
+        ("Engaged shoppers", "lookalike"),
+        ("Website visitors", "retargeting"),
+        ("All jewelry buyers", "broad"),
+    ]
+    assert result.offer_ideas[0].label == "Free shipping over 75"
+    assert result.offer_ideas[0].offer_id == "offer-1"
+
+
+def test_director_models_accept_messy_output():
+    ideas = IdeationResult.model_validate(
+        {
+            "concepts": [
+                {
+                    "ad_type": "UGC",
+                    "image_count": "2 images",
+                    "video_count": None,
+                    "is_wildcard": "yes",
+                    "claims": "14k gold",
+                    "offer_ids": "offer-1",
+                    "data_points": None,
+                    "script": "She films the clasp in the first second",
+                    "hook": "Look at the clasp",
+                },
+                None,
+            ],
+            "audience_ideas": None,
+            "offer_ideas": "Free shipping",
+        }
+    )
+    concept = ideas.concepts[0]
+    assert concept.concept_name == "Look at the clasp"
+    assert concept.image_count == 2
+    assert concept.video_count == 0
+    assert concept.is_wildcard is True
+    assert concept.claims == ["14k gold"]
+    assert concept.offer_ids == ["offer-1"]
+    assert concept.script is not None
+    assert concept.script.first_two_seconds == "She films the clasp in the first second"
+    assert ideas.audience_ideas == []
+    assert ideas.offer_ideas[0].label == "Free shipping"
+
+    critique = CritiqueResult.model_validate(
+        {
+            "reviews": [
+                {"brand_fit": "4/5", "keep": "false", "verdict": "Repetitive"},
+                {"i": "1", "novelty": "high"},
+            ],
+            "brief": {"picks": [{"reason": "Best gift angle"}, "not a pick"], "summary": ["Line one", "Line two"]},
+            "playbook_updates": [
+                {"id": "hyp-1", "status": "Supported", "evidence": "CTR rose"},
+                {"evidence": "no id"},
+            ],
+        }
+    )
+    assert critique.reviews[0].index == 0
+    assert critique.reviews[0].brand_fit == 4
+    assert critique.reviews[0].keep is False
+    assert critique.reviews[1].index == 1
+    assert critique.reviews[1].novelty == 3
+    assert [(p.index, p.reason) for p in critique.brief.picks] == [(0, "Best gift angle"), (1, "not a pick")]
+    assert critique.brief.summary == "Line one\nLine two"
+    assert [(u.hypothesis_id, u.status) for u in critique.playbook_updates] == [("hyp-1", "supported")]
+
+    challenge = ChallengeResult.model_validate(
+        {
+            "verdict": "Reconsider",
+            "notes": "Angle already ran.",
+            "alternative": "Try a macro clasp shot instead of another lifestyle frame.",
+        }
+    )
+    assert challenge.verdict == "reconsider"
+    assert challenge.notes == ["Angle already ran."]
+    assert challenge.alternative is not None
+    assert "macro clasp" in challenge.alternative.why
 
 
 def test_every_ad_type_maps_to_a_renderable_style():
