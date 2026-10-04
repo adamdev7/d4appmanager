@@ -50,6 +50,9 @@ class AutomationRunResponse(BaseModel):
     stopped: bool = False
     reason: str | None = None
     error: str | None = None
+    # "running" means the HTTP call returned before Gmail/OpenAI finished.
+    started: bool = False
+    status: str = "idle"
 
 
 class SetOpenAIKeyBody(BaseModel):

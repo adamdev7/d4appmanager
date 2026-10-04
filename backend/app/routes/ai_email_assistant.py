@@ -26,6 +26,22 @@ router = APIRouter()
 _service = AIEmailAssistantService()
 
 
+def _automation_response(result: dict) -> AutomationRunResponse:
+    processed = result.get("processed", 0)
+    if isinstance(processed, bool) or not isinstance(processed, int):
+        processed = 0
+    return AutomationRunResponse(
+        ok=bool(result.get("ok", False)),
+        processed=processed,
+        skipped=bool(result.get("skipped", False)),
+        stopped=bool(result.get("stopped", False)),
+        reason=result.get("reason"),
+        error=result.get("error"),
+        started=bool(result.get("started", False)),
+        status=str(result.get("status") or "idle"),
+    )
+
+
 @router.get("/openai-key", response_model=OpenAIKeyStatusResponse)
 async def get_openai_key_status(
     user: User = Depends(get_verified_user),
@@ -106,15 +122,22 @@ async def run_automation_now(
     user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
+    """Validate, then check Gmail in the background. Poll /automation/run/status."""
     result = await _service.run_automation_now(db, user, store_id)
-    return AutomationRunResponse(
-        ok=result.get("ok", False),
-        processed=result.get("processed", 0),
-        skipped=result.get("skipped", False),
-        stopped=result.get("stopped", False),
-        reason=result.get("reason"),
-        error=result.get("error"),
-    )
+    return _automation_response(result)
+
+
+@router.get("/automation/run/status", response_model=AutomationRunResponse)
+async def automation_run_status(
+    store_id: str | None = Query(default=None),
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    from app.ai_email_assistant.automation_worker import manual_run_status
+
+    settings_row = _service.get_or_create_settings(db, user, store_id)
+    result = manual_run_status(settings_row.id)
+    return _automation_response(result)
 
 
 @router.post("/inbox/sync")

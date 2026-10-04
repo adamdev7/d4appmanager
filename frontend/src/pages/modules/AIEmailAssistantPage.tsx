@@ -776,9 +776,18 @@ export function AIEmailAssistantPage() {
       // Poll status — scan runs in the background to avoid gateway timeouts.
       const started = Date.now();
       const maxWaitMs = 30 * 60 * 1000;
+      let statusMisses = 0;
       while (Date.now() - started < maxWaitMs) {
         await new Promise((r) => setTimeout(r, 2000));
-        const status = await api.aiEmailAssistant.fullHistoryScanStatus(storeId);
+        let status;
+        try {
+          status = await api.aiEmailAssistant.fullHistoryScanStatus(storeId);
+          statusMisses = 0;
+        } catch (err) {
+          statusMisses += 1;
+          if (statusMisses < 5) continue;
+          throw err;
+        }
         if (status.message) {
           setScanResultMessage(
             status.status === "running" && status.total
@@ -1027,16 +1036,44 @@ export function AIEmailAssistantPage() {
     }
     setRunningAutomation(true);
     setError("");
+    setScanResultMessage("Checking Gmail and drafting replies…");
     try {
-      const result = await api.aiEmailAssistant.runAutomation(storeId);
-      await Promise.all([loadInbox(), loadSettings(), loadLogs(), loadStats()]);
-      if (result.stopped && result.error) {
-        setError(result.error);
-      } else if (!result.ok && result.error) {
-        setError(result.error);
+      await api.aiEmailAssistant.runAutomation(storeId);
+      const started = Date.now();
+      const maxWaitMs = 30 * 60 * 1000;
+      let statusMisses = 0;
+      while (Date.now() - started < maxWaitMs) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let result;
+        try {
+          result = await api.aiEmailAssistant.runAutomationStatus(storeId);
+          statusMisses = 0;
+        } catch (err) {
+          statusMisses += 1;
+          if (statusMisses < 5) continue;
+          throw err;
+        }
+        if (result.status === "running") continue;
+        if (result.status === "idle") {
+          if (Date.now() - started < 10000) continue;
+          break;
+        }
+        await Promise.all([loadInbox(), loadSettings(), loadLogs(), loadStats()]);
+        if (result.stopped && result.error) {
+          setError(result.error);
+          setScanResultMessage("");
+        } else if (!result.ok && result.error) {
+          setError(result.error);
+          setScanResultMessage("");
+        } else {
+          setScanResultMessage("Inbox check finished.");
+        }
+        return;
       }
+      setScanResultMessage("The inbox check is still running. Refresh in a minute to see new mail.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Autopilot run failed");
+      setScanResultMessage("");
       await loadSettings();
     } finally {
       setRunningAutomation(false);

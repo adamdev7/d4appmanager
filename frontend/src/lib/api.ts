@@ -116,7 +116,7 @@ async function parseError(res: Response): Promise<string> {
     const err = await res.json().catch(() => ({}));
     const detail = (err as { detail?: unknown }).detail;
     if (typeof detail === "string" && detail.trim()) return detail;
-    return "Shopify took too long. Saved products in App Manager will load on the next try.";
+    return "The server took too long to answer. Refresh the page — work that already started may still finish.";
   }
   const err = await res.json().catch(() => ({}));
   const detail = (err as { detail?: unknown }).detail;
@@ -731,9 +731,24 @@ export const api = {
         stopped: boolean;
         reason: string | null;
         error: string | null;
+        started: boolean;
+        status: string;
       }>(`/ai-email-assistant/automation/run${storeId ? `?store_id=${storeId}` : ""}`, {
         method: "POST",
       }),
+    runAutomationStatus: (storeId?: string) =>
+      request<{
+        ok: boolean;
+        processed: number;
+        skipped: boolean;
+        stopped: boolean;
+        reason: string | null;
+        error: string | null;
+        started: boolean;
+        status: string;
+      }>(
+        `/ai-email-assistant/automation/run/status${storeId ? `?store_id=${storeId}` : ""}`
+      ),
     syncInbox: (gmailAccountId: string, maxResults = 15, storeId?: string) =>
       request(`/ai-email-assistant/inbox/sync${storeId ? `?store_id=${storeId}` : ""}`, {
         method: "POST",

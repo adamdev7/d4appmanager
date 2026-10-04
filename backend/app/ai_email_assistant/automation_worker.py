@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 _service = AIEmailAssistantService()
 _stop_event: asyncio.Event | None = None
 _task: asyncio.Task | None = None
+_manual_lock = asyncio.Lock()
+_manual_running: set[str] = set()
+_manual_result: dict[str, dict] = {}
 
 
 async def run_automation_for_settings(settings_id: str, *, force: bool = False) -> dict:
@@ -113,6 +116,43 @@ async def run_automation_for_settings(settings_id: str, *, force: bool = False) 
         return {"ok": False, "stopped": False, "error": parsed.user_message}
     finally:
         db.close()
+
+
+def manual_run_status(settings_id: str) -> dict:
+    """Status of a Run-once job. The HTTP request returns before the job finishes."""
+    if settings_id in _manual_running:
+        return {"ok": True, "started": True, "status": "running"}
+    result = _manual_result.get(settings_id)
+    if result:
+        return {"status": "done", "started": True, **result}
+    return {"ok": True, "started": False, "status": "idle"}
+
+
+async def start_manual_automation(settings_id: str) -> bool:
+    """Queue one inbox cycle. Returns False if that settings row is already running."""
+    async with _manual_lock:
+        if settings_id in _manual_running:
+            return False
+        _manual_running.add(settings_id)
+        _manual_result.pop(settings_id, None)
+
+    asyncio.create_task(_run_manual(settings_id))
+    return True
+
+
+async def _run_manual(settings_id: str) -> None:
+    try:
+        _manual_result[settings_id] = await run_automation_for_settings(settings_id, force=True)
+    except Exception as exc:
+        logger.exception("Manual autopilot run failed for settings %s", settings_id)
+        _manual_result[settings_id] = {
+            "ok": False,
+            "stopped": False,
+            "error": str(exc)[:500],
+        }
+    finally:
+        async with _manual_lock:
+            _manual_running.discard(settings_id)
 
 
 async def run_due_automations() -> None:

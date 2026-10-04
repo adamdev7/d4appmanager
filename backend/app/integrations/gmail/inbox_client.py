@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -30,6 +31,103 @@ def _mostly_quoted(text: str) -> bool:
         return False
     quoted = sum(1 for ln in lines if ln.lstrip().startswith(">"))
     return quoted / len(lines) >= 0.5
+
+
+def normalize_rfc_message_id(value: str | None) -> str | None:
+    """Return a bracketed RFC 5322 Message-ID, or None if this is not one.
+
+    Gmail's API message id (a hex token with no @) must not be used as
+    In-Reply-To. Gmail rejects the send with "Invalid thread_id value"
+    when that header does not name a message in the thread.
+    """
+    raw = " ".join((value or "").split())
+    if not raw or "@" not in raw:
+        return None
+    if raw.startswith("<") and raw.endswith(">"):
+        return raw
+    return f"<{raw.strip('<>')}>"
+
+
+def merge_references(existing: str | None, message_id: str | None) -> str | None:
+    parts = [part for part in (existing or "").split() if part]
+    if message_id and message_id not in parts:
+        parts.append(message_id)
+    if not parts:
+        return None
+    return " ".join(parts)
+
+
+def clean_header_value(value: str) -> str:
+    return " ".join((value or "").replace("\r", " ").replace("\n", " ").split())
+
+
+def reply_subject_for(subject: str, *, threaded: bool) -> str:
+    cleaned = clean_header_value(subject) or "(no subject)"
+    if not threaded:
+        return cleaned
+    if cleaned.lower().startswith("re:"):
+        return cleaned
+    return f"Re: {cleaned}"
+
+
+def gmail_api_error_text(body: str) -> str:
+    try:
+        data = json.loads(body or "")
+    except json.JSONDecodeError:
+        return (body or "").strip()[:300]
+    err = data.get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("message") or "").strip()[:300]
+    return (body or "").strip()[:300]
+
+
+def describe_gmail_send_error(status_code: int, body: str) -> str:
+    message = gmail_api_error_text(body)
+    lowered = f"{message} {body or ''}".lower()
+    if status_code in (401, 403) or "insufficient" in lowered or "permission" in lowered:
+        return (
+            "Gmail refused to send because this connection cannot send mail. "
+            "Reconnect Gmail in Settings, then turn autopilot back on."
+        )
+    if message:
+        return message
+    return f"Gmail returned HTTP {status_code}"
+
+
+def should_retry_send_without_thread(status_code: int, body: str) -> bool:
+    """True when Gmail rejected threading, so a plain send can still deliver the reply."""
+    if status_code != 400:
+        return False
+    text = f"{gmail_api_error_text(body)} {body or ''}".lower()
+    return "thread" in text or "in-reply-to" in text or "references" in text
+
+
+def build_reply_email(
+    *,
+    to: str,
+    from_addr: str,
+    subject: str,
+    body_text: str,
+    body_html: str | None = None,
+    threaded: bool = False,
+    rfc_message_id: str | None = None,
+    references: str | None = None,
+) -> EmailMessage:
+    em = EmailMessage()
+    em["To"] = clean_header_value(to)
+    em["From"] = clean_header_value(from_addr)
+    em["Subject"] = reply_subject_for(subject, threaded=threaded)
+    em.set_content(body_text or "", subtype="plain")
+    if body_html:
+        # multipart/alternative — clients that block HTML still get the text link.
+        em.add_alternative(body_html, subtype="html")
+    message_id = normalize_rfc_message_id(rfc_message_id) if threaded else None
+    if message_id:
+        em["In-Reply-To"] = message_id
+        refs = merge_references(references, message_id)
+        if refs:
+            em["References"] = refs
+    return em
 
 
 def _visible_email_text(text: str) -> str:
@@ -91,6 +189,7 @@ class GmailInboxClient:
 
     def __init__(self, db: Session) -> None:
         self._db = db
+        self.last_send_error: str | None = None
 
     async def _token(self, account: GmailAccount) -> str | None:
         return await get_gmail_access_token(self._db, account)
@@ -540,6 +639,39 @@ class GmailInboxClient:
         _, addr = parseaddr(from_header)
         return addr.lower() if addr else from_header
 
+    async def _message_reply_meta(
+        self, token: str, message_id: str
+    ) -> tuple[str | None, str | None, str | None]:
+        """RFC Message-ID, References, and Subject for the message being answered."""
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{GMAIL_API}/messages/{message_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                params=[
+                    ("format", "metadata"),
+                    ("metadataHeaders", "Message-ID"),
+                    ("metadataHeaders", "References"),
+                    ("metadataHeaders", "Subject"),
+                ],
+            )
+        if resp.status_code >= 400:
+            logger.warning(
+                "Could not load reply headers for %s: %s %s",
+                message_id,
+                resp.status_code,
+                resp.text[:200],
+            )
+            return None, None, None
+        headers = {
+            h["name"].lower(): h["value"]
+            for h in resp.json().get("payload", {}).get("headers", [])
+        }
+        return (
+            normalize_rfc_message_id(headers.get("message-id")),
+            headers.get("references"),
+            headers.get("subject"),
+        )
+
     async def send_thread_reply(
         self,
         account: GmailAccount,
@@ -547,38 +679,80 @@ class GmailInboxClient:
         to: str,
         subject: str,
         body_text: str,
-        thread_id: str,
+        thread_id: str | None,
         in_reply_to_message_id: str | None = None,
         body_html: str | None = None,
     ) -> dict | None:
+        self.last_send_error = None
         token = await self._token(account)
         if not token:
+            self.last_send_error = (
+                "Could not refresh the Gmail connection. "
+                "Reconnect Gmail in Settings, then turn autopilot back on."
+            )
             return None
 
-        em = EmailMessage()
-        em["To"] = to
-        em["From"] = account.email
-        reply_subject = subject if subject.lower().startswith("re:") else f"Re: {subject}"
-        em["Subject"] = reply_subject
-        em.set_content(body_text, subtype="plain")
-        if body_html:
-            # multipart/alternative — clients that block HTML still get the text link.
-            em.add_alternative(body_html, subtype="html")
-        if in_reply_to_message_id:
-            em["In-Reply-To"] = f"<{in_reply_to_message_id}>"
-            em["References"] = f"<{in_reply_to_message_id}>"
-
-        raw = base64.urlsafe_b64encode(em.as_bytes()).decode()
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{GMAIL_API}/messages/send",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"raw": raw, "threadId": thread_id},
+        threaded = bool(thread_id)
+        rfc_message_id = None
+        references = None
+        send_subject = subject
+        if threaded and in_reply_to_message_id:
+            rfc_message_id, references, original_subject = await self._message_reply_meta(
+                token, in_reply_to_message_id
             )
+            # Subject must match the thread or Gmail rejects the send.
+            if original_subject:
+                send_subject = original_subject
+
+        message = build_reply_email(
+            to=to,
+            from_addr=account.email,
+            subject=send_subject,
+            body_text=body_text,
+            body_html=body_html,
+            threaded=threaded,
+            rfc_message_id=rfc_message_id,
+            references=references,
+        )
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await self._post_raw(client, token, raw, thread_id if threaded else None)
+            if resp.status_code >= 400 and threaded and should_retry_send_without_thread(
+                resp.status_code, resp.text
+            ):
+                logger.warning(
+                    "Gmail rejected threaded reply (%s). Sending it as a new message.",
+                    gmail_api_error_text(resp.text) or resp.status_code,
+                )
+                fallback = build_reply_email(
+                    to=to,
+                    from_addr=account.email,
+                    subject=subject,
+                    body_text=body_text,
+                    body_html=body_html,
+                    threaded=False,
+                )
+                fallback_raw = base64.urlsafe_b64encode(fallback.as_bytes()).decode()
+                resp = await self._post_raw(client, token, fallback_raw, None)
+
             if resp.status_code >= 400:
-                logger.error("Gmail send failed: %s", resp.text[:500])
+                self.last_send_error = describe_gmail_send_error(resp.status_code, resp.text)
+                logger.error(
+                    "Gmail send failed (%s): %s", resp.status_code, resp.text[:500]
+                )
                 return None
             return resp.json()
+
+    @staticmethod
+    async def _post_raw(client: httpx.AsyncClient, token: str, raw: str, thread_id: str | None):
+        body: dict = {"raw": raw}
+        if thread_id:
+            body["threadId"] = thread_id
+        return await client.post(
+            f"{GMAIL_API}/messages/send",
+            headers={"Authorization": f"Bearer {token}"},
+            json=body,
+        )
 
     async def we_sent_last_in_thread(self, account: GmailAccount, thread_id: str) -> bool:
         """True if the latest message in the thread is from our Gmail account."""
