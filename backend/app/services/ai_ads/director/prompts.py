@@ -52,6 +52,7 @@ Cover a wide range across concepts (not all in one bucket):
 - formats the store has not used yet when meta.by_format / memory show a gap
 
 Rules for every concept:
+- concept_name is required: a short label (3-6 words), distinct from the hook. Never omit it.
 - ad_type must be an id from ad_types. product_id must be an id from products.
 - image_count 0-4 and video_count 0-2, small (most concepts: 1-2 files).
 - Vary emotion deliberately (gifting_joy, self_love, elegance, nostalgia, celebration,

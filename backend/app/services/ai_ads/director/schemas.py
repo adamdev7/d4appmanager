@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class DirectorScript(BaseModel):
@@ -12,8 +14,13 @@ class DirectorScript(BaseModel):
     language: str = ""
 
 
+def _label(value: Any, limit: int = 255) -> str:
+    text = "" if value is None else str(value).strip()
+    return text[:limit]
+
+
 class DirectorConcept(BaseModel):
-    concept_name: str
+    concept_name: str = ""
     kind: str = "new"
     ad_type: str = "LIFESTYLE"
     product_id: str = ""
@@ -38,6 +45,27 @@ class DirectorConcept(BaseModel):
     claims: list[str] = Field(default_factory=list)
     source_creative_id: str = ""
     script: DirectorScript | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def ensure_concept_name(cls, data: Any) -> Any:
+        """Models often omit concept_name. Derive a label so ideation still parses."""
+        if not isinstance(data, dict):
+            return data
+        name = _label(data.get("concept_name"))
+        if not name:
+            for key in ("name", "title", "concept", "headline"):
+                name = _label(data.get(key))
+                if name:
+                    break
+        if not name:
+            name = _label(data.get("hook"), 120) or _label(data.get("angle"), 120)
+        if not name:
+            ad_type = _label(data.get("ad_type"), 40).replace("_", " ")
+            name = ad_type.title() if ad_type else "Concept"
+        if name == data.get("concept_name"):
+            return data
+        return {**data, "concept_name": name}
 
 
 class AudienceIdea(BaseModel):

@@ -80,6 +80,28 @@ def _concept(**overrides):
 # ------------------------------------------------------------------ registry, calendar, costs
 
 
+def test_ideation_fills_missing_concept_name():
+    result = IdeationResult.model_validate(
+        {
+            "concepts": [
+                {
+                    "ad_type": "UGC",
+                    "product_id": "1",
+                    "hook": "She films the unboxing at the kitchen table",
+                    "offer_ideas": [],
+                },
+                {"ad_type": "PRODUCT_DEMO", "name": "Clasp close-up", "hook": "Watch the clasp"},
+                {"ad_type": "LIFESTYLE", "concept_name": "  Morning light  ", "hook": "Gold on the dresser"},
+            ],
+            "audience_ideas": [],
+            "offer_ideas": [],
+        }
+    )
+    assert result.concepts[0].concept_name == "She films the unboxing at the kitchen table"
+    assert result.concepts[1].concept_name == "Clasp close-up"
+    assert result.concepts[2].concept_name == "Morning light"
+
+
 def test_every_ad_type_maps_to_a_renderable_style():
     for t in ad_types.AD_TYPES.values():
         assert ad_types.renderable(t), t.id
