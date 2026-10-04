@@ -90,6 +90,7 @@ class AIService:
         business_type: str,
         custom_skip_rules: str = "",
         business_rules: str = "",
+        policies: str = "",
         thread_context: str | None = None,
         known_customer: bool = False,
         model_override: str | None = None,
@@ -100,14 +101,24 @@ class AIService:
 
         custom_block = custom_skip_rules.strip() or "None specified."
         rules_block = business_rules.strip() or "None specified."
-        customer_rule = ""
+        policies_block = policies.strip() or "None specified."
         if known_customer:
             customer_rule = """
-This sender is a known client: their email has prior chat history with this business
-and/or is linked to a Shopify order. They ARE a client.
-should_reply must be true for every message from them, including thank-yous, greetings,
-repeated questions, and requests a teammate must finish.
-Do not classify them as personal, spam, already_resolved, or unrelated.
+This sender's email address is on a Shopify order or they have written to the store before.
+They are a client. should_reply must be true for a message they actually wrote, including
+thank-yous, greetings, repeated questions, and requests a teammate must finish.
+Do not classify that person as personal, spam, or unrelated.
+Still set should_reply false when the message is a store notification (for example
+"Order #1234 placed by Jane"), not something the person wrote.
+"""
+        else:
+            customer_rule = """
+This sender's email address is NOT on a Shopify order for this store.
+Read the message against the business rules and policies below.
+should_reply true only when a person is asking about this business: an order, shipping,
+a product, a return, damage, or a policy.
+should_reply false when the message is a receipt, a "new order" alert, marketing,
+or anything that does not fit this store. Do not invent a customer question.
 """
 
         system_message = f"""You classify incoming emails for a {business_type or "business"} named "{business_name or "the business"}".
@@ -127,11 +138,14 @@ finish the request, but the customer must still receive a reply. That includes:
 The reply (written later) only tells them the team that handles that matter will follow up.
 Never use should_reply false for these customer emails.
 
-Do NOT reply (should_reply: false) for:
+Do NOT reply (should_reply: false, category "automated") for:
 - Automated/system messages, no-reply senders, delivery receipts, security codes, password resets
-- Newsletters, marketing blasts, platform notifications (Shopify order alerts, PayPal, social media)
-  sent FROM those platforms — not a person writing in, and not a Shopify contact-form message
-- Spam or mail clearly unrelated to this business
+- Newsletters, marketing blasts, platform notifications
+- Shopify mail to the store that a purchase happened: subjects like "[Store] Order #1234 placed by Jane",
+  "new order", "items from Shopify". The buyer named in that alert did not write the email.
+  This stays false even when the From or Reply-To is the buyer's address.
+- A Shopify contact-form message is different: the customer did write that. Those get a reply.
+- Spam or mail that does not fit this business once you compare it with the policies
 
 DO reply (should_reply: true) for:
 - Anyone who bought from the store
@@ -143,8 +157,11 @@ DO reply (should_reply: true) for:
 NEVER use category "personal" or "already_resolved" for a customer who bought from or wrote to this business.
 Use "customer" or "manual_review".
 
-Business reply rules (if these require a human decision, set needs_manual_review true and should_reply true):
+Business reply rules (these are binding; if they require a human decision, set needs_manual_review true and should_reply true):
 {rules_block}
+
+Business policies (use these to judge whether the message is about this store):
+{policies_block}
 
 Additional skip rules from the business owner (always respect these):
 {custom_block}

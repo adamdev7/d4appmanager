@@ -32,6 +32,23 @@ AUTOMATED_SUBJECT_PATTERNS = re.compile(
     re.I,
 )
 
+# Shopify's mail to the merchant when someone buys. The subject names the buyer,
+# but the buyer did not write this email. A real customer says "I placed an order",
+# not "Order #1234 placed by Jane".
+_MERCHANT_ORDER_SUBJECT = re.compile(
+    r"("
+    r"order\s*#\s*\d+\s+placed\s+by\b|"
+    r"\bplaced\s+by\b.{0,80}\border\s*#\s*\d+|"
+    r"\ba\s+new\s+order\s+(was|has\s+been)\s+placed\b|"
+    r"\byou\s+(have\s+)?received\s+a\s+new\s+order\b|"
+    r"\byou\s+have\s+a\s+new\s+order\b|"
+    r"\bnew\s+order\s*:\s*#?\d+"
+    r")",
+    re.I | re.S,
+)
+_SHOPIFY_ORDER_CARD = re.compile(r"\bitems?\s+from\s+shopify\b", re.I)
+_SHOPIFY_ORDER_CARD_CUE = re.compile(r"\b(order\s+placed|view\s+order)\b", re.I)
+
 # Language that means this person is shopping / asking about an order, not a random chat.
 _CLIENT_CONVERSATION_HINTS = re.compile(
     r"\b(order|commande|#\d{3,}|shipping|shipped|livraison|refund|remboursement|"
@@ -91,6 +108,7 @@ class EmailFilterConfig:
     business_name: str
     business_type: str
     business_rules: str = ""
+    policies: str = ""
 
 
 def config_from_settings(row: AIEmailAssistantSettings) -> EmailFilterConfig:
@@ -102,6 +120,7 @@ def config_from_settings(row: AIEmailAssistantSettings) -> EmailFilterConfig:
         business_name=row.business_name,
         business_type=row.business_type,
         business_rules=row.rules or "",
+        policies=row.policies or "",
     )
 
 
@@ -117,8 +136,24 @@ def is_platform_sender(sender_email: str) -> bool:
     return False
 
 
+def merchant_order_alert_reason(subject: str, body: str) -> str | None:
+    """Shopify (or similar) notice that a purchase happened. Never a customer email."""
+    blob = f"{subject or ''}\n{body or ''}"
+    subject_hit = _MERCHANT_ORDER_SUBJECT.search(blob)
+    card_hit = _SHOPIFY_ORDER_CARD.search(blob) and _SHOPIFY_ORDER_CARD_CUE.search(blob)
+    if not subject_hit and not card_hit:
+        return None
+    return (
+        "This is a store notification that an order was placed, not from the customer. "
+        "No reply was sent."
+    )
+
+
 def check_automated_heuristic(sender_email: str, subject: str, body: str) -> str | None:
     """Return skip reason if this looks like an automated/system email."""
+    alert = merchant_order_alert_reason(subject, body)
+    if alert:
+        return alert
     if is_platform_sender(sender_email):
         if PLATFORM_SENDER_DOMAINS.search((sender_email or "").lower()):
             return (
@@ -206,6 +241,8 @@ def customer_reply_address(
     reply_to: str = "",
 ) -> str | None:
     """Who a reply must go to. Never a Shopify/platform mailbox."""
+    if merchant_order_alert_reason(subject, body):
+        return None
     if sender_email and not is_platform_sender(sender_email):
         return sender_email.lower()
     parsed = parse_shopify_contact_form(subject, body)
@@ -244,6 +281,8 @@ def detect_manual_review_reason(
     blob = f"{subject}\n{body}\n{thread_context or ''}"
     if _SUBSCRIPTION_CANCEL.search(blob):
         return "Subscription cancellation — a teammate needs to finish this."
+    if re.search(r"cash\s+refund|refund\s+(?:me\s+)?(?:in\s+)?cash", blob, re.I):
+        return "Cash refund request — a teammate needs to finish this."
     if _UNRECOGNIZED_CHARGE.search(blob):
         return "Unrecognized or disputed charge — a teammate needs to finish this."
     if _ADMIN_SITUATIONS.search(blob):
@@ -321,6 +360,20 @@ def ensure_customer_is_answered(
     )
 
 
+def _reply_without_classifier(subject: str, body: str, *, known_customer: bool) -> EmailFilterResult:
+    """When the model is unavailable: known buyers still get a reply; strangers must ask."""
+    if known_customer or message_asks_for_help(subject, body):
+        return EmailFilterResult(should_reply=True, category="customer")
+    return EmailFilterResult(
+        should_reply=False,
+        reason=(
+            "This email address is not on an order, and the message does not "
+            "ask the store for help."
+        ),
+        category="other",
+    )
+
+
 async def evaluate_email_filter(
     config: EmailFilterConfig,
     *,
@@ -333,6 +386,9 @@ async def evaluate_email_filter(
     known_customer: bool = False,
 ) -> EmailFilterResult:
     platform = is_platform_sender(sender_email)
+    alert = merchant_order_alert_reason(subject, body)
+    if alert:
+        return EmailFilterResult(should_reply=False, reason=alert, category="automated")
 
     if not config.enabled:
         hold_reason = detect_manual_review_reason(
@@ -388,6 +444,7 @@ async def evaluate_email_filter(
                 business_type=config.business_type,
                 custom_skip_rules=config.custom_rules,
                 business_rules=config.business_rules,
+                policies=config.policies,
                 thread_context=thread_context,
                 known_customer=known_customer,
             )
@@ -397,9 +454,11 @@ async def evaluate_email_filter(
             if isinstance(exc, OpenAIServiceError) and exc.stop_autopilot:
                 raise
             logger.warning("AI email filter classification failed: %s", exc)
-            result = EmailFilterResult(should_reply=True)
+            result = _reply_without_classifier(
+                subject, body, known_customer=known_customer
+            )
     else:
-        result = EmailFilterResult(should_reply=True)
+        result = _reply_without_classifier(subject, body, known_customer=known_customer)
 
     if result.category == "personal" and not config.filter_non_business:
         result = EmailFilterResult(should_reply=True, reason=result.reason, category="customer")

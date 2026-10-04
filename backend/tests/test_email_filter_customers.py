@@ -376,6 +376,129 @@ def test_shopify_customer_message_falls_back_to_reply_to_header():
     )
 
 
+def test_order_placed_alert_is_skipped_even_when_the_buyer_is_the_sender():
+    """Shopify names the buyer on the alert. That is not the buyer writing in."""
+    ai = _FakeAI(EmailFilterResult(should_reply=True, category="customer"))
+    result = asyncio.run(
+        evaluate_email_filter(
+            _config(),
+            sender="Mélanie Charland <melanie@gmail.com>",
+            sender_email="melanie@gmail.com",
+            subject="[LUXORY] Order #1213 placed by Mélanie Charland",
+            body=(
+                "Luxury - Eternal Adjustable Ring\n"
+                "2 items from Shopify\n"
+                "Order placed\n"
+                "View order"
+            ),
+            ai=ai,
+            known_customer=True,
+        )
+    )
+    assert result.should_reply is False
+    assert result.category == "automated"
+    assert ai.called_with is None
+
+
+def test_order_placed_alert_is_skipped_when_the_smart_filter_is_off():
+    ai = _FakeAI(EmailFilterResult(should_reply=True, category="customer"))
+    config = _config()
+    config.enabled = False
+    result = asyncio.run(
+        evaluate_email_filter(
+            config,
+            sender="support.luxory@gmail.com",
+            sender_email="support.luxory@gmail.com",
+            subject="[LUXORY] Order #1213 placed by Mélanie Charland",
+            body="Order placed. View order.",
+            ai=ai,
+            known_customer=True,
+        )
+    )
+    assert result.should_reply is False
+    assert ai.called_with is None
+
+
+def test_merchant_alert_reply_to_is_not_used_as_the_customer():
+    from app.ai_email_assistant.email_filter import customer_reply_address
+
+    assert (
+        customer_reply_address(
+            sender_email="store+1@t.shopifyemail.com",
+            subject="[LUXORY] Order #1213 placed by Mélanie Charland",
+            body="Order placed",
+            reply_to="Mélanie Charland <melanie@gmail.com>",
+        )
+        is None
+    )
+
+
+def test_customer_who_placed_an_order_is_not_a_merchant_alert():
+    from app.ai_email_assistant.email_filter import merchant_order_alert_reason
+
+    assert (
+        merchant_order_alert_reason(
+            "Where is my order?",
+            "Hi, I placed order #1213 on September 29 and it has not arrived.",
+        )
+        is None
+    )
+    ai = _FakeAI(EmailFilterResult(should_reply=True, category="customer"))
+    result = asyncio.run(
+        evaluate_email_filter(
+            _config(),
+            sender="Mélanie Charland <melanie@gmail.com>",
+            sender_email="melanie@gmail.com",
+            subject="Where is my order?",
+            body="Hi, I placed order #1213 on September 29 and it has not arrived.",
+            ai=ai,
+            known_customer=True,
+        )
+    )
+    assert result.should_reply is True
+
+
+def test_unknown_sender_without_a_question_is_not_answered_when_ai_is_down():
+    result = asyncio.run(
+        evaluate_email_filter(
+            _config(),
+            sender="news@deals.example",
+            sender_email="news@deals.example",
+            subject="Weekend picks",
+            body="Ten products you might like this weekend.",
+            ai=None,
+            known_customer=False,
+        )
+    )
+    assert result.should_reply is False
+
+
+def test_unknown_sender_who_asks_for_help_is_still_answered_when_ai_is_down():
+    result = asyncio.run(
+        evaluate_email_filter(
+            _config(),
+            sender="sam@gmail.com",
+            sender_email="sam@gmail.com",
+            subject="Question about a ring",
+            body="Do you ship this ring to the UK?",
+            ai=None,
+            known_customer=False,
+        )
+    )
+    assert result.should_reply is True
+
+
+def test_cash_refund_is_handed_to_a_teammate():
+    from app.ai_email_assistant.email_filter import detect_manual_review_reason
+
+    reason = detect_manual_review_reason(
+        subject="Refund",
+        body="I want a cash refund for order #1213.",
+    )
+    assert reason is not None
+    assert "cash refund" in reason.lower()
+
+
 def test_shopify_message_without_customer_address_is_never_sent_to_shopify():
     from app.ai_email_assistant.email_filter import customer_reply_address
 

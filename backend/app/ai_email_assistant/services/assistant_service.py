@@ -20,13 +20,13 @@ from app.ai_email_assistant.duplicate_guard import (
 from app.ai_email_assistant.email_filter import (
     apply_known_customer_guard,
     config_from_settings,
-    conversation_looks_like_client,
     customer_reply_address,
     detect_manual_review_reason,
     ensure_customer_is_answered,
     evaluate_email_filter,
     is_platform_sender,
     is_shopify_customer_message,
+    merchant_order_alert_reason,
     parse_shopify_contact_form,
 )
 from app.ai_email_assistant.thread_context import format_customer_relationship
@@ -633,12 +633,30 @@ class AIEmailAssistantService:
         settings_row: AIEmailAssistantSettings,
     ) -> None:
         """Decide reply vs ignore using full thread history; mark ignored mail as read."""
+        account = db.get(GmailAccount, email.gmail_account_id)
+        alert = merchant_order_alert_reason(email.subject or "", email.body_text or "")
+        if alert:
+            await self._skip_email_as_duplicate(db, email, alert, account=account)
+            email.filter_category = "automated"
+            db.commit()
+            return
+        own_address = normalize_email(account.email) if account else ""
+        if own_address and normalize_email(email.sender_email) == own_address:
+            await self._skip_email_as_duplicate(
+                db,
+                email,
+                "This message is from the store's own mailbox, not from a customer.",
+                account=account,
+            )
+            email.filter_category = "automated"
+            db.commit()
+            return
+
         self._adopt_shopify_contact_form(db, email)
         api_key = resolve_openai_api_key(db, user, OPENAI_MODULE_AI_EMAIL)
         ai = AIService(model=settings_row.openai_model, api_key=api_key) if api_key else None
 
         thread_context: str | None = None
-        account = db.get(GmailAccount, email.gmail_account_id)
         if account:
             thread_context = await self._fetch_customer_context(
                 db, settings_row, account, email, force=True
@@ -674,6 +692,7 @@ class AIEmailAssistantService:
                 business_type=settings_row.business_type,
                 custom_skip_rules=settings_row.filter_custom_rules or "",
                 business_rules=settings_row.rules or "",
+                policies=settings_row.policies or "",
                 thread_context=thread_context,
                 known_customer=known_customer,
                 model_override=settings_row.openai_model,
@@ -807,18 +826,19 @@ class AIEmailAssistantService:
         *,
         thread_context: str | None,
     ) -> bool:
-        """Treat this sender as a client when history or a Shopify order says they are.
+        """True only when this address is on an order or has written in before.
 
-        Looked up at filter start by the customer's personal email (e.g. xxx@gmail.com):
-        Gmail/inbox chat history, Shopify orders on that address, and the wording of
-        this message. Platform/Shopify-alert senders are never clients.
+        Wording like "order" in a Shopify alert is not enough. Those alerts name
+        the buyer, but the buyer did not send the email.
         """
         if is_platform_sender(email.sender_email):
+            return False
+        if merchant_order_alert_reason(email.subject or "", email.body_text or ""):
             return False
 
         address = normalize_email(email.sender_email)
         store = db.get(Store, email.store_id) if email.store_id else None
-        if store:
+        if store and address:
             try:
                 matched = await find_customer_orders(
                     db,
@@ -847,16 +867,13 @@ class AIEmailAssistantService:
                     InboxEmail.user_id == email.user_id,
                     func.lower(InboxEmail.sender_email) == address,
                     InboxEmail.id != email.id,
+                    InboxEmail.filter_category.is_distinct_from("automated"),
                 )
             )
             if prior:
                 return True
 
-        return conversation_looks_like_client(
-            thread_context=thread_context,
-            subject=email.subject or "",
-            body=email.body_text or "",
-        )
+        return False
 
     def list_inbox(
         self, db: Session, user: User, *, store_id: str | None = None, limit: int = 50
@@ -1093,10 +1110,9 @@ class AIEmailAssistantService:
                     InboxEmailStatus.MANUAL_REVIEW.value,
                 ):
                     thread_id = item.get("threadId") or exists.thread_id
+                    await client.mark_as_read(account, msg_id)
                     if thread_id:
                         await client.mark_thread_as_read(account, thread_id)
-                    else:
-                        await client.mark_as_read(account, msg_id)
                     continue
 
                 if exists.status == InboxEmailStatus.NEW.value:
@@ -1112,7 +1128,9 @@ class AIEmailAssistantService:
                     if detail:
                         sender_email = client.parse_sender_email(detail.sender)
                         sender = detail.sender
-                        if is_platform_sender(sender_email):
+                        if is_platform_sender(sender_email) and not merchant_order_alert_reason(
+                            detail.subject, detail.body_text
+                        ):
                             customer = customer_reply_address(
                                 sender_email=sender_email,
                                 subject=detail.subject,
@@ -1149,7 +1167,9 @@ class AIEmailAssistantService:
 
             sender_email = client.parse_sender_email(detail.sender)
             sender = detail.sender
-            if is_platform_sender(sender_email):
+            if is_platform_sender(sender_email) and not merchant_order_alert_reason(
+                detail.subject, detail.body_text
+            ):
                 customer = customer_reply_address(
                     sender_email=sender_email,
                     subject=detail.subject,
@@ -1411,7 +1431,9 @@ class AIEmailAssistantService:
 
             scan_sender = analysis.customer_sender
             scan_email = analysis.customer_email
-            if is_platform_sender(scan_email):
+            if is_platform_sender(scan_email) and not merchant_order_alert_reason(
+                analysis.subject, analysis.latest_body
+            ):
                 customer = customer_reply_address(
                     sender_email=scan_email,
                     subject=analysis.subject,
@@ -1988,6 +2010,14 @@ class AIEmailAssistantService:
                 raise HTTPException(status_code=400, detail=reply.error_message)
 
         self._adopt_shopify_contact_form(db, email)
+        alert = merchant_order_alert_reason(email.subject or "", email.body_text or "")
+        if alert:
+            reply.status = AIReplyStatus.REJECTED.value
+            reply.error_message = alert
+            await self._skip_email_as_duplicate(db, email, alert, account=account)
+            email.filter_category = "automated"
+            db.commit()
+            raise HTTPException(status_code=400, detail=alert)
         recipient = customer_reply_address(
             sender_email=email.sender_email,
             subject=email.subject or "",
@@ -2007,6 +2037,13 @@ class AIEmailAssistantService:
         if recipient != email.sender_email:
             email.sender_email = recipient
             db.commit()
+        own_address = normalize_email(account.email)
+        if own_address and normalize_email(recipient) == own_address:
+            reason = "Refused to email the store's own address."
+            reply.status = AIReplyStatus.REJECTED.value
+            reply.error_message = reason
+            await self._skip_email_as_duplicate(db, email, reason, account=account)
+            raise HTTPException(status_code=400, detail=reason)
 
         tracking_link = self._tracking_link_from_reply(reply)
         store = db.get(Store, email.store_id) if email.store_id else None
@@ -2065,7 +2102,10 @@ class AIEmailAssistantService:
             thread_id=email.thread_id,
             keep_inbox_id=email.id,
         )
-        await client.mark_thread_as_read(account, email.thread_id)
+        await self._mark_email_read_in_gmail(db, email, account)
+        sent_id = reply.gmail_sent_message_id
+        if sent_id:
+            await client.mark_as_read(account, sent_id)
 
         return self._serialize_reply(reply, email.detected_intent)
 

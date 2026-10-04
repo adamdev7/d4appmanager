@@ -39,9 +39,15 @@ def build_reply_prompt(
     if has_tracking_button:
         tracking_button_rule += (
             '\n- A "Track my order" button is automatically attached below your reply, already '
-            "filled in with this customer's order number and email. Invite them to use that "
-            "button (e.g. \"you can follow your shipment with the button below\"). Do not paste "
-            "a tracking URL, a carrier website, or extra tracking instructions of your own."
+            "filled in with this customer's order number and email. Do not paste a tracking URL "
+            "or a carrier website."
+            "\n- If the order has not shipped, do not say they can follow a shipment. Tell them "
+            "the order has not shipped and give the processing window from the policies. You may "
+            "mention the button only as a way to check the order later."
+            "\n- If the order has shipped and is not delivered, they can use the button to follow "
+            "the shipment."
+            "\n- If tracking shows Delivered and the customer says they did not get it, follow the "
+            "rules: direct them to their local postal service and do not offer a replacement."
         )
 
     handoff_rule = ""
@@ -58,10 +64,15 @@ Business type: {context.business_type or "general"}.
 
 Follow this tone of voice: {context.tone_of_voice or "friendly and professional"}.
 
+The rules and policies below are binding. Do not soften, shorten, or override them.
+If a rule says never promise a refund, replacement, or exact date, do not promise one.
+If a rule names a sign-off, end with that exact line and no other closing.
+If a rule says to escalate (cash refund, chargeback, ambiguous claim), do not decide the case.
+
 Rules you must follow:
 {rules_block}
 
-Business policies (shipping, refunds, cancellations, subscriptions, etc.):
+Business policies (shipping, refunds, cancellations, replacements):
 {policies_block}
 
 FAQ / knowledge base:
@@ -77,12 +88,16 @@ Instructions:
 - When verified Shopify order data is provided below, treat it as the source of truth and answer
   concretely: say whether the order has shipped and mention the most recent shipment update (status
   and location only). Never ask the customer for details you were already given.
-- If the order data shows the order has not shipped yet, say so plainly and set expectations from the
-  business shipping policy instead of implying they can follow a carrier shipment yet.
+- If the order data shows the order has not shipped yet, say so plainly and quote the processing
+  window from the policies. Do not say the shipment can be followed and do not invent a ship date.
+- Give only the business-day ranges from the policies. Never confirm an exact delivery date.
+- For a damaged or incorrect item, ask for the photos the rules require before any replacement.
+- Do not offer a replacement when the rules say the case is not eligible, or when a delivered
+  parcel is missing — send them to the local postal service in that case.
 - Do not invent order numbers, tracking IDs, or refund amounts. Never copy a tracking number even if
   it appears in the thread or in internal notes.{tracking_button_rule}
 - If you cannot fulfill a request per the rules/policies, explain clearly and offer next steps.
-- Sign off appropriately for the business.
+- If the rules name a sign-off, end with that exact line. Otherwise sign off for the business.
 - Output ONLY the email body text (no subject line, no "Subject:" prefix)."""
 
     thread_block = ""

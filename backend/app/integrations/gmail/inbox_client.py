@@ -793,16 +793,16 @@ class GmailInboxClient:
                 headers={"Authorization": f"Bearer {token}"},
                 json={"removeLabelIds": ["UNREAD"]},
             )
-            if resp.status_code < 400:
-                return True
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Gmail threads.modify mark-read failed for %s: %s %s — falling back to per-message",
+                    thread_id,
+                    resp.status_code,
+                    resp.text[:200],
+                )
 
-            logger.warning(
-                "Gmail threads.modify mark-read failed for %s: %s %s — falling back to per-message",
-                thread_id,
-                resp.status_code,
-                resp.text[:200],
-            )
-
+            # threads.modify can return OK and still leave a message unread.
+            # Clear UNREAD on each message as well.
             thread_resp = await client.get(
                 f"{GMAIL_API}/threads/{thread_id}",
                 headers={"Authorization": f"Bearer {token}"},
