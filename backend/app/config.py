@@ -160,6 +160,19 @@ class Settings(BaseSettings):
     yunexpress_api_key: str = ""
     yunexpress_api_url: str = "https://api.yunexpress.com"
 
+    # Read-only /api/v1/integration API for Central AI. Blank key = API off.
+    # The key holder can read every store owned by integration_owner_email.
+    integration_api_key: str = ""
+    integration_owner_email: str = ""
+
+    @field_validator("integration_api_key")
+    @classmethod
+    def integration_key_length(cls, v: str) -> str:
+        v = v.strip()
+        if v and len(v) < 32:
+            raise ValueError("INTEGRATION_API_KEY must be at least 32 characters")
+        return v
+
     @property
     def shopify_oauth_base(self) -> str:
         """Public origin used for Shopify OAuth redirect_uri and webhook registration."""
