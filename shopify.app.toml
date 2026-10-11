@@ -15,3 +15,7 @@ redirect_urls = ["https://appmanager.store/api/v1/stores/shopify/callback"]
 
 [webhooks]
 api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  uri = "https://appmanager.store/api/v1/webhooks/shopify"

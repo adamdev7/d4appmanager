@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.email_automation.services.trigger_service import EmailTriggerService
 from app.integrations.shopify.client import ShopifyClient
 from app.services.meta_capi_service import MetaCapiService
+from app.services.shopify_compliance import COMPLIANCE_TOPICS, handle_compliance_webhook
 from app.tracking.enrichment_service import CarrierEnrichmentService
 from app.tracking.order_sync import OrderTrackingSyncService
 
@@ -38,6 +39,26 @@ async def shopify_webhook(request: Request, db: Session = Depends(get_db)):
     topic = request.headers.get("X-Shopify-Topic", "unknown")
     shop_domain = request.headers.get("X-Shopify-Shop-Domain", "")
     webhook_id = request.headers.get("X-Shopify-Webhook-Id") or None
+
+    if topic in COMPLIANCE_TOPICS:
+        try:
+            payload = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            payload = {}
+        result = handle_compliance_webhook(db, topic, shop_domain, payload if isinstance(payload, dict) else {})
+        # Compliance payloads carry customer PII, so only the topic is logged.
+        if topic != "shop/redact":
+            store_row = db.scalar(select(Store).where(Store.shop_domain == shop_domain))
+            db.add(
+                WebhookLog(
+                    store_id=store_row.id if store_row else None,
+                    topic=topic,
+                    shop_domain=shop_domain,
+                    payload_preview="",
+                )
+            )
+            db.commit()
+        return {"ok": True, "compliance": result}
 
     store = db.scalar(select(Store).where(Store.shop_domain == shop_domain))
     store_id = store.id if store else None

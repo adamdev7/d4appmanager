@@ -66,6 +66,9 @@ Webhooks are registered automatically to:
 
 Topics: `app/uninstalled`, `orders/create`, `orders/paid`, fulfillments, etc. (see `webhook_topics.py`)
 
+Mandatory compliance webhooks (`customers/data_request`, `customers/redact`, `shop/redact`) use the
+same URL. They are declared in `shopify.app.toml`, so `shopify app deploy` subscribes them.
+
 In the app: **Settings → Stores → Connect store → Install from Shopify** (uses `SHOPIFY_INSTALL_URL`).
 Existing stores that need new permissions use **Reconnect**.
 
