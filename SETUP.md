@@ -97,8 +97,8 @@ Reconnect the store (or re-register webhooks) so `checkouts/create` is subscribe
 2. OAuth consent screen (External) → add test users  
 3. Credentials → OAuth client (Web) — add **both** redirect URIs:
 
-   - `http://127.0.0.1:8000/api/v1/gmail/oauth/callback` — connect Gmail in Settings  
-   - `http://127.0.0.1:8000/api/v1/auth/google/callback` — Continue with Google (sign up / sign in)  
+   - `http://127.0.0.1:8001/api/v1/gmail/oauth/callback` — connect Gmail in Settings  
+   - `http://127.0.0.1:8001/api/v1/auth/google/callback` — Continue with Google (sign up / sign in)  
      (or your ngrok URL + the same paths)
 
 ```env
@@ -147,7 +147,7 @@ Repo files:
 sudo cp /var/www/appmanager/deploy/appmanager.service /etc/systemd/system/appmanager.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now appmanager
-curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8001/health
 # must print: {"status":"ok","app":"App Manager"}
 ```
 
@@ -171,13 +171,13 @@ sudo certbot certonly --nginx -d appmanager.store -d www.appmanager.store
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-`proxy_pass` must be `http://127.0.0.1:8000` with **no trailing slash**. A trailing slash strips `/api` and causes Google login JSON errors and `Method Not Allowed` on password login.
+`proxy_pass` must be `http://127.0.0.1:8001` with **no trailing slash**. A trailing slash strips `/api` and causes Google login JSON errors and `Method Not Allowed` on password login.
 
 ### Checks
 
 ```bash
 curl -sI https://d4technology.ca/ | head
-curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8001/health
 curl -sI https://appmanager.store/ | head
 curl -s https://appmanager.store/health
 curl -s https://appmanager.store/api/v1/auth/google/authorize
