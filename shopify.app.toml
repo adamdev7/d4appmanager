@@ -1,6 +1,6 @@
 # Shopify app configuration for App Manager.
 # Paste the Client ID from the Dev Dashboard, then run `shopify app deploy` to push these settings.
-client_id = ""
+client_id = "6db293e6a3c8b3e1935b4d3a50d41ff3"
 name = "App Manager"
 application_url = "https://appmanager.store/api/v1/stores/shopify/launch"
 
