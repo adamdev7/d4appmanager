@@ -2,11 +2,11 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.rate_limit import RateLimiter, client_ip
-from app.db.models import Store, StoreStatus, WebhookLog
+from app.db.models import ShopifyPendingInstall, Store, StoreStatus, WebhookLog
 from app.db.session import get_db
 from app.email_automation.services.trigger_service import EmailTriggerService
 from app.integrations.shopify.client import ShopifyClient
@@ -52,9 +52,12 @@ async def shopify_webhook(request: Request, db: Session = Depends(get_db)):
         )
     )
 
-    if topic == "app/uninstalled" and store:
-        store.access_token_encrypted = None
-        store.status = StoreStatus.DISCONNECTED.value
+    if topic == "app/uninstalled":
+        if store:
+            store.access_token_encrypted = None
+            store.granted_scopes = None
+            store.status = StoreStatus.DISCONNECTED.value
+        db.execute(delete(ShopifyPendingInstall).where(ShopifyPendingInstall.shop_domain == shop_domain))
 
     db.commit()
 

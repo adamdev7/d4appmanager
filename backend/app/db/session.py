@@ -654,6 +654,21 @@ def _migrate_sync_delivered_to_shopify_column() -> None:
             )
 
 
+def _migrate_store_granted_scopes_column() -> None:
+    """Remember which Shopify scopes each store granted so new scopes trigger re-auth."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    if "stores" not in insp.get_table_names():
+        return
+    if "granted_scopes" in {c["name"] for c in insp.get_columns("stores")}:
+        return
+    with engine.begin() as conn:
+        if dialect == "sqlite":
+            conn.execute(text("ALTER TABLE stores ADD COLUMN granted_scopes TEXT"))
+        elif dialect == "postgresql":
+            conn.execute(text("ALTER TABLE stores ADD COLUMN IF NOT EXISTS granted_scopes TEXT"))
+
+
 def _migrate_verification_code_attempts() -> None:
     """Track failed OTP guesses so codes can be locked after too many attempts."""
     insp = inspect(engine)
@@ -1318,6 +1333,7 @@ def init_db() -> None:
     _migrate_analytics_balance_columns()
     _migrate_analytics_mrr_columns()
     _migrate_sync_delivered_to_shopify_column()
+    _migrate_store_granted_scopes_column()
     _migrate_verification_code_attempts()
     _migrate_ai_email_null_store_scope()
     _migrate_meta_capi_enrichment_columns()

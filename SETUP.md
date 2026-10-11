@@ -31,17 +31,24 @@ SMTP_FROM=you@gmail.com
 
 ## 3. Shopify store + webhooks
 
-1. [Shopify Partners](https://partners.shopify.com) → Apps → Create app  
-2. Set **App URL** to your public backend URL (see below)  
-3. **Allowed redirection URL(s):**  
-   `https://YOUR_PUBLIC_URL/api/v1/stores/shopify/callback`  
-4. Copy Client ID and Secret to `.env`:
+1. [Dev Dashboard](https://dev.shopify.com) → create the app in your **Partner organization**  
+2. Paste its Client ID into `shopify.app.toml` and run `shopify app deploy`. That pushes:
+   - **App URL:** `https://YOUR_PUBLIC_URL/api/v1/stores/shopify/launch`
+   - **Allowed redirection URL:** `https://YOUR_PUBLIC_URL/api/v1/stores/shopify/callback`
+   - **Embedded:** off, plus the access scopes  
+3. Copy Client ID, Secret, and the install link (Distribution card) to `.env`:
 
 ```env
 SHOPIFY_CLIENT_ID=...
 SHOPIFY_CLIENT_SECRET=...
+SHOPIFY_INSTALL_URL=https://admin.shopify.com/oauth/install_custom_app?...
 APP_URL=https://YOUR_PUBLIC_URL
 ```
+
+Installs always start from Shopify (install link, App Store listing, or Apps in the Shopify
+admin). Shopify opens the App URL, App Manager goes straight to OAuth, and the merchant lands on
+**Settings → Stores**. If they are not signed in to App Manager yet, they sign in or register and
+the store is attached automatically.
 
 ### Local development (required for OAuth + webhooks)
 
@@ -59,7 +66,8 @@ Webhooks are registered automatically to:
 
 Topics: `app/uninstalled`, `orders/create`, `orders/paid`, fulfillments, etc. (see `webhook_topics.py`)
 
-In the app: **Settings → Stores → Connect store** → enter `your-store.myshopify.com`
+In the app: **Settings → Stores → Connect store → Install from Shopify** (uses `SHOPIFY_INSTALL_URL`).
+Existing stores that need new permissions use **Reconnect**.
 
 ## 3b. Meta Conversions API (server-side Purchase tracking)
 

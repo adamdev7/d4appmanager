@@ -24,6 +24,10 @@ class StoreCreate(BaseModel):
     domain: str = Field(description="myshopify.com domain placeholder")
 
 
+class ShopifyClaimRequest(BaseModel):
+    claim: str = Field(min_length=16, max_length=128)
+
+
 class StoreSettingsUpdate(BaseModel):
     name: str | None = None
     timezone: str | None = None

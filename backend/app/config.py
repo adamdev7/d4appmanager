@@ -89,10 +89,11 @@ class Settings(BaseSettings):
     shopify_client_id: str = ""
     shopify_client_secret: str = ""
     shopify_scopes: str = (
-        "read_products,read_orders,read_customers,read_fulfillments,write_fulfillments,"
-        "write_orders,read_shopify_payments_payouts"
+        "read_products,read_inventory,read_orders,read_customers,read_fulfillments,"
+        "write_fulfillments,write_orders,read_shopify_payments_payouts"
     )
-    shopify_api_version: str = "2024-10"
+    shopify_api_version: str = "2026-07"
+    shopify_install_url: str = ""
 
     # Google / Gmail
     google_client_id: str = ""

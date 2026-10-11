@@ -122,6 +122,7 @@ class Store(Base):
     name: Mapped[str] = mapped_column(String(255))
     shop_domain: Mapped[str] = mapped_column(String(255), index=True)
     access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    granted_scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default=StoreStatus.PENDING.value)
     plan: Mapped[str] = mapped_column(String(64), default="Basic")
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
@@ -212,6 +213,21 @@ class OAuthState(Base):
     provider: Mapped[str] = mapped_column(String(32))
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"))
     extra: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: shop domain, store_id, etc.
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ShopifyPendingInstall(Base):
+    """Shop that finished Shopify OAuth but is not yet attached to an App Manager account."""
+
+    __tablename__ = "shopify_pending_installs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    shop_domain: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    claim_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    granted_scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shop_json: Mapped[str] = mapped_column(Text, default="{}")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

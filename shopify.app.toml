@@ -1,0 +1,17 @@
+# Shopify app configuration for App Manager.
+# Paste the Client ID from the Dev Dashboard, then run `shopify app deploy` to push these settings.
+client_id = ""
+name = "App Manager"
+application_url = "https://appmanager.store/api/v1/stores/shopify/launch"
+
+# Standalone web app at appmanager.store; it does not render inside the Shopify admin.
+embedded = false
+
+[access_scopes]
+scopes = "read_products,read_inventory,read_orders,read_customers,read_fulfillments,write_fulfillments,write_orders,read_shopify_payments_payouts"
+
+[auth]
+redirect_urls = ["https://appmanager.store/api/v1/stores/shopify/callback"]
+
+[webhooks]
+api_version = "2026-07"

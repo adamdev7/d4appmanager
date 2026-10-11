@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useStore } from "@/context/StoreContext";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { Input } from "@/components/ui/Input";
-import { Store, Plus, CheckCircle, Unplug, Trash2 } from "lucide-react";
+import { Store, Plus, CheckCircle, Unplug, Trash2, ExternalLink } from "lucide-react";
 import { motion } from "framer-motion";
 import { api } from "@/lib/api";
 import type { Store as StoreType } from "@/types";
@@ -14,11 +13,39 @@ export function StoresSettingsPage() {
   const { stores, activeStore, setActiveStoreId, refresh } = useStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const [showConnect, setShowConnect] = useState(false);
-  const [shopDomain, setShopDomain] = useState("");
-  const [connecting, setConnecting] = useState(false);
+  const [installUrl, setInstallUrl] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const connected = searchParams.get("connected") === "1";
+  const [claimedName, setClaimedName] = useState("");
+  const claimStarted = useRef(false);
+  const connected = searchParams.get("connected") === "1" || Boolean(claimedName);
+  const claim = searchParams.get("shopify_claim");
+
+  useEffect(() => {
+    api.stores
+      .shopifyInstallLink()
+      .then(({ url }) => setInstallUrl(url))
+      .catch(() => setInstallUrl(null));
+  }, []);
+
+  useEffect(() => {
+    if (!claim || claimStarted.current) return;
+    claimStarted.current = true;
+    api.stores
+      .claimShopifyInstall(claim)
+      .then(async (store) => {
+        setClaimedName(store.name);
+        await refresh();
+        setActiveStoreId(store.id);
+      })
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : "Could not finish connecting your Shopify store")
+      )
+      .finally(() => {
+        searchParams.delete("shopify_claim");
+        setSearchParams(searchParams, { replace: true });
+      });
+  }, [claim, refresh, searchParams, setActiveStoreId, setSearchParams]);
 
   useEffect(() => {
     if (connected) {
@@ -27,32 +54,11 @@ export function StoresSettingsPage() {
         searchParams.delete("connected");
         searchParams.delete("store_id");
         setSearchParams(searchParams, { replace: true });
+        setClaimedName("");
       }, 5000);
       return () => clearTimeout(t);
     }
   }, [connected, refresh, searchParams, setSearchParams]);
-
-  const startShopifyOAuth = async (shop: string) => {
-    const { authorize_url } = await api.stores.shopifyInstall(shop);
-    window.location.href = authorize_url;
-  };
-
-  const handleConnectShopify = async () => {
-    setError("");
-    setConnecting(true);
-    try {
-      const shop = shopDomain.trim();
-      if (!shop) {
-        setError("Enter your store domain");
-        return;
-      }
-      await startShopifyOAuth(shop);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start Shopify authorization");
-    } finally {
-      setConnecting(false);
-    }
-  };
 
   const handleDisconnect = async (store: StoreType) => {
     setError("");
@@ -71,7 +77,8 @@ export function StoresSettingsPage() {
     setError("");
     setBusyId(store.id);
     try {
-      await startShopifyOAuth(store.domain);
+      const { authorize_url } = await api.stores.shopifyReauthorize(store.id);
+      window.location.href = authorize_url;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start Shopify reconnection");
       setBusyId(null);
@@ -104,7 +111,8 @@ export function StoresSettingsPage() {
         <div>
           <h1 className="text-2xl font-bold text-content">Stores</h1>
           <p className="text-content-muted mt-1">
-            Connect Shopify stores via OAuth. Webhooks register automatically on connect.
+            Install App Manager from Shopify to connect a store. Webhooks register automatically on
+            connect.
           </p>
         </div>
         <Button onClick={() => setShowConnect(!showConnect)} variant="primary">
@@ -116,7 +124,7 @@ export function StoresSettingsPage() {
       {connected && (
         <div className="flex items-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/10 px-4 py-3 text-sm text-brand-700 dark:text-brand-400">
           <CheckCircle className="h-4 w-4 shrink-0" />
-          Shopify store connected successfully.
+          {claimedName ? `${claimedName} is connected.` : "Shopify store connected successfully."}
         </div>
       )}
 
@@ -128,25 +136,21 @@ export function StoresSettingsPage() {
             <CardHeader>
               <CardTitle>Connect Shopify store</CardTitle>
               <CardDescription>
-                Enter your <code className="text-xs">myshopify.com</code> domain. You will be
-                redirected to Shopify to approve access.
+                Install App Manager from Shopify and approve access. Shopify brings you back here
+                and the store is added to this account.
               </CardDescription>
             </CardHeader>
-            <div className="flex flex-col sm:flex-row gap-3">
-              <Input
-                className="flex-1"
-                placeholder="your-store.myshopify.com"
-                value={shopDomain}
-                onChange={(e) => setShopDomain(e.target.value)}
-              />
-              <Button onClick={handleConnectShopify} isLoading={connecting}>
-                Authorize with Shopify
+            {installUrl ? (
+              <Button onClick={() => (window.location.href = installUrl)}>
+                <ExternalLink className="h-4 w-4" />
+                Install from Shopify
               </Button>
-            </div>
-            <p className="mt-3 text-xs text-content-subtle">
-              For local dev, set <code>APP_URL</code> to your public URL (e.g. ngrok) so Shopify
-              can reach OAuth and webhooks.
-            </p>
+            ) : (
+              <p className="text-sm text-content-muted">
+                Open App Manager from the Shopify App Store or from Apps in your Shopify admin to
+                install it on a store.
+              </p>
+            )}
           </Card>
         </motion.div>
       )}

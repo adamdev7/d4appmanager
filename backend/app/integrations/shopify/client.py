@@ -1,9 +1,12 @@
+import asyncio
+import base64
 import hashlib
 import hmac
-import base64
+import json
 import logging
 import re
 import secrets
+import time
 from urllib.parse import urlencode
 
 import httpx
@@ -11,6 +14,455 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+SHOP_DOMAIN_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-]*\.myshopify\.com$")
+
+# Requested query cost must stay under Shopify's 1000-point single-query limit.
+_ORDER_PAGE_SIZE = 5
+_PRODUCT_PAGE_SIZE = 8
+# Larger reads go through bulk operations instead of paginated queries.
+_PAGINATED_ORDER_LIMIT = 25
+_PAGINATED_PRODUCT_LIMIT = 50
+
+_SHIPMENT_STATUSES = {
+    "label_printed",
+    "label_purchased",
+    "attempted_delivery",
+    "ready_for_pickup",
+    "picked_up",
+    "carrier_picked_up",
+    "confirmed",
+    "in_transit",
+    "out_for_delivery",
+    "delivered",
+    "delayed",
+    "failure",
+}
+
+_ADDRESS_FIELDS = (
+    "firstName lastName name company address1 address2 city province provinceCode "
+    "zip country countryCodeV2 phone"
+)
+
+_ORDER_FIELDS = f"""
+  id
+  legacyResourceId
+  name
+  number
+  email
+  phone
+  createdAt
+  updatedAt
+  processedAt
+  cancelledAt
+  cancelReason
+  closedAt
+  displayFinancialStatus
+  displayFulfillmentStatus
+  currencyCode
+  presentmentCurrencyCode
+  note
+  tags
+  sourceName
+  test
+  paymentGatewayNames
+  clientIp
+  statusPageUrl
+  customAttributes {{ key value }}
+  totalPriceSet {{ shopMoney {{ amount currencyCode }} presentmentMoney {{ amount currencyCode }} }}
+  currentTotalPriceSet {{ shopMoney {{ amount currencyCode }} presentmentMoney {{ amount currencyCode }} }}
+  subtotalPriceSet {{ shopMoney {{ amount }} }}
+  totalTaxSet {{ shopMoney {{ amount }} }}
+  totalDiscountsSet {{ shopMoney {{ amount }} }}
+  totalRefundedSet {{ shopMoney {{ amount }} }}
+  customer {{
+    id
+    legacyResourceId
+    firstName
+    lastName
+    defaultEmailAddress {{ emailAddress }}
+    defaultPhoneNumber {{ phoneNumber }}
+  }}
+  shippingAddress {{ {_ADDRESS_FIELDS} }}
+  billingAddress {{ {_ADDRESS_FIELDS} }}
+  customerJourneySummary {{
+    firstVisit {{ landingPage referrerUrl }}
+    lastVisit {{ landingPage referrerUrl }}
+  }}
+"""
+
+_FULFILLMENT_FIELDS = """
+  id
+  legacyResourceId
+  status
+  displayStatus
+  createdAt
+  updatedAt
+  trackingInfo(first: 3) { number company url }
+"""
+
+_LINE_ITEM_FIELDS = """
+  __typename
+  id
+  title
+  name
+  quantity
+  sku
+  variantTitle
+  variant { id }
+  product { id }
+  image { url }
+  originalUnitPriceSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+"""
+
+_SHIPPING_LINE_FIELDS = "__typename id title originalPriceSet { shopMoney { amount } }"
+
+
+def _order_selection(*, line_items: int, fulfillment_items: int) -> str:
+    fulfillment_lines = (
+        f"fulfillmentLineItems(first: {fulfillment_items}) "
+        "{ nodes { quantity lineItem { title } } }"
+        if fulfillment_items
+        else ""
+    )
+    return f"""
+  {_ORDER_FIELDS}
+  fulfillments(first: 5) {{ {_FULFILLMENT_FIELDS} {fulfillment_lines} }}
+  shippingLines(first: 5) {{ nodes {{ {_SHIPPING_LINE_FIELDS} }} }}
+  lineItems(first: {line_items}) {{ nodes {{ {_LINE_ITEM_FIELDS} }} }}
+"""
+
+
+_BULK_ORDER_SELECTION = f"""
+  {_ORDER_FIELDS}
+  fulfillments(first: 5) {{ {_FULFILLMENT_FIELDS} }}
+  shippingLines {{ edges {{ node {{ {_SHIPPING_LINE_FIELDS} }} }} }}
+  lineItems {{ edges {{ node {{ {_LINE_ITEM_FIELDS} }} }} }}
+"""
+
+_PRODUCT_FIELDS = """
+  id
+  legacyResourceId
+  title
+  handle
+  descriptionHtml
+  vendor
+  productType
+  tags
+  status
+  createdAt
+  updatedAt
+  onlineStoreUrl
+"""
+
+_MEDIA_FIELDS = "__typename ... on MediaImage { id image { url altText width height } }"
+
+_VARIANT_FIELDS = """
+  __typename
+  id
+  legacyResourceId
+  title
+  price
+  sku
+  position
+  availableForSale
+  inventoryQuantity
+  inventoryItem { tracked }
+"""
+
+
+def _product_selection(*, media: int, variants: int) -> str:
+    return f"""
+  {_PRODUCT_FIELDS}
+  media(first: {media}) {{ nodes {{ {_MEDIA_FIELDS} }} }}
+  variants(first: {variants}) {{ nodes {{ {_VARIANT_FIELDS} }} }}
+"""
+
+
+_BULK_PRODUCT_SELECTION = f"""
+  {_PRODUCT_FIELDS}
+  media {{ edges {{ node {{ {_MEDIA_FIELDS} }} }} }}
+  variants {{ edges {{ node {{ {_VARIANT_FIELDS} }} }} }}
+"""
+
+# Bulk JSONL puts nested connection rows on their own lines; map them back by GID type.
+_BULK_ORDER_CHILDREN = {"LineItem": "lineItems", "ShippingLine": "shippingLines"}
+_BULK_PRODUCT_CHILDREN = {"ProductVariant": "variants", "MediaImage": "media"}
+
+
+def _search_value(value: str) -> str:
+    cleaned = str(value).replace("\\", "").replace('"', "").strip()
+    return f'"{cleaned}"'
+
+
+def _legacy_int(gid_or_id) -> int | str | None:
+    if gid_or_id is None or gid_or_id == "":
+        return None
+    tail = str(gid_or_id).rsplit("/", 1)[-1].strip()
+    if not tail:
+        return None
+    return int(tail) if tail.isdigit() else tail
+
+
+def _amount(money_set: dict | None, key: str = "shopMoney") -> str | None:
+    return ((money_set or {}).get(key) or {}).get("amount")
+
+
+def _money_set(money_set: dict | None) -> dict | None:
+    if not money_set:
+        return None
+    out: dict = {}
+    for gql_key, rest_key in (("shopMoney", "shop_money"), ("presentmentMoney", "presentment_money")):
+        money = money_set.get(gql_key)
+        if money:
+            out[rest_key] = {"amount": money.get("amount"), "currency_code": money.get("currencyCode")}
+    return out or None
+
+
+def _nodes(conn) -> list[dict]:
+    if isinstance(conn, list):
+        return [n for n in conn if isinstance(n, dict)]
+    if not isinstance(conn, dict):
+        return []
+    if "nodes" in conn:
+        return [n for n in conn.get("nodes") or [] if isinstance(n, dict)]
+    return [
+        (e or {}).get("node")
+        for e in conn.get("edges") or []
+        if isinstance((e or {}).get("node"), dict)
+    ]
+
+
+def _address_to_rest(addr: dict | None) -> dict | None:
+    if not addr:
+        return None
+    return {
+        "first_name": addr.get("firstName"),
+        "last_name": addr.get("lastName"),
+        "name": addr.get("name"),
+        "company": addr.get("company"),
+        "address1": addr.get("address1"),
+        "address2": addr.get("address2"),
+        "city": addr.get("city"),
+        "province": addr.get("province"),
+        "province_code": addr.get("provinceCode"),
+        "zip": addr.get("zip"),
+        "country": addr.get("country"),
+        "country_code": addr.get("countryCodeV2"),
+        "phone": addr.get("phone"),
+    }
+
+
+def _fulfillment_status_to_rest(display: str | None) -> str | None:
+    return {
+        "FULFILLED": "fulfilled",
+        "PARTIALLY_FULFILLED": "partial",
+        "RESTOCKED": "restocked",
+    }.get(str(display or "").upper())
+
+
+def _fulfillment_to_rest(node: dict) -> dict:
+    tracking = [t for t in node.get("trackingInfo") or [] if isinstance(t, dict)]
+    numbers = [str(t["number"]) for t in tracking if t.get("number")]
+    urls = [str(t["url"]) for t in tracking if t.get("url")]
+    company = next((str(t["company"]) for t in tracking if t.get("company")), None)
+    display = str(node.get("displayStatus") or "").lower()
+    items = [
+        {"title": ((li.get("lineItem") or {}).get("title")), "quantity": li.get("quantity") or 1}
+        for li in _nodes(node.get("fulfillmentLineItems"))
+    ]
+    return {
+        "id": _legacy_int(node.get("legacyResourceId") or node.get("id")),
+        "admin_graphql_api_id": node.get("id"),
+        "status": str(node.get("status") or "").lower() or None,
+        "shipment_status": display if display in _SHIPMENT_STATUSES else None,
+        "created_at": node.get("createdAt"),
+        "updated_at": node.get("updatedAt"),
+        "tracking_company": company,
+        "tracking_number": numbers[0] if numbers else None,
+        "tracking_numbers": numbers,
+        "tracking_url": urls[0] if urls else None,
+        "tracking_urls": urls,
+        "line_items": items,
+    }
+
+
+def _line_item_to_rest(node: dict) -> dict:
+    price_set = node.get("originalUnitPriceSet")
+    image_url = (node.get("image") or {}).get("url")
+    return {
+        "id": _legacy_int(node.get("id")),
+        "title": node.get("title"),
+        "name": node.get("name"),
+        "quantity": node.get("quantity") or 0,
+        "sku": node.get("sku"),
+        "variant_title": node.get("variantTitle"),
+        "variant_id": _legacy_int((node.get("variant") or {}).get("id")),
+        "product_id": _legacy_int((node.get("product") or {}).get("id")),
+        "price": _amount(price_set),
+        "price_set": _money_set(price_set),
+        "image": {"src": image_url} if image_url else None,
+    }
+
+
+def order_to_rest(node: dict) -> dict:
+    """Map a GraphQL Order to the REST/webhook order shape the rest of the app reads."""
+    customer = node.get("customer") or None
+    rest_customer = None
+    if customer:
+        rest_customer = {
+            "id": _legacy_int(customer.get("legacyResourceId") or customer.get("id")),
+            "email": (customer.get("defaultEmailAddress") or {}).get("emailAddress"),
+            "phone": (customer.get("defaultPhoneNumber") or {}).get("phoneNumber"),
+            "first_name": customer.get("firstName"),
+            "last_name": customer.get("lastName"),
+        }
+
+    journey = node.get("customerJourneySummary") or {}
+    visit = journey.get("lastVisit") or journey.get("firstVisit") or {}
+    refunded = _amount(node.get("totalRefundedSet"))
+    refunds = (
+        [{"transactions": [{"kind": "refund", "status": "success", "amount": refunded}]}]
+        if refunded and float(refunded) > 0
+        else []
+    )
+    name = node.get("name") or ""
+    number = node.get("number")
+    if number is None:
+        digits = re.sub(r"\D", "", name)
+        number = int(digits) if digits else None
+    client_ip = node.get("clientIp")
+
+    return {
+        "id": _legacy_int(node.get("legacyResourceId") or node.get("id")),
+        "admin_graphql_api_id": node.get("id"),
+        "name": name,
+        "order_number": number,
+        "email": node.get("email"),
+        "contact_email": node.get("email"),
+        "phone": node.get("phone"),
+        "created_at": node.get("createdAt"),
+        "updated_at": node.get("updatedAt"),
+        "processed_at": node.get("processedAt"),
+        "cancelled_at": node.get("cancelledAt"),
+        "cancel_reason": str(node.get("cancelReason") or "").lower() or None,
+        "closed_at": node.get("closedAt"),
+        "financial_status": str(node.get("displayFinancialStatus") or "").lower() or None,
+        "fulfillment_status": _fulfillment_status_to_rest(node.get("displayFulfillmentStatus")),
+        "currency": node.get("currencyCode"),
+        "presentment_currency": node.get("presentmentCurrencyCode"),
+        "total_price": _amount(node.get("totalPriceSet")),
+        "total_price_set": _money_set(node.get("totalPriceSet")),
+        "current_total_price": _amount(node.get("currentTotalPriceSet")),
+        "current_total_price_set": _money_set(node.get("currentTotalPriceSet")),
+        "subtotal_price": _amount(node.get("subtotalPriceSet")),
+        "total_tax": _amount(node.get("totalTaxSet")),
+        "total_discounts": _amount(node.get("totalDiscountsSet")),
+        "note": node.get("note"),
+        "tags": ", ".join(node.get("tags") or []),
+        "source_name": node.get("sourceName"),
+        "test": bool(node.get("test")),
+        "payment_gateway_names": list(node.get("paymentGatewayNames") or []),
+        "browser_ip": client_ip,
+        "client_details": {"browser_ip": client_ip} if client_ip else None,
+        "landing_site": visit.get("landingPage"),
+        "referring_site": visit.get("referrerUrl"),
+        "order_status_url": node.get("statusPageUrl"),
+        "note_attributes": [
+            {"name": a.get("key"), "value": a.get("value")}
+            for a in node.get("customAttributes") or []
+            if isinstance(a, dict) and a.get("key")
+        ],
+        "customer": rest_customer,
+        "shipping_address": _address_to_rest(node.get("shippingAddress")),
+        "billing_address": _address_to_rest(node.get("billingAddress")),
+        "line_items": [_line_item_to_rest(li) for li in _nodes(node.get("lineItems"))],
+        "shipping_lines": [
+            {"title": s.get("title"), "price": _amount(s.get("originalPriceSet")) or "0"}
+            for s in _nodes(node.get("shippingLines"))
+        ],
+        "fulfillments": [
+            _fulfillment_to_rest(f) for f in node.get("fulfillments") or [] if isinstance(f, dict)
+        ],
+        "refunds": refunds,
+    }
+
+
+def product_to_rest(node: dict) -> dict:
+    """Map a GraphQL Product to the REST product shape (images, variants, tags string)."""
+    product_id = _legacy_int(node.get("legacyResourceId") or node.get("id"))
+    images: list[dict] = []
+    for position, media in enumerate(_nodes(node.get("media")), start=1):
+        image = media.get("image") or {}
+        if not image.get("url"):
+            continue
+        images.append(
+            {
+                "id": _legacy_int(media.get("id")),
+                "product_id": product_id,
+                "src": image.get("url"),
+                "alt": image.get("altText"),
+                "width": image.get("width"),
+                "height": image.get("height"),
+                "position": position,
+            }
+        )
+    variants = []
+    for v in sorted(_nodes(node.get("variants")), key=lambda x: x.get("position") or 0):
+        tracked = bool((v.get("inventoryItem") or {}).get("tracked"))
+        variants.append(
+            {
+                "id": _legacy_int(v.get("legacyResourceId") or v.get("id")),
+                "product_id": product_id,
+                "title": v.get("title"),
+                "price": v.get("price"),
+                "sku": v.get("sku"),
+                "position": v.get("position"),
+                "available": v.get("availableForSale"),
+                "inventory_quantity": v.get("inventoryQuantity"),
+                "inventory_management": "shopify" if tracked else None,
+            }
+        )
+    return {
+        "id": product_id,
+        "admin_graphql_api_id": node.get("id"),
+        "title": node.get("title"),
+        "handle": node.get("handle"),
+        "body_html": node.get("descriptionHtml"),
+        "vendor": node.get("vendor"),
+        "product_type": node.get("productType"),
+        "tags": ", ".join(node.get("tags") or []),
+        "status": str(node.get("status") or "").lower() or None,
+        "created_at": node.get("createdAt"),
+        "updated_at": node.get("updatedAt"),
+        "online_store_url": node.get("onlineStoreUrl"),
+        "images": images,
+        "image": images[0] if images else None,
+        "variants": variants,
+    }
+
+
+def nest_bulk_rows(rows: list[dict], children: dict[str, str]) -> list[dict]:
+    """Rebuild nested connections from bulk JSONL rows linked by ``__parentId``."""
+    parents: dict[str, dict] = {}
+    roots: list[dict] = []
+    for row in rows:
+        parent_id = row.pop("__parentId", None)
+        row_id = str(row.get("id") or "")
+        if parent_id is None:
+            roots.append(row)
+            if row_id:
+                parents[row_id] = row
+            continue
+        parent = parents.get(str(parent_id))
+        type_name = str(row.get("__typename") or "")
+        if not type_name and row_id.count("/") >= 4:
+            type_name = row_id.split("/")[-2]
+        field = children.get(type_name)
+        if parent is None or not field:
+            continue
+        parent.setdefault(field, {"nodes": []})["nodes"].append(row)
+    return roots
 
 
 class ShopifyClient:
@@ -23,8 +475,8 @@ class ShopifyClient:
         self.api_version = settings.shopify_api_version
 
     @property
-    def admin_api_base(self) -> str:
-        return f"https://{self.shop_domain}/admin/api/{self.api_version}"
+    def graphql_url(self) -> str:
+        return f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json"
 
     def build_install_url(self, state: str) -> str:
         if not settings.shopify_client_id:
@@ -53,29 +505,204 @@ class ShopifyClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def get_shop(self) -> dict:
+    async def graphql(
+        self,
+        query: str,
+        variables: dict | None = None,
+        *,
+        timeout: float = 45,
+        max_retries: int = 4,
+    ) -> dict:
+        """Run an Admin GraphQL operation and return ``data``. Retries when throttled."""
         if not self.access_token:
             raise ValueError("No access token")
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                f"{self.admin_api_base}/shop.json",
-                headers={"X-Shopify-Access-Token": self.access_token},
+        headers = {
+            "X-Shopify-Access-Token": self.access_token,
+            "Content-Type": "application/json",
+        }
+        body = {"query": query, "variables": variables or {}}
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            for attempt in range(max_retries + 1):
+                resp = await client.post(self.graphql_url, headers=headers, json=body)
+                if resp.status_code == 429 and attempt < max_retries:
+                    await asyncio.sleep(float(resp.headers.get("Retry-After") or 2))
+                    continue
+                resp.raise_for_status()
+                payload = resp.json()
+                errors = payload.get("errors") or []
+                throttled = any(
+                    ((e or {}).get("extensions") or {}).get("code") == "THROTTLED" for e in errors
+                )
+                if throttled and attempt < max_retries:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                if errors:
+                    raise RuntimeError("; ".join(str((e or {}).get("message") or e) for e in errors))
+                return payload.get("data") or {}
+        raise RuntimeError("Shopify GraphQL request was throttled")
+
+    async def run_bulk_query(
+        self,
+        query: str,
+        children: dict[str, str],
+        *,
+        timeout_seconds: float = 300,
+    ) -> list[dict]:
+        """Run a bulk query, wait for it, and return root rows with nested children."""
+        started = await self.graphql(
+            """
+            mutation RunBulk($query: String!) {
+              bulkOperationRunQuery(query: $query) {
+                bulkOperation { id status }
+                userErrors { field message }
+              }
+            }
+            """,
+            {"query": query},
+        )
+        result = started.get("bulkOperationRunQuery") or {}
+        user_errors = result.get("userErrors") or []
+        if user_errors:
+            raise RuntimeError("; ".join(str(e.get("message") or e) for e in user_errors))
+        op_id = (result.get("bulkOperation") or {}).get("id")
+        if not op_id:
+            raise RuntimeError("Shopify did not start the bulk query")
+
+        deadline = time.monotonic() + timeout_seconds
+        delay = 1.0
+        op: dict = {}
+        while True:
+            data = await self.graphql(
+                """
+                query BulkStatus($id: ID!) {
+                  bulkOperation(id: $id) { id status errorCode objectCount url partialDataUrl }
+                }
+                """,
+                {"id": op_id},
             )
-            resp.raise_for_status()
-            return resp.json()["shop"]
+            op = data.get("bulkOperation") or {}
+            status = str(op.get("status") or "")
+            if status == "COMPLETED":
+                break
+            if status in ("FAILED", "CANCELED", "CANCELLED", "EXPIRED"):
+                raise RuntimeError(
+                    f"Shopify bulk query {status.lower()}: {op.get('errorCode') or 'unknown error'}"
+                )
+            if time.monotonic() > deadline:
+                try:
+                    await self.graphql(
+                        """
+                        mutation CancelBulk($id: ID!) {
+                          bulkOperationCancel(id: $id) {
+                            bulkOperation { id status }
+                            userErrors { field message }
+                          }
+                        }
+                        """,
+                        {"id": op_id},
+                    )
+                except Exception:
+                    logger.debug("Could not cancel bulk query %s", op_id, exc_info=True)
+                raise TimeoutError("Shopify bulk query took too long")
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 5.0)
+
+        url = op.get("url")
+        if not url:
+            return []
+        rows: list[dict] = []
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if line.strip():
+                        rows.append(json.loads(line))
+        return nest_bulk_rows(rows, children)
+
+    async def get_shop(self) -> dict:
+        data = await self.graphql(
+            """
+            query Shop {
+              shop {
+                name
+                email
+                myshopifyDomain
+                currencyCode
+                ianaTimezone
+                plan { publicDisplayName }
+              }
+            }
+            """
+        )
+        shop = data.get("shop") or {}
+        return {
+            "name": shop.get("name"),
+            "email": shop.get("email"),
+            "myshopify_domain": shop.get("myshopifyDomain"),
+            "currency": shop.get("currencyCode"),
+            "iana_timezone": shop.get("ianaTimezone"),
+            "plan_display_name": (shop.get("plan") or {}).get("publicDisplayName"),
+        }
 
     async def register_webhook(self, topic: str, address: str) -> dict:
-        if not self.access_token:
-            raise ValueError("No access token")
-        payload = {"webhook": {"topic": topic, "address": address, "format": "json"}}
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self.admin_api_base}/webhooks.json",
-                headers={"X-Shopify-Access-Token": self.access_token},
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json()["webhook"]
+        data = await self.graphql(
+            """
+            mutation WebhookCreate(
+              $topic: WebhookSubscriptionTopic!
+              $webhookSubscription: WebhookSubscriptionInput!
+            ) {
+              webhookSubscriptionCreate(topic: $topic, webhookSubscription: $webhookSubscription) {
+                webhookSubscription { id topic }
+                userErrors { field message }
+              }
+            }
+            """,
+            {
+                "topic": topic.upper().replace("/", "_"),
+                "webhookSubscription": {"uri": address, "format": "JSON"},
+            },
+        )
+        result = data.get("webhookSubscriptionCreate") or {}
+        user_errors = result.get("userErrors") or []
+        if user_errors:
+            raise RuntimeError("; ".join(str(e.get("message") or e) for e in user_errors))
+        return result.get("webhookSubscription") or {}
+
+    @staticmethod
+    def _orders_search(
+        *,
+        status: str = "any",
+        since_id: str | None = None,
+        created_at_min: str | None = None,
+        created_at_max: str | None = None,
+        financial_status: str | None = None,
+        name: str | None = None,
+        email: str | None = None,
+        query: str | None = None,
+        ids: str | None = None,
+    ) -> str:
+        parts: list[str] = []
+        if status and status != "any":
+            parts.append(f"status:{status}")
+        if since_id:
+            parts.append(f"id:>{since_id}")
+        if created_at_min:
+            parts.append(f"created_at:>='{created_at_min}'")
+        if created_at_max:
+            parts.append(f"created_at:<='{created_at_max}'")
+        if financial_status and financial_status != "any":
+            parts.append(f"financial_status:{financial_status}")
+        if name:
+            parts.append(f"name:{_search_value(name)}")
+        if email:
+            parts.append(f"email:{_search_value(email)}")
+        if ids:
+            id_terms = [f"id:{i.strip()}" for i in str(ids).split(",") if i.strip()]
+            if id_terms:
+                parts.append("(" + " OR ".join(id_terms) + ")")
+        if query:
+            parts.append(query)
+        return " ".join(parts)
 
     async def list_orders(
         self,
@@ -91,96 +718,83 @@ class ShopifyClient:
         query: str | None = None,
         ids: str | None = None,
     ) -> list[dict]:
-        """Fetch recent orders from this Shopify store (Admin REST)."""
-        if not self.access_token:
-            raise ValueError("No access token")
-        params: dict[str, str | int] = {
-            "status": status,
-            "limit": min(max(limit, 1), 250),
-        }
-        if since_id:
-            params["since_id"] = since_id
-        if created_at_min:
-            params["created_at_min"] = created_at_min
-        if created_at_max:
-            params["created_at_max"] = created_at_max
-        if financial_status:
-            params["financial_status"] = financial_status
-        if name:
-            params["name"] = name
-        if email:
-            params["email"] = email
-        if query:
-            params["query"] = query
-        if ids:
-            params["ids"] = ids
-        async with httpx.AsyncClient(timeout=45) as client:
-            resp = await client.get(
-                f"{self.admin_api_base}/orders.json",
-                params=params,
-                headers={"X-Shopify-Access-Token": self.access_token},
+        """Fetch orders, newest first (oldest first after ``since_id``)."""
+        limit = min(max(limit, 1), 250)
+        search = self._orders_search(
+            status=status,
+            since_id=since_id,
+            created_at_min=created_at_min,
+            created_at_max=created_at_max,
+            financial_status=financial_status,
+            name=name,
+            email=email,
+            query=query,
+            ids=ids,
+        )
+        newest_first = not since_id
+
+        if limit > _PAGINATED_ORDER_LIMIT:
+            orders = await self._bulk_orders(search)
+            orders.sort(key=lambda o: str(o.get("created_at") or ""), reverse=newest_first)
+            return orders[:limit]
+
+        gql = f"""
+        query Orders($first: Int!, $after: String, $query: String, $reverse: Boolean) {{
+          orders(first: $first, after: $after, query: $query, sortKey: CREATED_AT, reverse: $reverse) {{
+            pageInfo {{ hasNextPage endCursor }}
+            nodes {{ {_order_selection(line_items=15, fulfillment_items=0)} }}
+          }}
+        }}
+        """
+        orders: list[dict] = []
+        cursor: str | None = None
+        while len(orders) < limit:
+            data = await self.graphql(
+                gql,
+                {
+                    "first": min(_ORDER_PAGE_SIZE, limit - len(orders)),
+                    "after": cursor,
+                    "query": search or None,
+                    "reverse": newest_first,
+                },
             )
-            resp.raise_for_status()
-            return list(resp.json().get("orders") or [])
+            conn = data.get("orders") or {}
+            orders.extend(order_to_rest(n) for n in _nodes(conn))
+            page_info = conn.get("pageInfo") or {}
+            cursor = page_info.get("endCursor")
+            if not page_info.get("hasNextPage") or not cursor:
+                break
+        return orders[:limit]
+
+    async def _bulk_orders(self, search: str) -> list[dict]:
+        args = f"(query: {json.dumps(search)}, sortKey: CREATED_AT)" if search else "(sortKey: CREATED_AT)"
+        bulk = f"{{ orders{args} {{ edges {{ node {{ {_BULK_ORDER_SELECTION} }} }} }} }}"
+        rows = await self.run_bulk_query(bulk, _BULK_ORDER_CHILDREN)
+        return [order_to_rest(row) for row in rows]
 
     async def find_orders_by_name(self, order_number: str, *, limit: int = 10) -> list[dict]:
-        """
-        Find orders by customer-facing name (#1042 / 1042).
-
-        Shopify's REST `name=` filter is unreliable with the default `#` prefix
-        (often returns unrelated recent orders or nothing). We try several
-        query forms, always filter client-side for an exact name match, then
-        fall back to GraphQL and a recent-order scan.
-        """
+        """Find orders by customer-facing name (#1042 / 1042), exact matches only."""
         from app.tracking.payload_parser import normalize_order_number, order_name_matches
 
         bare = normalize_order_number(order_number)
         if not bare:
             return []
-        hashed = f"#{bare}"
 
-        async def _exact(orders: list[dict]) -> list[dict]:
+        def _exact(orders: list[dict]) -> list[dict]:
             return [o for o in orders if order_name_matches(str(o.get("name") or ""), bare)]
 
-        attempts: list[dict[str, str | int]] = [
-            {"query": f"name:{hashed}", "status": "any", "limit": limit},
-            {"query": f"name:{bare}", "status": "any", "limit": limit},
-            {"name": hashed, "status": "any", "limit": limit},
-            {"name": bare, "status": "any", "limit": limit},
-        ]
-        for params in attempts:
+        for name in (f"#{bare}", bare):
             try:
-                kwargs = {k: v for k, v in params.items()}
-                matched = await _exact(await self.list_orders(**kwargs))  # type: ignore[arg-type]
+                matched = _exact(await self.list_orders(name=name, limit=limit))
                 if matched:
                     return matched
             except Exception:
                 logger.debug(
-                    "Shopify order name search attempt failed for %s params=%s",
+                    "Shopify order name search failed for %s name=%s",
                     self.shop_domain,
-                    params,
+                    name,
                     exc_info=True,
                 )
-
-        gql_ids = await self._graphql_order_ids_by_name(hashed, bare)
-        if gql_ids:
-            found: list[dict] = []
-            for oid in gql_ids[:limit]:
-                try:
-                    found.append(await self.get_order(oid))
-                except Exception:
-                    continue
-            matched = await _exact(found)
-            if matched:
-                return matched
-
-        try:
-            recent = await self.list_orders(limit=100, status="any")
-            matched = await _exact(recent)
-            if matched:
-                return matched
-        except Exception:
-            pass
         return []
 
     async def find_orders_by_email(self, email: str, *, limit: int = 10) -> list[dict]:
@@ -190,130 +804,35 @@ class ShopifyClient:
         address = normalize_email(email)
         if not address:
             return []
-
-        def _matching(orders: list[dict]) -> list[dict]:
-            return [o for o in orders if emails_match(recipient_email(o), address)]
-
-        try:
-            matched = _matching(
-                await self.list_orders(email=address, status="any", limit=limit)
-            )
+        for search in (f"email:{_search_value(address)}", f"customer_email:{_search_value(address)}"):
+            try:
+                orders = await self.list_orders(query=search, limit=limit)
+            except Exception:
+                logger.debug(
+                    "Shopify email search failed for %s", self.shop_domain, exc_info=True
+                )
+                continue
+            matched = [o for o in orders if emails_match(recipient_email(o), address)]
             if matched:
                 return matched[:limit]
-        except Exception:
-            logger.debug(
-                "Shopify REST email search failed for %s", self.shop_domain, exc_info=True
-            )
-
-        gql_ids = await self._graphql_order_ids_by_email(address, limit=limit)
-        if gql_ids:
-            found: list[dict] = []
-            for oid in gql_ids[:limit]:
-                try:
-                    found.append(await self.get_order(oid))
-                except Exception:
-                    continue
-            matched = _matching(found)
-            if matched:
-                return matched[:limit]
-
         return []
 
-    async def _graphql_order_ids_by_email(self, email: str, *, limit: int = 10) -> list[str]:
-        if not self.access_token or not email:
-            return []
-        query = """
-        query OrdersByEmail($q: String!, $first: Int!) {
-          orders(first: $first, query: $q) {
-            edges { node { legacyResourceId } }
-          }
-        }
-        """
-        safe = email.replace('"', "")
-        headers = {
-            "X-Shopify-Access-Token": self.access_token,
-            "Content-Type": "application/json",
-        }
-        ids: list[str] = []
-        async with httpx.AsyncClient(timeout=45) as client:
-            for q in (f"email:{safe}", f"customer_email:{safe}"):
-                try:
-                    resp = await client.post(
-                        f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
-                        headers=headers,
-                        json={
-                            "query": query,
-                            "variables": {"q": q, "first": min(max(limit, 1), 25)},
-                        },
-                    )
-                    resp.raise_for_status()
-                    edges = (
-                        ((resp.json().get("data") or {}).get("orders") or {}).get("edges") or []
-                    )
-                    for edge in edges:
-                        node = (edge or {}).get("node") or {}
-                        oid = str(node.get("legacyResourceId") or "").strip()
-                        if oid and oid not in ids:
-                            ids.append(oid)
-                    if ids:
-                        return ids
-                except Exception:
-                    continue
-        return ids
-
-    async def _graphql_order_ids_by_name(self, hashed: str, bare: str) -> list[str]:
-        """Return Shopify numeric order ids matching the customer-facing name."""
-        if not self.access_token:
-            return []
-        query = """
-        query OrdersByName($q: String!) {
-          orders(first: 5, query: $q) {
-            edges { node { legacyResourceId name } }
-          }
-        }
-        """
-        headers = {
-            "X-Shopify-Access-Token": self.access_token,
-            "Content-Type": "application/json",
-        }
-        ids: list[str] = []
-        async with httpx.AsyncClient(timeout=45) as client:
-            for q in (f"name:{hashed}", f"name:{bare}", hashed, bare):
-                try:
-                    resp = await client.post(
-                        f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
-                        headers=headers,
-                        json={"query": query, "variables": {"q": q}},
-                    )
-                    resp.raise_for_status()
-                    edges = (
-                        ((resp.json().get("data") or {}).get("orders") or {}).get("edges") or []
-                    )
-                    for edge in edges:
-                        node = (edge or {}).get("node") or {}
-                        oid = str(node.get("legacyResourceId") or "").strip()
-                        name = str(node.get("name") or "")
-                        from app.tracking.payload_parser import order_name_matches
-
-                        if oid and order_name_matches(name, bare) and oid not in ids:
-                            ids.append(oid)
-                    if ids:
-                        return ids
-                except Exception:
-                    continue
-        return ids
-
     async def get_order(self, order_id: str | int) -> dict:
-        """Fetch a single order by numeric Shopify id."""
-        if not self.access_token:
-            raise ValueError("No access token")
-        async with httpx.AsyncClient(timeout=45) as client:
-            resp = await client.get(
-                f"{self.admin_api_base}/orders/{order_id}.json",
-                headers={"X-Shopify-Access-Token": self.access_token},
-            )
-            resp.raise_for_status()
-            return resp.json()["order"]
+        """Fetch a single order by numeric Shopify id or GID."""
+        oid = str(order_id).strip()
+        gid = oid if oid.startswith("gid://") else f"gid://shopify/Order/{oid}"
+        data = await self.graphql(
+            f"""
+            query Order($id: ID!) {{
+              order(id: $id) {{ {_order_selection(line_items=50, fulfillment_items=10)} }}
+            }}
+            """,
+            {"id": gid},
+        )
+        node = data.get("order")
+        if not node:
+            raise LookupError(f"Order {oid} not found")
+        return order_to_rest(node)
 
     async def list_all_orders_in_range(
         self,
@@ -323,25 +842,15 @@ class ShopifyClient:
         financial_status: str = "any",
         max_pages: int = 20,
     ) -> list[dict]:
-        """Paginate through orders in a date range (up to max_pages * 250)."""
-        all_orders: list[dict] = []
-        since_id: str | None = None
-        for _ in range(max_pages):
-            batch = await self.list_orders(
-                limit=250,
-                status="any",
-                since_id=since_id,
-                created_at_min=created_at_min,
-                created_at_max=created_at_max,
-                financial_status=financial_status,
-            )
-            if not batch:
-                break
-            all_orders.extend(batch)
-            since_id = str(batch[-1]["id"])
-            if len(batch) < 250:
-                break
-        return all_orders
+        """Every order in a date range (oldest first), capped at ``max_pages * 250``."""
+        search = self._orders_search(
+            created_at_min=created_at_min,
+            created_at_max=created_at_max,
+            financial_status=financial_status,
+        )
+        orders = await self._bulk_orders(search)
+        orders.sort(key=lambda o: str(o.get("created_at") or ""))
+        return orders[: max(1, max_pages) * 250]
 
     @staticmethod
     def _checkout_token_from_url(url: str | None) -> str | None:
@@ -441,9 +950,6 @@ class ShopifyClient:
         page_size: int = 50,
     ) -> list[dict]:
         """Paginate abandoned checkouts created on/after created_at_min (GraphQL)."""
-        if not self.access_token:
-            raise ValueError("No access token")
-
         query_filter = f"created_at:>='{created_at_min}' recovery_state:not_recovered"
         gql = """
         query AbandonedCheckoutsInRange($query: String!, $cursor: String, $first: Int!) {
@@ -484,102 +990,82 @@ class ShopifyClient:
           }
         }
         """
-        headers = {
-            "X-Shopify-Access-Token": self.access_token,
-            "Content-Type": "application/json",
-        }
         all_checkouts: list[dict] = []
         cursor: str | None = None
         pages = max(1, min(max_pages, 50))
         first = max(1, min(page_size, 50))
 
-        async with httpx.AsyncClient(timeout=60) as client:
-            for _ in range(pages):
-                variables: dict[str, str | int | None] = {
-                    "query": query_filter,
-                    "cursor": cursor,
-                    "first": first,
-                }
-                resp = await client.post(
-                    f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
-                    headers=headers,
-                    json={"query": gql, "variables": variables},
-                )
-                resp.raise_for_status()
-                payload = resp.json()
-                errors = payload.get("errors") or []
-                if errors:
-                    raise RuntimeError(
-                        "; ".join(str(e.get("message") or e) for e in errors)
-                    )
-                conn = ((payload.get("data") or {}).get("abandonedCheckouts") or {})
-                nodes = conn.get("nodes") or []
-                for node in nodes:
-                    if not isinstance(node, dict):
-                        continue
-                    if node.get("completedAt"):
-                        continue
-                    all_checkouts.append(self._gql_checkout_to_rest(node))
-                page_info = conn.get("pageInfo") or {}
-                if not page_info.get("hasNextPage"):
-                    break
-                cursor = page_info.get("endCursor")
-                if not cursor:
-                    break
+        for _ in range(pages):
+            data = await self.graphql(
+                gql,
+                {"query": query_filter, "cursor": cursor, "first": first},
+                timeout=60,
+            )
+            conn = data.get("abandonedCheckouts") or {}
+            for node in conn.get("nodes") or []:
+                if not isinstance(node, dict) or node.get("completedAt"):
+                    continue
+                all_checkouts.append(self._gql_checkout_to_rest(node))
+            page_info = conn.get("pageInfo") or {}
+            cursor = page_info.get("endCursor")
+            if not page_info.get("hasNextPage") or not cursor:
+                break
         return all_checkouts
 
     async def get_product(self, product_id: str | int) -> dict:
-        """Fetch a single product by numeric Shopify id."""
-        if not self.access_token:
-            raise ValueError("No access token")
+        """Fetch a single product by numeric Shopify id or GID."""
         pid = str(product_id).strip()
-        if pid.startswith("gid://"):
-            pid = pid.rsplit("/", 1)[-1]
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(
-                f"{self.admin_api_base}/products/{pid}.json",
-                headers={"X-Shopify-Access-Token": self.access_token},
-            )
-            resp.raise_for_status()
-            return resp.json()["product"]
+        gid = pid if pid.startswith("gid://") else f"gid://shopify/Product/{pid}"
+        data = await self.graphql(
+            f"""
+            query Product($id: ID!) {{
+              product(id: $id) {{ {_product_selection(media=20, variants=100)} }}
+            }}
+            """,
+            {"id": gid},
+            timeout=20,
+        )
+        node = data.get("product")
+        if not node:
+            raise LookupError(f"Product {pid} not found")
+        return product_to_rest(node)
 
     async def list_products(self, *, limit: int = 250, max_items: int | None = None) -> list[dict]:
-        """Fetch products with variants from Shopify.
+        """Fetch products with variants and images.
 
-        ``limit`` is the page size. ``max_items`` stops pagination early so callers
-        do not wait on the full catalog.
+        ``max_items`` stops early so callers do not wait on the full catalog. Small reads are
+        paginated; full-catalog reads use a bulk query.
         """
-        if not self.access_token:
-            raise ValueError("No access token")
-        all_products: list[dict] = []
-        page_info: str | None = None
-        page_size = min(max(limit, 1), 250)
-        async with httpx.AsyncClient(timeout=20) as client:
-            for _ in range(10):
-                params: dict[str, str | int] = {"limit": page_size}
-                if page_info:
-                    params = {"limit": page_size, "page_info": page_info}
-                resp = await client.get(
-                    f"{self.admin_api_base}/products.json",
-                    params=params,
-                    headers={"X-Shopify-Access-Token": self.access_token},
-                )
-                resp.raise_for_status()
-                batch = list(resp.json().get("products") or [])
-                all_products.extend(batch)
-                if max_items is not None and len(all_products) >= max_items:
-                    return all_products[:max_items]
-                link = resp.headers.get("Link", "")
-                if 'rel="next"' not in link:
-                    break
-                next_part = [p for p in link.split(",") if 'rel="next"' in p]
-                if not next_part:
-                    break
-                match = re.search(r"page_info=([^>&]+)", next_part[0])
-                page_info = match.group(1) if match else None
-                if not page_info:
-                    break
-        return all_products
+        if max_items is None or max_items > _PAGINATED_PRODUCT_LIMIT:
+            bulk = f"{{ products {{ edges {{ node {{ {_BULK_PRODUCT_SELECTION} }} }} }} }}"
+            rows = await self.run_bulk_query(bulk, _BULK_PRODUCT_CHILDREN)
+            products = [product_to_rest(row) for row in rows]
+            return products[:max_items] if max_items is not None else products
+
+        gql = f"""
+        query Products($first: Int!, $after: String) {{
+          products(first: $first, after: $after) {{
+            pageInfo {{ hasNextPage endCursor }}
+            nodes {{ {_product_selection(media=5, variants=50)} }}
+          }}
+        }}
+        """
+        products: list[dict] = []
+        cursor: str | None = None
+        page_size = min(max(limit, 1), _PRODUCT_PAGE_SIZE)
+        while len(products) < max_items:
+            data = await self.graphql(
+                gql,
+                {"first": min(page_size, max_items - len(products)), "after": cursor},
+                timeout=20,
+            )
+            conn = data.get("products") or {}
+            products.extend(product_to_rest(n) for n in _nodes(conn))
+            page_info = conn.get("pageInfo") or {}
+            cursor = page_info.get("endCursor")
+            if not page_info.get("hasNextPage") or not cursor:
+                break
+        return products[:max_items]
 
     async def create_fulfillment_event(
         self,
@@ -589,83 +1075,48 @@ class ShopifyClient:
         message: str | None = None,
         order_id: str | None = None,
     ) -> dict:
-        """Mark a fulfillment shipment status (e.g. delivered) via Admin API.
-
-        Prefers GraphQL ``fulfillmentEventCreate``; falls back to REST when
-        ``order_id`` is available. Requires the ``write_fulfillments`` scope.
-        """
-        if not self.access_token:
-            raise ValueError("No access token")
-
+        """Mark a fulfillment shipment status (e.g. delivered). Requires ``write_fulfillments``."""
         fid = str(fulfillment_id).strip()
         if not fid:
             raise ValueError("fulfillment_id is required")
 
-        graphql_status = status.strip().upper().replace(" ", "_")
-        gid = fid if fid.startswith("gid://") else f"gid://shopify/Fulfillment/{fid}"
         event_input: dict = {
-            "fulfillmentId": gid,
-            "status": graphql_status,
+            "fulfillmentId": fid if fid.startswith("gid://") else f"gid://shopify/Fulfillment/{fid}",
+            "status": status.strip().upper().replace(" ", "_"),
         }
         if message:
             event_input["message"] = message
 
-        mutation = """
-        mutation fulfillmentEventCreate($fulfillmentEvent: FulfillmentEventInput!) {
-          fulfillmentEventCreate(fulfillmentEvent: $fulfillmentEvent) {
-            fulfillmentEvent { id status }
-            userErrors { field message }
-          }
-        }
-        """
-        headers = {
-            "X-Shopify-Access-Token": self.access_token,
-            "Content-Type": "application/json",
-        }
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json",
-                headers=headers,
-                json={"query": mutation, "variables": {"fulfillmentEvent": event_input}},
+        try:
+            data = await self.graphql(
+                """
+                mutation fulfillmentEventCreate($fulfillmentEvent: FulfillmentEventInput!) {
+                  fulfillmentEventCreate(fulfillmentEvent: $fulfillmentEvent) {
+                    fulfillmentEvent { id status }
+                    userErrors { field message }
+                  }
+                }
+                """,
+                {"fulfillmentEvent": event_input},
+                timeout=30,
             )
-            if resp.status_code < 400:
-                payload = resp.json()
-                errors = payload.get("errors") or []
-                result = (payload.get("data") or {}).get("fulfillmentEventCreate") or {}
-                user_errors = result.get("userErrors") or []
-                if not errors and not user_errors and result.get("fulfillmentEvent"):
-                    return result["fulfillmentEvent"]
-                # Access / scope issues — don't silently fall back with a bad token
-                combined = " ".join(
-                    str(e.get("message") or e) for e in (errors + user_errors)
-                ).lower()
-                if "access" in combined or "scope" in combined or "permission" in combined:
-                    raise PermissionError(combined or "Shopify denied fulfillment event create")
-                if user_errors or errors:
-                    # Fall through to REST if we have order_id
-                    if not order_id:
-                        raise RuntimeError(combined or "fulfillmentEventCreate failed")
-                else:
-                    # Unexpected empty success — try REST
-                    if not order_id:
-                        raise RuntimeError("fulfillmentEventCreate returned no event")
-            elif order_id is None:
-                resp.raise_for_status()
+        except RuntimeError as exc:
+            text = str(exc).lower()
+            if "access" in text or "scope" in text or "permission" in text:
+                raise PermissionError(str(exc)) from exc
+            raise
 
-            if not order_id:
-                raise RuntimeError("Could not create fulfillment event")
-
-            rest_status = status.strip().lower().replace(" ", "_")
-            rest_body: dict = {"event": {"status": rest_status}}
-            if message:
-                rest_body["event"]["message"] = message
-            rest_resp = await client.post(
-                f"{self.admin_api_base}/orders/{order_id}/fulfillments/{fid}/events.json",
-                headers=headers,
-                json=rest_body,
-            )
-            rest_resp.raise_for_status()
-            return rest_resp.json().get("fulfillment_event") or rest_resp.json()
+        result = data.get("fulfillmentEventCreate") or {}
+        user_errors = result.get("userErrors") or []
+        if user_errors:
+            combined = " ".join(str(e.get("message") or e) for e in user_errors)
+            lowered = combined.lower()
+            if "access" in lowered or "scope" in lowered or "permission" in lowered:
+                raise PermissionError(combined)
+            raise RuntimeError(combined or "fulfillmentEventCreate failed")
+        if not result.get("fulfillmentEvent"):
+            raise RuntimeError("fulfillmentEventCreate returned no event")
+        return result["fulfillmentEvent"]
 
     @staticmethod
     def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:
@@ -678,6 +1129,30 @@ class ShopifyClient:
         ).digest()
         computed = base64.b64encode(digest).decode()
         return hmac.compare_digest(computed, hmac_header)
+
+    @staticmethod
+    def verify_query_hmac(params: dict[str, str]) -> bool:
+        """Verify the ``hmac`` Shopify adds to app-launch and OAuth callback URLs."""
+        if not settings.shopify_client_secret:
+            return False
+        supplied = str(params.get("hmac") or "")
+        if not supplied:
+            return False
+        message = "&".join(
+            f"{key}={value}"
+            for key, value in sorted(params.items())
+            if key not in ("hmac", "signature")
+        )
+        computed = hmac.new(
+            settings.shopify_client_secret.encode("utf-8"),
+            message.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(computed, supplied)
+
+    @staticmethod
+    def is_valid_shop_domain(shop: str | None) -> bool:
+        return bool(shop) and bool(SHOP_DOMAIN_RE.match(str(shop)))
 
     @staticmethod
     def generate_state() -> str:

@@ -441,10 +441,16 @@ export const api = {
           currency: string;
         }>
       >("/stores"),
-    shopifyInstall: (shop: string) =>
-      request<{ authorize_url: string }>(
-        `/stores/shopify/install?shop=${encodeURIComponent(shop)}`
-      ),
+    shopifyInstallLink: () => request<{ url: string | null }>("/stores/shopify/install-link"),
+    shopifyReauthorize: (storeId: string) =>
+      request<{ authorize_url: string }>(`/stores/${storeId}/shopify/reauthorize`, {
+        method: "POST",
+      }),
+    claimShopifyInstall: (claim: string) =>
+      request<{ id: string; name: string; domain: string }>("/stores/shopify/claim", {
+        method: "POST",
+        body: JSON.stringify({ claim }),
+      }),
     disconnect: (storeId: string) =>
       request(`/stores/${storeId}/disconnect`, { method: "POST" }),
     delete: (storeId: string) =>

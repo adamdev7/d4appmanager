@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -6,11 +6,16 @@ from app.auth.dependencies import get_verified_user
 from app.config import settings
 from app.db.models import User
 from app.db.session import get_db
-from app.models.store import StoreSettingsUpdate
-from app.services.store_service import StoreService
+from app.models.store import ShopifyClaimRequest, StoreSettingsUpdate
+from app.services.store_service import (
+    LAUNCH_STATE_TTL_SECONDS,
+    SHOPIFY_STATE_COOKIE,
+    StoreService,
+)
 
 router = APIRouter()
 _stores = StoreService()
+_STATE_COOKIE_PATH = f"{settings.api_prefix}/stores/shopify"
 
 
 @router.get("")
@@ -21,30 +26,55 @@ async def list_stores(
     return _stores.list_stores(db, user)
 
 
-@router.get("/shopify/install")
-async def shopify_install(
-    shop: str = Query(..., description="myshopify.com domain"),
-    user: User = Depends(get_verified_user),
-    db: Session = Depends(get_db),
-):
-    url = _stores.begin_shopify_install(db, user, shop)
-    return {
-        "authorize_url": url,
-        "redirect_uri": settings.shopify_redirect_uri,
-    }
+@router.get("/shopify/install-link")
+async def shopify_install_link(user: User = Depends(get_verified_user)):
+    return {"url": _stores.shopify_install_link()}
+
+
+@router.get("/shopify/launch")
+async def shopify_launch(request: Request, db: Session = Depends(get_db)):
+    """App URL configured in the Shopify Dev Dashboard."""
+    url, state = _stores.handle_shopify_launch(db, dict(request.query_params))
+    response = RedirectResponse(url, status_code=302)
+    if state:
+        response.set_cookie(
+            SHOPIFY_STATE_COOKIE,
+            state,
+            max_age=LAUNCH_STATE_TTL_SECONDS,
+            path=_STATE_COOKIE_PATH,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+        )
+    return response
 
 
 @router.get("/shopify/callback")
-async def shopify_callback(
-    shop: str = Query(...),
-    code: str = Query(...),
-    state: str = Query(...),
+async def shopify_callback(request: Request, db: Session = Depends(get_db)):
+    url = await _stores.complete_shopify_oauth(
+        db, dict(request.query_params), request.cookies.get(SHOPIFY_STATE_COOKIE)
+    )
+    response = RedirectResponse(url, status_code=302)
+    response.delete_cookie(SHOPIFY_STATE_COOKIE, path=_STATE_COOKIE_PATH)
+    return response
+
+
+@router.post("/shopify/claim")
+async def claim_shopify_install(
+    data: ShopifyClaimRequest,
+    user: User = Depends(get_verified_user),
     db: Session = Depends(get_db),
 ):
-    _, store = await _stores.complete_shopify_oauth(db, shop, code, state)
-    return RedirectResponse(
-        f"{settings.public_frontend_url}/settings/stores?connected=1&store_id={store.id}"
-    )
+    return await _stores.claim_shopify_install(db, user, data.claim)
+
+
+@router.post("/{store_id}/shopify/reauthorize")
+async def reauthorize_shopify_store(
+    store_id: str,
+    user: User = Depends(get_verified_user),
+    db: Session = Depends(get_db),
+):
+    return {"authorize_url": _stores.begin_shopify_reauthorize(db, user, store_id)}
 
 
 @router.get("/{store_id}")
