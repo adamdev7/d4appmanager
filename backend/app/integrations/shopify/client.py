@@ -442,6 +442,24 @@ def product_to_rest(node: dict) -> dict:
     }
 
 
+def _raise_for_status(resp: httpx.Response, what: str) -> None:
+    """Like ``raise_for_status`` but keeps Shopify's error body so server logs explain 4xx/5xx."""
+    if resp.is_success:
+        return
+    raise httpx.HTTPStatusError(
+        f"{what} failed with HTTP {resp.status_code}: {resp.text[:500]}",
+        request=resp.request,
+        response=resp,
+    )
+
+
+def _token_needs_renewal(resp: httpx.Response) -> bool:
+    # 401 = expired token; this 403 = legacy non-expiring token (a 403 for missing scopes is not renewable).
+    if resp.status_code == 401:
+        return True
+    return resp.status_code == 403 and "non-expiring access tokens" in resp.text.lower()
+
+
 def nest_bulk_rows(rows: list[dict], children: dict[str, str]) -> list[dict]:
     """Rebuild nested connections from bulk JSONL rows linked by ``__parentId``."""
     parents: dict[str, dict] = {}
@@ -489,21 +507,51 @@ class ShopifyClient:
         }
         return f"https://{self.shop_domain}/admin/oauth/authorize?{urlencode(params)}"
 
-    async def exchange_code_for_token(self, code: str) -> dict:
+    async def _token_request(self, data: dict[str, str]) -> dict:
         if not settings.shopify_client_id or not settings.shopify_client_secret:
             raise ValueError("Shopify OAuth credentials are not configured")
         url = f"https://{self.shop_domain}/admin/oauth/access_token"
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 url,
-                json={
+                data={
                     "client_id": settings.shopify_client_id,
                     "client_secret": settings.shopify_client_secret,
-                    "code": code,
+                    **data,
                 },
+                headers={"Accept": "application/json"},
             )
-            resp.raise_for_status()
+            _raise_for_status(resp, f"Shopify token request for {self.shop_domain}")
             return resp.json()
+
+    async def exchange_code_for_token(self, code: str) -> dict:
+        # Public apps created after 2026-04-01 get 403s on GraphQL with non-expiring tokens.
+        return await self._token_request({"code": code, "expiring": "1"})
+
+    async def refresh_access_token(self, refresh_token: str) -> dict:
+        return await self._token_request({"grant_type": "refresh_token", "refresh_token": refresh_token})
+
+    async def migrate_to_expiring_token(self, access_token: str) -> dict:
+        """Trade a legacy non-expiring offline token for an expiring one (invalidates the old token)."""
+        offline = "urn:shopify:params:oauth:token-type:offline-access-token"
+        return await self._token_request(
+            {
+                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                "subject_token": access_token,
+                "subject_token_type": offline,
+                "requested_token_type": offline,
+                "expiring": "1",
+            }
+        )
+
+    async def _renew_access_token(self) -> bool:
+        from app.services.store_service import renew_shopify_token
+
+        fresh = await renew_shopify_token(self.shop_domain, self.access_token or "")
+        if not fresh or fresh == self.access_token:
+            return False
+        self.access_token = fresh
+        return True
 
     async def graphql(
         self,
@@ -516,18 +564,23 @@ class ShopifyClient:
         """Run an Admin GraphQL operation and return ``data``. Retries when throttled."""
         if not self.access_token:
             raise ValueError("No access token")
-        headers = {
-            "X-Shopify-Access-Token": self.access_token,
-            "Content-Type": "application/json",
-        }
         body = {"query": query, "variables": variables or {}}
+        renewed = False
         async with httpx.AsyncClient(timeout=timeout) as client:
             for attempt in range(max_retries + 1):
+                headers = {
+                    "X-Shopify-Access-Token": self.access_token,
+                    "Content-Type": "application/json",
+                }
                 resp = await client.post(self.graphql_url, headers=headers, json=body)
                 if resp.status_code == 429 and attempt < max_retries:
                     await asyncio.sleep(float(resp.headers.get("Retry-After") or 2))
                     continue
-                resp.raise_for_status()
+                if not renewed and _token_needs_renewal(resp):
+                    renewed = True
+                    if await self._renew_access_token():
+                        continue
+                _raise_for_status(resp, f"Shopify GraphQL request for {self.shop_domain}")
                 payload = resp.json()
                 errors = payload.get("errors") or []
                 throttled = any(

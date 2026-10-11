@@ -669,6 +669,25 @@ def _migrate_store_granted_scopes_column() -> None:
             conn.execute(text("ALTER TABLE stores ADD COLUMN IF NOT EXISTS granted_scopes TEXT"))
 
 
+def _migrate_shopify_refresh_token_columns() -> None:
+    """Expiring Shopify offline tokens come with a refresh token we must keep."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    tables = set(insp.get_table_names())
+    for table in ("stores", "shopify_pending_installs"):
+        if table not in tables:
+            continue
+        if "refresh_token_encrypted" in {c["name"] for c in insp.get_columns(table)}:
+            continue
+        with engine.begin() as conn:
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN refresh_token_encrypted TEXT"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS refresh_token_encrypted TEXT")
+                )
+
+
 def _migrate_verification_code_attempts() -> None:
     """Track failed OTP guesses so codes can be locked after too many attempts."""
     insp = inspect(engine)
@@ -1334,6 +1353,7 @@ def init_db() -> None:
     _migrate_analytics_mrr_columns()
     _migrate_sync_delivered_to_shopify_column()
     _migrate_store_granted_scopes_column()
+    _migrate_shopify_refresh_token_columns()
     _migrate_verification_code_attempts()
     _migrate_ai_email_null_store_scope()
     _migrate_meta_capi_enrichment_columns()

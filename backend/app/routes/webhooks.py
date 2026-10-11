@@ -76,6 +76,7 @@ async def shopify_webhook(request: Request, db: Session = Depends(get_db)):
     if topic == "app/uninstalled":
         if store:
             store.access_token_encrypted = None
+            store.refresh_token_encrypted = None
             store.granted_scopes = None
             store.status = StoreStatus.DISCONNECTED.value
         db.execute(delete(ShopifyPendingInstall).where(ShopifyPendingInstall.shop_domain == shop_domain))

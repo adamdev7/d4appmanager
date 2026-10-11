@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.crypto import decrypt_value, encrypt_value
 from app.db.models import ShopifyPendingInstall, Store, StoreStatus, User
+from app.db.session import SessionLocal
 from app.integrations.shopify.client import ShopifyClient
 from app.email_automation.default_templates import seed_store_automation_defaults
 from app.email_automation.webhook_topics import AUTOMATION_WEBHOOK_TOPICS
@@ -67,6 +68,34 @@ def verify_launch_state(state: str, shop: str) -> bool:
 
 def _claim_hash(claim: str) -> str:
     return hashlib.sha256(claim.encode("utf-8")).hexdigest()
+
+
+async def renew_shopify_token(shop_domain: str, stale_token: str) -> str | None:
+    """Replace an expired (or legacy non-expiring) offline token with a fresh one and save it."""
+    db = SessionLocal()
+    try:
+        store = db.scalar(select(Store).where(Store.shop_domain == shop_domain))
+        if not store or not store.access_token_encrypted:
+            return None
+        current = decrypt_value(store.access_token_encrypted)
+        if current != stale_token:
+            return current
+        client = ShopifyClient(shop_domain)
+        if store.refresh_token_encrypted:
+            token_data = await client.refresh_access_token(decrypt_value(store.refresh_token_encrypted))
+        else:
+            token_data = await client.migrate_to_expiring_token(current)
+        store.access_token_encrypted = encrypt_value(token_data["access_token"])
+        if token_data.get("refresh_token"):
+            store.refresh_token_encrypted = encrypt_value(token_data["refresh_token"])
+        db.commit()
+        return token_data["access_token"]
+    except Exception:
+        db.rollback()
+        logger.exception("Could not renew Shopify access token for %s", shop_domain)
+        return None
+    finally:
+        db.close()
 
 
 class StoreService:
@@ -179,8 +208,14 @@ class StoreService:
         client = ShopifyClient(shop)
         token_data = await client.exchange_code_for_token(code)
         client.access_token = token_data["access_token"]
+        refresh_token = token_data.get("refresh_token")
         scopes = str(token_data.get("scope") or "")
-        shop_data = await client.get_shop()
+        try:
+            shop_data = await client.get_shop()
+        except Exception:
+            # Keep the token and land the merchant in the app; shop details fill in on the next sync.
+            logger.exception("Shopify shop lookup failed after OAuth for %s", client.shop_domain)
+            shop_data = {"name": client.shop_domain, "myshopify_domain": client.shop_domain}
         shop_domain = shop_data.get("myshopify_domain") or client.shop_domain
         store = db.scalar(select(Store).where(Store.shop_domain == shop_domain))
         frontend = settings.public_frontend_url
@@ -191,14 +226,18 @@ class StoreService:
                     status_code=status.HTTP_409_CONFLICT,
                     detail="This store is already connected to another account",
                 )
-            store = await self._connect_store(db, client, user.id, store, shop_data, scopes)
+            store = await self._connect_store(db, client, user.id, store, shop_data, scopes, refresh_token)
             return f"{frontend}/settings/stores?connected=1&store_id={store.id}"
 
         if store:
-            store = await self._connect_store(db, client, store.owner_id, store, shop_data, scopes)
+            store = await self._connect_store(
+                db, client, store.owner_id, store, shop_data, scopes, refresh_token
+            )
             return f"{frontend}/settings/stores?connected=1&store_id={store.id}"
 
-        claim = self._save_pending_install(db, shop_domain, client.access_token, scopes, shop_data)
+        claim = self._save_pending_install(
+            db, shop_domain, client.access_token, refresh_token, scopes, shop_data
+        )
         return f"{frontend}/settings/stores?shopify_claim={claim}"
 
     async def claim_shopify_install(self, db: Session, user: User, claim: str) -> dict:
@@ -226,16 +265,23 @@ class StoreService:
                 detail="This store is already connected to another account",
             )
         client = ShopifyClient(shop_domain, decrypt_value(row.access_token_encrypted))
+        refresh_token = decrypt_value(row.refresh_token_encrypted) if row.refresh_token_encrypted else None
         scopes = row.granted_scopes
         shop_data = json.loads(row.shop_json or "{}")
         db.delete(row)
         db.commit()
 
-        store = await self._connect_store(db, client, user.id, store, shop_data, scopes)
+        store = await self._connect_store(db, client, user.id, store, shop_data, scopes, refresh_token)
         return self._serialize(store)
 
     def _save_pending_install(
-        self, db: Session, shop_domain: str, access_token: str, scopes: str, shop_data: dict
+        self,
+        db: Session,
+        shop_domain: str,
+        access_token: str,
+        refresh_token: str | None,
+        scopes: str,
+        shop_data: dict,
     ) -> str:
         claim = secrets.token_urlsafe(32)
         row = db.scalar(select(ShopifyPendingInstall).where(ShopifyPendingInstall.shop_domain == shop_domain))
@@ -244,6 +290,7 @@ class StoreService:
             db.add(row)
         row.claim_token_hash = _claim_hash(claim)
         row.access_token_encrypted = encrypt_value(access_token)
+        row.refresh_token_encrypted = encrypt_value(refresh_token) if refresh_token else None
         row.granted_scopes = scopes
         row.shop_json = json.dumps(shop_data)
         row.expires_at = datetime.now(UTC) + _CLAIM_TTL
@@ -258,6 +305,7 @@ class StoreService:
         store: Store | None,
         shop_data: dict,
         scopes: str | None,
+        refresh_token: str | None = None,
     ) -> Store:
         shop_domain = shop_data.get("myshopify_domain") or client.shop_domain
         if not store:
@@ -266,6 +314,7 @@ class StoreService:
 
         store.name = shop_data.get("name") or store.name
         store.access_token_encrypted = encrypt_value(client.access_token or "")
+        store.refresh_token_encrypted = encrypt_value(refresh_token) if refresh_token else None
         store.granted_scopes = scopes or None
         store.status = StoreStatus.CONNECTED.value
         store.plan = shop_data.get("plan_display_name") or "Shopify"
@@ -305,6 +354,7 @@ class StoreService:
         if not store or store.owner_id != user.id:
             return False
         store.access_token_encrypted = None
+        store.refresh_token_encrypted = None
         store.status = StoreStatus.DISCONNECTED.value
         db.commit()
         return True

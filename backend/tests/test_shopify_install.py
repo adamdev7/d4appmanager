@@ -1,8 +1,10 @@
+import asyncio
 import hashlib
 import hmac
 import time
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -45,7 +47,13 @@ def env(monkeypatch):
     monkeypatch.setattr(store_service, "seed_store_automation_defaults", lambda db, store_id: None)
 
     async def fake_exchange(self, code):
-        return {"access_token": f"token-{code}", "scope": settings.shopify_scopes}
+        return {
+            "access_token": f"token-{code}",
+            "scope": settings.shopify_scopes,
+            "expires_in": 3600,
+            "refresh_token": f"refresh-{code}",
+            "refresh_token_expires_in": 7776000,
+        }
 
     async def fake_shop(self):
         return {
@@ -167,6 +175,7 @@ def test_install_from_shopify_then_claim_attaches_store(env):
     assert store.owner_id == user.id
     assert store.status == "connected"
     assert decrypt_value(store.access_token_encrypted) == "token-abc"
+    assert decrypt_value(store.refresh_token_encrypted) == "refresh-abc"
     assert store.currency == "CAD"
     assert "orders/create" in webhooks
     assert db.scalar(select(ShopifyPendingInstall)) is None
@@ -185,6 +194,89 @@ def test_callback_without_matching_state_cookie_is_rejected(env):
         params=signed({"shop": SHOP, "code": "abc", "state": state, "timestamp": str(int(time.time()))}),
     )
     assert resp.status_code == 400
+
+
+def test_callback_still_lands_in_app_when_shop_lookup_fails(env, monkeypatch):
+    client, db, *_ = env
+
+    async def broken_shop(self):
+        raise RuntimeError("403 Forbidden")
+
+    monkeypatch.setattr(ShopifyClient, "get_shop", broken_shop)
+    launch = client.get("/api/v1/stores/shopify/launch", params=launch_params())
+    state = parse_qs(urlparse(launch.headers["location"]).query)["state"][0]
+    callback = client.get(
+        "/api/v1/stores/shopify/callback",
+        params=signed({"shop": SHOP, "code": "abc", "state": state, "timestamp": str(int(time.time()))}),
+    )
+    assert callback.status_code == 302
+    assert "shopify_claim=" in callback.headers["location"]
+    pending = db.scalar(select(ShopifyPendingInstall))
+    assert pending.shop_domain == SHOP
+    assert decrypt_value(pending.access_token_encrypted) == "token-abc"
+    assert decrypt_value(pending.refresh_token_encrypted) == "refresh-abc"
+
+
+def test_code_exchange_requests_expiring_offline_token(monkeypatch):
+    sent: dict = {}
+
+    async def fake_request(self, data):
+        sent.update(data)
+        return {}
+
+    monkeypatch.setattr(ShopifyClient, "_token_request", fake_request)
+    asyncio.run(ShopifyClient(SHOP).exchange_code_for_token("c"))
+    assert sent == {"code": "c", "expiring": "1"}
+
+
+def _mock_shopify_http(monkeypatch, handler):
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)
+    )
+
+
+def test_graphql_refreshes_expired_token_and_saves_it(env, monkeypatch):
+    _, db, user, _ = env
+    store = Store(
+        owner_id=user.id,
+        shop_domain=SHOP,
+        name="Luxory",
+        status="connected",
+        access_token_encrypted=encrypt_value("old"),
+        refresh_token_encrypted=encrypt_value("r1"),
+    )
+    db.add(store)
+    db.commit()
+    monkeypatch.setattr(store_service, "SessionLocal", sessionmaker(bind=db.get_bind()))
+
+    async def fake_refresh(self, refresh_token):
+        assert refresh_token == "r1"
+        return {"access_token": "new", "refresh_token": "r2", "expires_in": 3600}
+
+    monkeypatch.setattr(ShopifyClient, "refresh_access_token", fake_refresh)
+
+    def handler(request):
+        if request.headers["X-Shopify-Access-Token"] == "old":
+            return httpx.Response(401, text='{"errors":"[API] Invalid API key or access token"}')
+        return httpx.Response(200, json={"data": {"shop": {"name": "Luxory"}}})
+
+    _mock_shopify_http(monkeypatch, handler)
+    shopify = ShopifyClient(SHOP, "old")
+    assert asyncio.run(shopify.graphql("{ shop { name } }")) == {"shop": {"name": "Luxory"}}
+    assert shopify.access_token == "new"
+    db.refresh(store)
+    assert decrypt_value(store.access_token_encrypted) == "new"
+    assert decrypt_value(store.refresh_token_encrypted) == "r2"
+
+
+def test_graphql_error_includes_shopify_response_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(403, text='{"errors":"[API] This action requires merchant approval"}')
+
+    _mock_shopify_http(monkeypatch, handler)
+    with pytest.raises(httpx.HTTPStatusError, match="HTTP 403.*requires merchant approval"):
+        asyncio.run(ShopifyClient(SHOP, "t").graphql("{ shop { name } }"))
 
 
 def test_reinstall_updates_existing_store_token(env):
