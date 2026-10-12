@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     verification_code_expire_minutes: int = 15
     verification_code_length: int = 6
     verification_code_max_attempts: int = 5
+    # Comma-separated accounts that sign in with password only (Shopify App Store reviewers
+    # cannot read the emailed login code). Create them with create_review_account.py.
+    review_account_emails: str = ""
     # Auth rate limits (per IP / email window)
     auth_login_rate_limit: int = 10
     auth_otp_rate_limit: int = 8
@@ -173,6 +176,10 @@ class Settings(BaseSettings):
         if v and len(v) < 32:
             raise ValueError("INTEGRATION_API_KEY must be at least 32 characters")
         return v
+
+    @property
+    def review_account_email_set(self) -> set[str]:
+        return {e.strip().lower() for e in self.review_account_emails.split(",") if e.strip()}
 
     @property
     def shopify_oauth_base(self) -> str:

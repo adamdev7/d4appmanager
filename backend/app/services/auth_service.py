@@ -256,6 +256,9 @@ class AuthService:
                 "message": "Email not verified. A new code was sent to your email.",
             }
 
+        if email in settings.review_account_email_set:
+            return self._token_response(user)
+
         await self._send_code(db, user, VerificationPurpose.LOGIN_2FA.value)
         payload = {
             "requires_2fa": True,

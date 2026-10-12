@@ -72,6 +72,21 @@ same URL. They are declared in `shopify.app.toml`, so `shopify app deploy` subsc
 In the app: **Settings → Stores → Connect store → Install from Shopify** (uses `SHOPIFY_INSTALL_URL`).
 Existing stores that need new permissions use **Reconnect**.
 
+### App Store review account
+
+Reviewers land on the App Manager sign-in page after OAuth and cannot receive the emailed login
+code, so give them a password-only account (requirement 4.5.4):
+
+```bash
+cd /var/www/appmanager/backend
+.venv/bin/python create_review_account.py appreview@appmanager.store   # prints the password
+echo "REVIEW_ACCOUNT_EMAILS=appreview@appmanager.store" >> .env
+sudo systemctl restart appmanager
+```
+
+Re-running the script resets the password. Put the email and password in **Partner Dashboard →
+App listing → Testing instructions**, and update them there whenever you reset it.
+
 ## 3b. Meta Conversions API (server-side Purchase tracking)
 
 Forwards Shopify paid orders to Meta CAPI so purchases still count when the browser Pixel is blocked.
