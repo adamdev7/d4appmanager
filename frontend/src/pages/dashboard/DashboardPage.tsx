@@ -8,7 +8,11 @@ import { useStore } from "@/context/StoreContext";
 import { Badge } from "@/components/ui/Badge";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { EMPTY_DASHBOARD_OVERVIEW, type DashboardOverview } from "@/lib/dashboardTypes";
+import {
+  EMPTY_DASHBOARD_OVERVIEW,
+  EMPTY_MONEY_PULSE,
+  type DashboardOverview,
+} from "@/lib/dashboardTypes";
 
 export function DashboardPage() {
   const { activeStore, stores } = useStore();
@@ -34,10 +38,15 @@ export function DashboardPage() {
     };
   }, [activeStore?.id]);
 
-  const display = overview ?? EMPTY_DASHBOARD_OVERVIEW;
-  const setupIncomplete =
-    !loading && overview != null && overview.setup_steps.some((s) => !s.done);
+  const display = overview
+    ? { ...EMPTY_DASHBOARD_OVERVIEW, ...overview, money: overview.money ?? EMPTY_MONEY_PULSE }
+    : EMPTY_DASHBOARD_OVERVIEW;
+  const needsFirstStore =
+    !loading &&
+    overview != null &&
+    overview.setup_steps.some((s) => s.id === "store" && !s.done);
   const connectedStoreCount = stores.filter((s) => s.status === "connected").length;
+  const storePending = Boolean(activeStore && activeStore.status !== "connected");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -47,17 +56,21 @@ export function DashboardPage() {
             Overview
           </h1>
           <p className="mt-0.5 truncate text-sm text-content-muted">
-            {activeStore
-              ? activeStore.name
-              : "Connect a store to start using your apps."}
+            {display.money.hint ||
+              (activeStore
+                ? activeStore.name
+                : "Connect a store to start using your apps.")}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {activeStore && (
-            <Badge variant={activeStore.status === "connected" ? "success" : "warning"}>
-              {activeStore.status === "connected" ? "Store connected" : "Store pending"}
-            </Badge>
-          )}
+          {activeStore &&
+            (storePending ? (
+              <Link to="/settings/stores">
+                <Badge variant="warning">Reconnect store</Badge>
+              </Link>
+            ) : (
+              <Badge variant="success">{activeStore.name}</Badge>
+            ))}
           {connectedStoreCount > 1 && (
             <Badge variant="muted">{connectedStoreCount} stores</Badge>
           )}
@@ -71,7 +84,7 @@ export function DashboardPage() {
         </div>
       </div>
 
-      {setupIncomplete && overview && <WorkspaceSetup steps={overview.setup_steps} />}
+      {needsFirstStore && overview && <WorkspaceSetup steps={overview.setup_steps} />}
 
       <OverviewCards metrics={display.metrics} loading={loading} />
 

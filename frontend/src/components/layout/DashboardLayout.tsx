@@ -70,7 +70,7 @@ export function DashboardLayout() {
       <div
         className={cn(
           "flex flex-col w-full min-w-0 transition-[padding] duration-300",
-          location.pathname === "/dashboard" ? "h-dvh overflow-hidden" : "min-h-dvh",
+          location.pathname === "/dashboard" ? "min-h-dvh lg:h-dvh lg:overflow-hidden" : "min-h-dvh",
           collapsed ? "lg:pl-[72px]" : "lg:pl-[var(--sidebar-width)]"
         )}
       >
@@ -84,7 +84,7 @@ export function DashboardLayout() {
           transition={{ duration: 0.25 }}
           className={cn(
             "relative flex-1 w-full min-w-0 max-w-none",
-            location.pathname === "/dashboard" && "flex min-h-0 flex-col overflow-hidden"
+            location.pathname === "/dashboard" && "flex min-h-0 flex-col"
           )}
           style={{
             paddingLeft: "var(--page-gutter-x)",

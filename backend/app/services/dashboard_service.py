@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import logging
 
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -8,6 +9,7 @@ from app.db.models import (
     AIEmailAssistantSettings,
     AIEmailReply,
     AIReplyStatus,
+    CreativeAsset,
     EmailAutomationRule,
     EmailSendLog,
     EmailSendStatus,
@@ -16,12 +18,16 @@ from app.db.models import (
     GmailStoreLink,
     InboxEmail,
     InboxEmailStatus,
+    MetaCapiEventLog,
+    MetaCapiEventStatus,
     OrderTracking,
     Store,
     StoreStatus,
     User,
     WebhookLog,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OverviewMetric(BaseModel):
@@ -47,10 +53,24 @@ class ModuleHighlight(BaseModel):
     hint: str
 
 
+class MoneyPulse(BaseModel):
+    period: str = "7d"
+    currency: str = "USD"
+    available: bool = False
+    revenue: float = 0
+    net_profit: float = 0
+    ad_spend: float = 0
+    roas: float = 0
+    mer: float | None = None
+    orders: int = 0
+    hint: str = ""
+
+
 class DashboardOverviewResponse(BaseModel):
     metrics: list[OverviewMetric]
     setup_steps: list[SetupStep]
     highlights: list[ModuleHighlight]
+    money: MoneyPulse = MoneyPulse()
 
 
 class ActivityItem(BaseModel):
@@ -97,9 +117,30 @@ def _format_activity_time(dt: datetime) -> str:
 def _webhook_title(topic: str) -> tuple[str, str]:
     mapping = {
         "orders/create": ("New Shopify order", "order"),
+        "orders/updated": ("Order updated", "order"),
+        "orders/paid": ("Order paid", "order"),
+        "checkouts/create": ("Checkout started", "order"),
+        "fulfillments/create": ("Fulfillment created", "order"),
+        "fulfillments/update": ("Fulfillment updated", "order"),
         "app/uninstalled": ("Store disconnected", "store"),
     }
     return mapping.get(topic, (topic.replace("/", " ").title(), "system"))
+
+
+def _fmt_money(amount: float, currency: str) -> str:
+    code = (currency or "USD").upper()
+    symbol = {"USD": "$", "CAD": "CA$", "GBP": "£", "EUR": "€"}.get(code, f"{code} ")
+    n = float(amount or 0)
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+    if n >= 1000:
+        return f"{sign}{symbol}{n:,.0f}"
+    return f"{sign}{symbol}{n:,.2f}"
+
+
+def _fmt_ratio(value: float) -> str:
+    n = float(value or 0)
+    return f"{n:.2f}x"
 
 
 class DashboardService:
@@ -114,7 +155,16 @@ class DashboardService:
     ) -> DashboardOverviewResponse:
         store_ids = self._store_filter(db, user, store_id)
         week_ago = datetime.now(UTC) - timedelta(days=7)
+        primary_store_id = store_id or (store_ids[0] if store_ids else None)
 
+        stores_owned = db.scalar(
+            select(func.count())
+            .select_from(Store)
+            .where(
+                Store.owner_id == user.id,
+                *([Store.id == store_id] if store_id else []),
+            )
+        ) or 0
         stores_connected = db.scalar(
             select(func.count())
             .select_from(Store)
@@ -136,7 +186,7 @@ class DashboardService:
             )
             or 0
         )
-        has_store = stores_connected > 0
+        has_store = stores_owned > 0
         has_gmail = gmail_connected > 0
 
         # Gmail for this overview scope must be linked to the store(s), not just any user account
@@ -174,6 +224,9 @@ class DashboardService:
 
         orders_synced = 0
         orders_with_tracking = 0
+        orders_in_transit = 0
+        capi_sent_today = 0
+        creatives_week = 0
         automation_sent_week = 0
         automation_rules_on = 0
         if store_ids:
@@ -193,6 +246,44 @@ class DashboardService:
                         OrderTracking.store_id.in_(store_ids),
                         OrderTracking.tracking_number.isnot(None),
                         OrderTracking.tracking_number != "",
+                    )
+                )
+                or 0
+            )
+            orders_in_transit = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(OrderTracking)
+                    .where(
+                        OrderTracking.store_id.in_(store_ids),
+                        OrderTracking.status.in_(
+                            ("in_transit", "out_for_delivery", "shipped")
+                        ),
+                    )
+                )
+                or 0
+            )
+            capi_sent_today = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(MetaCapiEventLog)
+                    .where(
+                        MetaCapiEventLog.store_id.in_(store_ids),
+                        MetaCapiEventLog.status == MetaCapiEventStatus.SENT.value,
+                        MetaCapiEventLog.sent_at >= datetime.now(UTC).replace(
+                            hour=0, minute=0, second=0, microsecond=0
+                        ),
+                    )
+                )
+                or 0
+            )
+            creatives_week = (
+                db.scalar(
+                    select(func.count())
+                    .select_from(CreativeAsset)
+                    .where(
+                        CreativeAsset.store_id.in_(store_ids),
+                        CreativeAsset.created_at >= week_ago,
                     )
                 )
                 or 0
@@ -269,12 +360,15 @@ class DashboardService:
         ai_settings = db.scalar(ai_settings_q)
         ai_automation_on = bool(ai_settings and ai_settings.automation_enabled)
 
+        money = await self._money_pulse(db, user, primary_store_id)
+        currency = money.currency
+
         tracking_hint = (
             "Connect a Shopify store to sync orders"
             if not has_store
             else "No orders synced yet"
             if orders_synced == 0
-            else f"{orders_with_tracking} with tracking numbers"
+            else f"{orders_in_transit} in transit · {orders_with_tracking} with tracking"
         )
         if not has_gmail and emails_sent_week == 0:
             email_hint = "Connect Gmail for automations"
@@ -289,24 +383,56 @@ class DashboardService:
         else:
             email_hint = "Email Automation sends (7 days)"
 
-        metrics = [
-            _neutral_metric(
-                "Connected stores",
-                stores_connected,
-                "Add a store in Settings" if stores_connected == 0 else "Shopify linked",
-            ),
-            _neutral_metric(
-                "Gmail accounts",
-                gmail_connected,
-                "Connect Gmail in Settings" if gmail_connected == 0 else "Ready for email apps",
-            ),
-            _neutral_metric("Orders synced", orders_synced, tracking_hint),
-            _neutral_metric(
-                "Emails sent (7d)",
-                emails_sent_week,
-                email_hint,
-            ),
-        ]
+        if money.available:
+            metrics = [
+                OverviewMetric(
+                    label="Revenue (7d)",
+                    value=_fmt_money(money.revenue, currency),
+                    change=f"{money.orders} orders",
+                    trend="up" if money.revenue > 0 else "neutral",
+                ),
+                OverviewMetric(
+                    label="Net profit (7d)",
+                    value=_fmt_money(money.net_profit, currency),
+                    change="After ads and costs",
+                    trend="up" if money.net_profit > 0 else "down" if money.net_profit < 0 else "neutral",
+                ),
+                OverviewMetric(
+                    label="Ad spend (7d)",
+                    value=_fmt_money(money.ad_spend, currency),
+                    change=f"ROAS {_fmt_ratio(money.roas)}" if money.ad_spend else "No Meta spend in range",
+                    trend="neutral",
+                ),
+                OverviewMetric(
+                    label="ROAS (7d)",
+                    value=_fmt_ratio(money.roas) if money.ad_spend else "—",
+                    change=(
+                        f"MER {money.mer:.2f}x"
+                        if money.mer
+                        else "Revenue ÷ ad spend"
+                    ),
+                    trend="up" if money.roas >= 2 else "down" if money.ad_spend and money.roas < 1 else "neutral",
+                ),
+            ]
+        else:
+            metrics = [
+                _neutral_metric(
+                    "Connected stores",
+                    stores_connected,
+                    "Add a store in Settings" if stores_connected == 0 else "Shopify linked",
+                ),
+                _neutral_metric(
+                    "Gmail accounts",
+                    gmail_connected,
+                    "Connect Gmail in Settings" if gmail_connected == 0 else "Ready for email apps",
+                ),
+                _neutral_metric("Orders synced", orders_synced, tracking_hint),
+                _neutral_metric(
+                    "Emails sent (7d)",
+                    emails_sent_week,
+                    email_hint,
+                ),
+            ]
 
         setup_steps = [
             SetupStep(
@@ -323,7 +449,48 @@ class DashboardService:
             ),
         ]
 
+        store_apps_ready = has_store
         highlights: list[ModuleHighlight] = [
+            ModuleHighlight(
+                slug="analytics",
+                name="Analytics",
+                status="active" if store_apps_ready else "setup",
+                stat_label="Revenue · 7d",
+                stat_value=_fmt_money(money.revenue, currency) if money.available else "—",
+                hint=(
+                    f"Profit {_fmt_money(money.net_profit, currency)}"
+                    if money.available
+                    else "Open Analytics to load P&L"
+                ),
+            ),
+            ModuleHighlight(
+                slug="ads",
+                name="Ads",
+                status="active" if store_apps_ready else "setup",
+                stat_label="Ad spend · 7d",
+                stat_value=_fmt_money(money.ad_spend, currency) if money.available else "—",
+                hint=(
+                    f"ROAS {_fmt_ratio(money.roas)}"
+                    if money.available and money.ad_spend
+                    else "Connect Meta in Ads to see spend"
+                ),
+            ),
+            ModuleHighlight(
+                slug="ai-ads",
+                name="AI Ads",
+                status="active" if store_apps_ready else "setup",
+                stat_label="Creatives this week",
+                stat_value=str(creatives_week),
+                hint="New image and video concepts" if store_apps_ready else "Connect a store to generate ads",
+            ),
+            ModuleHighlight(
+                slug="tracking",
+                name="Tracking",
+                status="active" if store_apps_ready else "setup",
+                stat_label="In transit",
+                stat_value=str(orders_in_transit),
+                hint=f"{orders_synced} orders synced" if orders_synced else tracking_hint,
+            ),
             ModuleHighlight(
                 slug="ai-email",
                 name="AI Email Assistant",
@@ -331,82 +498,30 @@ class DashboardService:
                 stat_label="Inbox to review",
                 stat_value=str(inbox_needs_attention),
                 hint=(
-                    "Autopilot on"
-                    if ai_automation_on
+                    f"{ai_sent_week} replies sent · 7d"
+                    if email_apps_ready
                     else "Link Gmail to this store"
-                    if not email_apps_ready
-                    else "Autopilot off — open to configure"
                 ),
-            ),
-            ModuleHighlight(
-                slug="tracking",
-                name="Tracking",
-                status="active" if has_store else "setup",
-                stat_label="Orders synced",
-                stat_value=str(orders_synced),
-                hint=tracking_hint,
             ),
             ModuleHighlight(
                 slug="email",
                 name="Email Automation",
                 status="active" if email_apps_ready else "setup",
-                stat_label="Active rules",
-                stat_value=str(automation_rules_on),
+                stat_label="Sends · 7d",
+                stat_value=str(automation_sent_week),
                 hint=(
-                    "Link Gmail to this store"
-                    if not email_apps_ready
-                    else "No rules enabled yet"
-                    if automation_rules_on == 0
-                    else "Shopify event triggers"
-                ),
-            ),
-            ModuleHighlight(
-                slug="analytics",
-                name="Analytics",
-                status="active" if has_store else "setup",
-                stat_label="Data source",
-                stat_value="Shopify" if has_store else "—",
-                hint=(
-                    "Connect a store to unlock P&L"
-                    if not has_store
-                    else "Profit, ROAS, and Meta spend"
-                ),
-            ),
-            ModuleHighlight(
-                slug="ads",
-                name="Ads",
-                status="active" if has_store else "setup",
-                stat_label="Meta ads",
-                stat_value="Ready" if has_store else "—",
-                hint=(
-                    "Connect a store to open Ads"
-                    if not has_store
-                    else "Creative health, MER, AI reports"
-                ),
-            ),
-            ModuleHighlight(
-                slug="ai-ads",
-                name="AI Ads",
-                status="active" if has_store else "setup",
-                stat_label="Creative engine",
-                stat_value="Ready" if has_store else "—",
-                hint=(
-                    "Connect a store to open AI Ads"
-                    if not has_store
-                    else "Learn from Meta creatives, generate new ads"
+                    f"{automation_rules_on} rules on"
+                    if email_apps_ready
+                    else "Link Gmail to this store"
                 ),
             ),
             ModuleHighlight(
                 slug="meta-capi",
                 name="Server-Side Tracking",
-                status="active" if has_store else "setup",
-                stat_label="Meta CAPI",
-                stat_value="Ready" if has_store else "—",
-                hint=(
-                    "Connect a store to send Purchase events"
-                    if not has_store
-                    else "Shopify orders to Meta with Pixel dedup"
-                ),
+                status="active" if store_apps_ready else "setup",
+                stat_label="CAPI events today",
+                stat_value=str(capi_sent_today),
+                hint="Purchase events to Meta" if store_apps_ready else "Connect a store to send events",
             ),
         ]
 
@@ -414,7 +529,48 @@ class DashboardService:
             metrics=metrics,
             setup_steps=setup_steps,
             highlights=highlights,
+            money=money,
         )
+
+    async def _money_pulse(
+        self, db: Session, user: User, store_id: str | None
+    ) -> MoneyPulse:
+        if not store_id:
+            return MoneyPulse(hint="Connect a store to see revenue and ad spend.")
+        try:
+            from app.services.analytics_service import AnalyticsService
+
+            dash = await AnalyticsService().get_dashboard(db, user, store_id, "7d")
+            summary = dash.get("summary") or {}
+            currency = str(
+                dash.get("display_currency") or dash.get("currency") or "USD"
+            )
+            revenue = float(summary.get("revenue") or 0)
+            profit = float(summary.get("net_profit") or 0)
+            spend = float(summary.get("ad_spend") or 0)
+            roas = float(summary.get("roas") or 0)
+            mer_raw = summary.get("mer")
+            mer = float(mer_raw) if mer_raw is not None else None
+            orders = int(summary.get("orders") or 0)
+            hint = (
+                f"Last 7 days: {_fmt_money(revenue, currency)} in, "
+                f"{_fmt_money(spend, currency)} ads, "
+                f"{_fmt_money(profit, currency)} profit."
+            )
+            return MoneyPulse(
+                available=True,
+                currency=currency,
+                revenue=revenue,
+                net_profit=profit,
+                ad_spend=spend,
+                roas=roas,
+                mer=mer,
+                orders=orders,
+                hint=hint,
+            )
+        except Exception:
+            logger.exception("Overview money pulse skipped for store %s", store_id)
+            return MoneyPulse(hint="Open Analytics to load P&L for this store.")
 
     async def get_activity_feed(
         self, db: Session, user: User, store_id: str | None = None, limit: int = 10
@@ -433,12 +589,14 @@ class DashboardService:
         items: list[ActivityItem] = []
         for log in logs:
             title, event_type = _webhook_title(log.topic)
-            preview = (log.payload_preview or "")[:120]
+            preview = (log.payload_preview or "").strip()
+            if preview.startswith("{") or preview.startswith("["):
+                preview = ""
             items.append(
                 ActivityItem(
                     id=log.id,
                     title=title,
-                    description=preview or log.shop_domain,
+                    description=preview[:120] or log.shop_domain,
                     timestamp=_format_activity_time(log.received_at),
                     type=event_type,
                 )
@@ -448,9 +606,7 @@ class DashboardService:
     async def get_app_modules(self, db: Session, user: User) -> list[AppModule]:
         has_store = (
             db.scalar(
-                select(func.count())
-                .select_from(Store)
-                .where(Store.owner_id == user.id, Store.status == StoreStatus.CONNECTED.value)
+                select(func.count()).select_from(Store).where(Store.owner_id == user.id)
             )
             or 0
         ) > 0
