@@ -396,6 +396,18 @@ class DashboardService:
                     else "Learn from Meta creatives, generate new ads"
                 ),
             ),
+            ModuleHighlight(
+                slug="meta-capi",
+                name="Server-Side Tracking",
+                status="active" if has_store else "setup",
+                stat_label="Meta CAPI",
+                stat_value="Ready" if has_store else "—",
+                hint=(
+                    "Connect a store to send Purchase events"
+                    if not has_store
+                    else "Shopify orders to Meta with Pixel dedup"
+                ),
+            ),
         ]
 
         return DashboardOverviewResponse(

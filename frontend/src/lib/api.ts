@@ -388,10 +388,12 @@ export const api = {
       request<DashboardOverview>(
         `/dashboard/overview${storeId ? `?store_id=${storeId}` : ""}`
       ),
-    activity: (storeId?: string) =>
+    activity: (storeId?: string, limit = 10) =>
       request<
         Array<{ id: string; title: string; description: string; timestamp: string; type: string }>
-      >(`/dashboard/activity${storeId ? `?store_id=${storeId}` : ""}`),
+      >(
+        `/dashboard/activity?limit=${limit}${storeId ? `&store_id=${storeId}` : ""}`
+      ),
   },
   notifications: {
     getWhatsApp: () => request<WhatsAppConnection>("/notifications/whatsapp"),

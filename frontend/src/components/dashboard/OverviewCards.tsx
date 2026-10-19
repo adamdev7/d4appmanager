@@ -1,5 +1,3 @@
-import { motion } from "framer-motion";
-import { Minus } from "lucide-react";
 import { Card } from "@/components/ui/Card";
 import { BrandLoader } from "@/components/ui/Loading";
 import type { OverviewMetric } from "@/lib/dashboardTypes";
@@ -14,7 +12,7 @@ export function OverviewCards({
   if (loading) {
     return (
       <div
-        className="flex min-h-[140px] items-center justify-center rounded-xl border border-border bg-surface py-10"
+        className="flex min-h-[72px] items-center justify-center rounded-xl border border-border bg-surface"
         aria-busy="true"
         aria-label="Loading workspace stats"
       >
@@ -24,26 +22,27 @@ export function OverviewCards({
   }
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 xl:gap-5 2xl:gap-6">
-      {metrics.map((m, i) => (
-        <motion.div
-          key={m.label}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: i * 0.05, duration: 0.3 }}
-        >
-          <Card>
-            <p className="text-sm xl:text-base text-content-muted">{m.label}</p>
-            <p className="mt-2 text-2xl xl:text-3xl 2xl:text-4xl font-bold tracking-tight text-content tabular-nums">
+    <Card padding="none" className="overflow-hidden">
+      <div className="grid grid-cols-2 xl:grid-cols-4">
+        {metrics.map((m, i) => (
+          <div
+            key={m.label}
+            className={
+              i > 0
+                ? "border-t border-border p-3.5 sm:p-4 xl:border-t-0 xl:border-l"
+                : "p-3.5 sm:p-4"
+            }
+          >
+            <p className="text-xs font-medium uppercase tracking-wide text-content-subtle">
+              {m.label}
+            </p>
+            <p className="mt-1 text-xl font-semibold tabular-nums tracking-tight text-content">
               {m.value}
             </p>
-            <div className="mt-2 flex items-center gap-1 text-xs xl:text-sm font-medium text-content-subtle">
-              <Minus className="h-3.5 w-3.5 shrink-0" />
-              <span className="line-clamp-2">{m.change}</span>
-            </div>
-          </Card>
-        </motion.div>
-      ))}
-    </div>
+            <p className="mt-0.5 line-clamp-1 text-xs text-content-muted">{m.change}</p>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }

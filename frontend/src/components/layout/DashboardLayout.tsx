@@ -69,7 +69,8 @@ export function DashboardLayout() {
 
       <div
         className={cn(
-          "min-h-dvh flex flex-col w-full min-w-0 transition-[padding] duration-300",
+          "flex flex-col w-full min-w-0 transition-[padding] duration-300",
+          location.pathname === "/dashboard" ? "h-dvh overflow-hidden" : "min-h-dvh",
           collapsed ? "lg:pl-[72px]" : "lg:pl-[var(--sidebar-width)]"
         )}
       >
@@ -81,7 +82,10 @@ export function DashboardLayout() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.25 }}
-          className="relative flex-1 w-full min-w-0 max-w-none"
+          className={cn(
+            "relative flex-1 w-full min-w-0 max-w-none",
+            location.pathname === "/dashboard" && "flex min-h-0 flex-col overflow-hidden"
+          )}
           style={{
             paddingLeft: "var(--page-gutter-x)",
             paddingRight: "var(--page-gutter-x)",
@@ -109,7 +113,8 @@ export function DashboardLayout() {
           <div
             className={cn(
               "mx-auto w-full min-w-0 max-w-none transition-opacity duration-200",
-              routeLoading && "opacity-40"
+              routeLoading && "opacity-40",
+              location.pathname === "/dashboard" && "flex min-h-0 flex-1 flex-col"
             )}
           >
             <Outlet />

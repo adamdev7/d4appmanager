@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
-import { Mail, Package, Store, Zap, Inbox } from "lucide-react";
-import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Link } from "react-router-dom";
+import { Mail, Package, Store, Zap, Inbox, KeyRound, PlugZap } from "lucide-react";
+import { Card } from "@/components/ui/Card";
 import { BrandLoader } from "@/components/ui/Loading";
 import { api } from "@/lib/api";
 import { useStore } from "@/context/StoreContext";
@@ -22,6 +22,13 @@ const ICONS: Record<string, typeof Mail> = {
   system: Zap,
 };
 
+const CONNECTIONS = [
+  { to: "/settings/stores", label: "Stores", icon: Store },
+  { to: "/settings/gmail", label: "Gmail", icon: Mail },
+  { to: "/settings/meta", label: "Meta", icon: PlugZap },
+  { to: "/settings/api-keys", label: "API keys", icon: KeyRound },
+] as const;
+
 export function ActivityFeed() {
   const { activeStore, stores } = useStore();
   const [items, setItems] = useState<Activity[]>([]);
@@ -30,64 +37,76 @@ export function ActivityFeed() {
   useEffect(() => {
     setLoading(true);
     api.dashboard
-      .activity(activeStore?.id)
+      .activity(activeStore?.id, 6)
       .then(setItems)
       .catch(() => setItems([]))
       .finally(() => setLoading(false));
   }, [activeStore?.id]);
 
   return (
-    <Card padding="lg">
-      <CardHeader>
-        <CardTitle>Recent activity</CardTitle>
-      </CardHeader>
-      {loading ? (
-        <div className="flex justify-center py-10">
-          <BrandLoader size="sm" />
+    <div className="flex min-h-0 flex-col gap-3">
+      <Card padding="sm" className="flex min-h-0 flex-1 flex-col">
+        <h2 className="mb-2 text-sm font-semibold text-content">Recent activity</h2>
+        {loading ? (
+          <div className="flex flex-1 items-center justify-center py-8">
+            <BrandLoader size="sm" />
+          </div>
+        ) : items.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center px-2 py-6 text-center">
+            <Inbox className="mb-2 h-7 w-7 text-content-subtle" />
+            <p className="text-sm font-medium text-content">No activity yet</p>
+            <p className="mt-1 text-xs text-content-muted">
+              {stores.length === 0
+                ? "Connect a Shopify store to see orders here."
+                : "Webhook events appear here as automations run."}
+            </p>
+          </div>
+        ) : (
+          <ul className="min-h-0 space-y-0.5 overflow-y-auto">
+            {items.map((item) => {
+              const Icon = ICONS[item.type] ?? Zap;
+              return (
+                <li key={item.id} className="flex gap-2.5 rounded-lg px-1 py-1.5">
+                  <div
+                    className={cn(
+                      "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
+                      item.type === "email" && "bg-blue-500/10 text-blue-600",
+                      item.type === "order" && "bg-violet-500/10 text-violet-600",
+                      item.type === "store" && "bg-brand-500/10 text-brand-600",
+                      item.type === "system" && "bg-amber-500/10 text-amber-600"
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-content">{item.title}</p>
+                    <p className="truncate text-xs text-content-muted">{item.description}</p>
+                  </div>
+                  <span className="shrink-0 text-[11px] text-content-subtle">{item.timestamp}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+
+      <Card padding="sm">
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-content-subtle">
+          Connections
+        </p>
+        <div className="grid grid-cols-2 gap-1.5">
+          {CONNECTIONS.map((item) => (
+            <Link
+              key={item.to}
+              to={item.to}
+              className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-content-muted hover:bg-surface-muted hover:text-content"
+            >
+              <item.icon className="h-3.5 w-3.5" />
+              {item.label}
+            </Link>
+          ))}
         </div>
-      ) : items.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
-          <Inbox className="h-10 w-10 text-content-subtle mb-3" />
-          <p className="text-sm font-medium text-content">No activity yet</p>
-          <p className="text-xs text-content-muted mt-1 max-w-[240px]">
-            {stores.length === 0
-              ? "Connect a Shopify store to see orders and webhook events here."
-              : "Shopify webhooks and email send logs will show up as your automations run."}
-          </p>
-        </div>
-      ) : (
-        <ul className="space-y-1">
-          {items.map((item, i) => {
-            const Icon = ICONS[item.type] ?? Zap;
-            return (
-              <motion.li
-                key={item.id}
-                initial={{ opacity: 0, x: -8 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.04 }}
-                className="flex gap-3 rounded-lg p-3 hover:bg-surface-muted transition-colors"
-              >
-                <div
-                  className={cn(
-                    "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
-                    item.type === "email" && "bg-blue-500/10 text-blue-600",
-                    item.type === "order" && "bg-violet-500/10 text-violet-600",
-                    item.type === "store" && "bg-brand-500/10 text-brand-600",
-                    item.type === "system" && "bg-amber-500/10 text-amber-600"
-                  )}
-                >
-                  <Icon className="h-4 w-4" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-content">{item.title}</p>
-                  <p className="text-xs text-content-muted truncate">{item.description}</p>
-                </div>
-                <span className="text-xs text-content-subtle shrink-0">{item.timestamp}</span>
-              </motion.li>
-            );
-          })}
-        </ul>
-      )}
-    </Card>
+      </Card>
+    </div>
   );
 }
