@@ -17,7 +17,7 @@ if not defined NPM_CMD (
     echo  [WARNING] Node.js was not found.
     echo  Install from https://nodejs.org/ then run this script again.
     echo.
-    start "App Manager API" cmd /k "cd /d "%~dp0backend" && .venv\Scripts\python.exe app.py"
+    start "SkyScale Manager API" cmd /k "cd /d "%~dp0backend" && .venv\Scripts\python.exe app.py"
     pause
     exit /b 1
 )
@@ -44,16 +44,16 @@ if not exist "frontend\node_modules\vite" (
 )
 
 echo.
-echo  Starting App Manager...
+echo  Starting SkyScale Manager...
 echo  ----------------------------------------
 echo   Dashboard (UI):  http://localhost:5173  ^<-- open this in your browser
 echo   API / docs:      http://127.0.0.1:8000
 echo  ----------------------------------------
 echo.
 
-start "App Manager API" cmd /k "set PATH=%NODE_DIR%;%PATH%&& cd /d "%~dp0backend" && .venv\Scripts\python.exe app.py"
+start "SkyScale Manager API" cmd /k "set PATH=%NODE_DIR%;%PATH%&& cd /d "%~dp0backend" && .venv\Scripts\python.exe app.py"
 timeout /t 2 /nobreak >nul
-start "App Manager UI" cmd /k "set PATH=%NODE_DIR%;%PATH%&& cd /d "%~dp0frontend" && npm run dev"
+start "SkyScale Manager UI" cmd /k "set PATH=%NODE_DIR%;%PATH%&& cd /d "%~dp0frontend" && npm run dev"
 
 echo Two windows opened. Use http://localhost:5173 for the app.
 pause

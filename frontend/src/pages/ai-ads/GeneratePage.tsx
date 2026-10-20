@@ -336,7 +336,7 @@ export function GeneratePage() {
             title="Lock the product photos"
             description={
               photosLocked
-                ? "These are stored in App Manager. Generation reuses them, so no Shopify download is needed."
+                ? "These are stored in SkyScale Manager. Generation reuses them, so no Shopify download is needed."
                 : "Shopify photos never saved for this SKU. Add them once — PNG, JPEG, WebP, or HEIC. We convert and compress here."
             }
           >

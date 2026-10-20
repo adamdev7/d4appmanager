@@ -2,7 +2,7 @@
 
 ## Why Events Manager may say fbp / IP / UA / external_id are missing
 
-App Manager **does send** these when available. Gaps usually mean Shopify’s order payload didn’t include them (common with **Phoenix / external checkout**):
+SkyScale Manager **does send** these when available. Gaps usually mean Shopify’s order payload didn’t include them (common with **Phoenix / external checkout**):
 
 | Parameter | Source | Fix |
 |-----------|--------|-----|
@@ -17,7 +17,7 @@ After publishing the theme, place a test order from an ad click and re-check EMQ
 
 ## Reliability (never miss a sale)
 
-App Manager runs a background worker while the API is up:
+SkyScale Manager runs a background worker while the API is up:
 
 1. **Webhooks** — Purchase on `orders/paid`, plus `orders/create` / `orders/updated` when `financial_status` is paid (and InitiateCheckout on `checkouts/create`).
 2. **Retries** — Failed Meta sends are retried (up to 15 attempts) every few minutes.
@@ -55,18 +55,18 @@ Already added to `phx-3-0-checkout-builder` and `Theme_coded`:
 | `assets/meta-capi-attribution.js` | Capture cookies, cart attributes, beacons |
 | `snippets/meta-capi-attribution.liquid` | Config + script include |
 | `layout/theme.liquid` | Renders snippet; Phoenix URL gets fbp/fbc/fbclid |
-| Theme setting group **Meta CAPI (App Manager)** | Store ID + browser token |
+| Theme setting group **Meta CAPI (SkyScale Manager)** | Store ID + browser token |
 
 ### Deploy steps
 
 1. Push/publish the updated theme (or copy files into the live PHX theme).
-2. In App Manager → **Server-Side Tracking → Settings**, copy **Theme browser event token**.
-3. In Shopify Admin → **Online Store → Themes → Customize → Theme settings → Meta CAPI (App Manager)**:
+2. In SkyScale Manager → **Server-Side Tracking → Settings**, copy **Theme browser event token**.
+3. In Shopify Admin → **Online Store → Themes → Customize → Theme settings → Meta CAPI (SkyScale Manager)**:
    - Enable tracking
    - API base: `https://appmanager.store/api/v1`
-   - Store ID: your App Manager store UUID
+   - Store ID: your SkyScale Manager store UUID
    - Paste the browser event token
-4. Reconnect the Shopify store in App Manager (or re-register webhooks) so `checkouts/create` is subscribed.
+4. Reconnect the Shopify store in SkyScale Manager (or re-register webhooks) so `checkouts/create` is subscribed.
 5. Clear **Test event code** when going live.
 
 ### Phoenix checkout note
@@ -75,7 +75,7 @@ Orders go through `secureorder.luxory.online`. The theme now:
 1. Writes `_fbp` / `_fbc` / `fbclid` to **Shopify cart attributes** (become order note attributes when the order is created from that cart)
 2. Appends the same values to the Phoenix checkout URL
 
-If a specific Phoenix order is missing `fbp`/`fbc` in App Manager’s event log, confirm Phoenix is creating the Shopify order from the cart token (attributes travel with the cart).
+If a specific Phoenix order is missing `fbp`/`fbc` in SkyScale Manager’s event log, confirm Phoenix is creating the Shopify order from the cart token (attributes travel with the cart).
 
 ## EMQ checklist
 

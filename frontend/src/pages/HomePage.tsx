@@ -9,7 +9,7 @@ const features = [
   {
     icon: Sparkles,
     title: "AI Email Assistant",
-    body: "Connect Gmail so App Manager can read customer threads, draft replies with AI, and send responses you approve.",
+    body: "Connect Gmail so SkyScale Manager can read customer threads, draft replies with AI, and send responses you approve.",
   },
   {
     icon: Mail,
@@ -31,7 +31,7 @@ const features = [
 /**
  * Public application home page for https://appmanager.store
  * Written to satisfy Google OAuth branding verification:
- * - Exact app name "App Manager"
+ * - Exact app name "SkyScale Manager"
  * - Clear purpose / functionality (not login-only)
  * - Privacy Policy (+ Terms) links matching consent screen URLs
  */
@@ -46,10 +46,10 @@ export function HomePage() {
     <div className="min-h-screen flex flex-col bg-[#050505] text-white">
       <header className="border-b border-white/10">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4">
-          <Link to="/" className="flex items-center gap-3" aria-label="App Manager home">
+          <Link to="/" className="flex items-center gap-3" aria-label="SkyScale Manager home">
             <BrandLogo size="sm" />
             <span className="text-sm font-semibold tracking-wide uppercase">
-              <span className="text-[#9FE870]">App</span>{" "}
+              <span className="text-[#9FE870]">SkyScale</span>{" "}
               <span className="text-white">Manager</span>
             </span>
           </Link>
@@ -82,14 +82,14 @@ export function HomePage() {
             >
               <BrandLogo size="hero" className="mb-8" />
               <h1 className="text-4xl sm:text-5xl font-bold tracking-tight uppercase">
-                <span className="text-[#9FE870]">App</span>{" "}
+                <span className="text-[#9FE870]">SkyScale</span>{" "}
                 <span className="text-white">Manager</span>
               </h1>
               <p className="mt-3 text-xs sm:text-sm tracking-[0.28em] uppercase text-white/70">
                 Power your business
               </p>
               <p className="mt-8 max-w-2xl text-base sm:text-lg text-white/75 leading-relaxed">
-                App Manager is a multi-store Shopify automation platform. It helps ecommerce
+                SkyScale Manager is a multi-store Shopify automation platform. It helps ecommerce
                 teams run email flows through Gmail, reply to customers with AI assistance,
                 track shipments, and review analytics and Meta ads — all from one place.
               </p>
@@ -105,7 +105,7 @@ export function HomePage() {
                   to="/login"
                   className="inline-flex items-center rounded-lg border border-white/20 px-5 py-3 text-sm font-semibold text-white hover:bg-white/5 transition-colors"
                 >
-                  Sign in to App Manager
+                  Sign in to SkyScale Manager
                 </Link>
               </div>
             </motion.div>
@@ -115,10 +115,10 @@ export function HomePage() {
         <section className="border-t border-white/10 bg-white/[0.02]">
           <div className="mx-auto max-w-5xl px-6 py-16 sm:py-20">
             <h2 className="text-2xl font-bold tracking-tight text-center">
-              What App Manager does
+              What SkyScale Manager does
             </h2>
             <p className="mt-3 text-center text-white/65 max-w-2xl mx-auto leading-relaxed">
-              App Manager connects to the tools you already use — including Shopify and
+              SkyScale Manager connects to the tools you already use — including Shopify and
               Google Gmail — so you can automate store operations without switching between
               dashboards.
             </p>
@@ -142,11 +142,11 @@ export function HomePage() {
         <section className="border-t border-white/10">
           <div className="mx-auto max-w-5xl px-6 py-16 sm:py-20">
             <h2 className="text-2xl font-bold tracking-tight">
-              Why App Manager uses Google account access
+              Why SkyScale Manager uses Google account access
             </h2>
             <p className="mt-4 max-w-3xl text-white/70 leading-relaxed">
-              When you connect Gmail inside App Manager, Google asks you to authorize access
-              so we can send and manage business email on your behalf. App Manager uses that
+              When you connect Gmail inside SkyScale Manager, Google asks you to authorize access
+              so we can send and manage business email on your behalf. SkyScale Manager uses that
               access only to operate Email Automation and the AI Email Assistant for stores
               you connect — for example reading relevant threads, drafting replies, marking
               messages as handled, and sending mail you configure. You can disconnect Gmail
@@ -157,7 +157,7 @@ export function HomePage() {
               <Link to="/privacy" className="text-[#9FE870] hover:underline">
                 Privacy Policy
               </Link>
-              . Use of App Manager is also governed by our{" "}
+              . Use of SkyScale Manager is also governed by our{" "}
               <Link to="/terms" className="text-[#9FE870] hover:underline">
                 Terms of Service
               </Link>

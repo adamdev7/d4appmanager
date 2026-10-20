@@ -2237,7 +2237,7 @@ export function AIEmailAssistantPage() {
                 checked={settings.automation_enabled}
                 onChange={(v) => setSettings({ ...settings, automation_enabled: v })}
                 label="Enable autopilot"
-                description="Runs while the App Manager backend is online"
+                description="Runs while the SkyScale Manager backend is online"
               />
               {settings.automation_enabled && (
                 <div className="grid gap-4 sm:grid-cols-2 pl-1 border-l-2 border-brand-500/30 ml-1">

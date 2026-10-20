@@ -110,7 +110,7 @@ export function VerifyEmailPage() {
             Click <strong>Resend code</strong> above
           </li>
           <li>
-            With the API running, check the <strong>App Manager API</strong> terminal window —
+            With the API running, check the <strong>SkyScale Manager API</strong> terminal window —
             the code is printed there when <code className="text-[10px]">DEBUG=true</code>
           </li>
         </ul>

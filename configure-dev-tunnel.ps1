@@ -70,7 +70,7 @@ function Set-AppUrlInEnv {
 }
 
 Write-Host ""
-Write-Host "  App Manager - dev tunnel setup" -ForegroundColor Cyan
+Write-Host "  SkyScale Manager - dev tunnel setup" -ForegroundColor Cyan
 Write-Host "  --------------------------------" -ForegroundColor Cyan
 Write-Host ""
 

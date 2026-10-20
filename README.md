@@ -1,4 +1,4 @@
-# App Manager
+# SkyScale Manager
 
 Scalable automation platform for multiple Shopify stores — Phase 1 foundation with professional SaaS dashboard UI, modular architecture, and placeholders for future integrations.
 
@@ -13,7 +13,7 @@ Scalable automation platform for multiple Shopify stores — Phase 1 foundation 
 ## Project structure
 
 ```
-App Manager/
+SkyScale Manager/
 ├── backend/
 │   └── app/
 │       ├── auth/           # Auth dependencies (JWT ready)

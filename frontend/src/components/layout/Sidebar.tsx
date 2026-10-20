@@ -72,7 +72,7 @@ export function Sidebar({
         <BrandLogo size="sm" className="shrink-0" />
         {showLabels && (
           <span className="font-semibold text-content tracking-tight flex-1 truncate">
-            App Manager
+            SkyScale Manager
           </span>
         )}
         <button

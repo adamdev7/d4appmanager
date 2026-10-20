@@ -132,7 +132,7 @@ class GmailService:
         return True
 
     def delete_account(self, db: Session, user: User, account_id: str) -> bool:
-        """Permanently remove a Gmail account and its store links from App Manager."""
+        """Permanently remove a Gmail account and its store links from SkyScale Manager."""
         account = db.get(GmailAccount, account_id)
         if not account or account.owner_id != user.id:
             return False

@@ -87,7 +87,7 @@ export function StoresSettingsPage() {
 
   const handleDelete = async (store: StoreType) => {
     const ok = window.confirm(
-      `Remove ${store.name} (${store.domain}) from App Manager? Related automation, tracking, and analytics data for this store will be deleted. You can connect it again later.`
+      `Remove ${store.name} (${store.domain}) from SkyScale Manager? Related automation, tracking, and analytics data for this store will be deleted. You can connect it again later.`
     );
     if (!ok) return;
     setError("");
@@ -111,7 +111,7 @@ export function StoresSettingsPage() {
         <div>
           <h1 className="text-2xl font-bold text-content">Stores</h1>
           <p className="text-content-muted mt-1">
-            Install App Manager from Shopify to connect a store. Webhooks register automatically on
+            Install SkyScale Manager from Shopify to connect a store. Webhooks register automatically on
             connect.
           </p>
         </div>
@@ -136,7 +136,7 @@ export function StoresSettingsPage() {
             <CardHeader>
               <CardTitle>Connect Shopify store</CardTitle>
               <CardDescription>
-                Install App Manager from Shopify and approve access. Shopify brings you back here
+                Install SkyScale Manager from Shopify and approve access. Shopify brings you back here
                 and the store is added to this account.
               </CardDescription>
             </CardHeader>
@@ -147,7 +147,7 @@ export function StoresSettingsPage() {
               </Button>
             ) : (
               <p className="text-sm text-content-muted">
-                Open App Manager from the Shopify App Store or from Apps in your Shopify admin to
+                Open SkyScale Manager from the Shopify App Store or from Apps in your Shopify admin to
                 install it on a store.
               </p>
             )}

@@ -644,7 +644,7 @@ export function MetaCapiPage() {
                 <div>
                   <CardTitle>Event log</CardTitle>
                   <CardDescription>
-                    All Meta CAPI events App Manager sent or tried to send ({totalLogged} logged).
+                    All Meta CAPI events SkyScale Manager sent or tried to send ({totalLogged} logged).
                   </CardDescription>
                 </div>
                 <Button
@@ -853,7 +853,7 @@ export function MetaCapiPage() {
                 <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-3 space-y-1">
                   <p className="text-sm font-medium text-content">Theme browser event token</p>
                   <p className="text-xs text-content-muted">
-                    Paste into Shopify theme settings → <strong>Meta CAPI (App Manager)</strong> →
+                    Paste into Shopify theme settings → <strong>Meta CAPI (SkyScale Manager)</strong> →
                     Browser event token. Required for PageView, ViewContent, Search, AddToCart, and
                     Phoenix InitiateCheckout.
                   </p>

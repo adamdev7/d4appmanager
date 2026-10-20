@@ -26,7 +26,7 @@ def main() -> None:
         print("  py -m pip install -r requirements.txt")
         sys.exit(1)
 
-    print("\n  App Manager API")
+    print("\n  SkyScale Manager API")
     print("  http://127.0.0.1:8000")
     print("  Docs: http://127.0.0.1:8000/docs\n")
 

@@ -5,10 +5,10 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Ca
 const STEPS = [
   {
     title: "Shopify sends order & fulfillment webhooks",
-    body: "When a customer places an order, App Manager stores the order. When your supplier adds a tracking number in Shopify (fulfillment), we receive fulfillments/create or fulfillments/update.",
+    body: "When a customer places an order, SkyScale Manager stores the order. When your supplier adds a tracking number in Shopify (fulfillment), we receive fulfillments/create or fulfillments/update.",
   },
   {
-    title: "We save tracking in App Manager",
+    title: "We save tracking in SkyScale Manager",
     body: "Order number, customer email, tracking number, and carrier from Shopify are saved automatically — no manual import.",
   },
   {
@@ -65,7 +65,7 @@ export function TrackingGuide() {
           <div className="rounded-xl border border-border bg-surface-muted p-4 text-sm text-content-muted">
             <p className="font-medium text-content mb-2">Wiring checklist</p>
             <ul className="list-disc list-inside space-y-1">
-              <li>Shopify store connected in App Manager (Settings → Stores)</li>
+              <li>Shopify store connected in SkyScale Manager (Settings → Stores)</li>
               <li>Carrier API keys saved below (at least one for live tracking)</li>
               <li>Auto-enrich enabled when supplier adds tracking in Shopify</li>
               <li>Track Your Order page added to Shopify theme (see embed section)</li>

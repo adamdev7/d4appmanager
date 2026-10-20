@@ -1,5 +1,5 @@
 @echo off
-REM App Manager — start FastAPI (Command Prompt / double-click)
+REM SkyScale Manager — start FastAPI (Command Prompt / double-click)
 REM Usage: cd backend
 REM        run.bat
 
@@ -36,7 +36,7 @@ if not exist "%~dp0.venv\Scripts\uvicorn.exe" (
 )
 
 echo.
-echo   App Manager API
+echo   SkyScale Manager API
 echo   http://127.0.0.1:8000
 echo   Docs: http://127.0.0.1:8000/docs
 echo   Press Ctrl+C to stop

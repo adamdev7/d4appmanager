@@ -46,8 +46,8 @@ APP_URL=https://YOUR_PUBLIC_URL
 ```
 
 Installs always start from Shopify (install link, App Store listing, or Apps in the Shopify
-admin). Shopify opens the App URL, App Manager goes straight to OAuth, and the merchant lands on
-**Settings → Stores**. If they are not signed in to App Manager yet, they sign in or register and
+admin). Shopify opens the App URL, SkyScale Manager goes straight to OAuth, and the merchant lands on
+**Settings → Stores**. If they are not signed in to SkyScale Manager yet, they sign in or register and
 the store is attached automatically.
 
 ### Local development (required for OAuth + webhooks)
@@ -74,7 +74,7 @@ Existing stores that need new permissions use **Reconnect**.
 
 ### App Store review account
 
-Reviewers land on the App Manager sign-in page after OAuth and cannot receive the emailed login
+Reviewers land on the SkyScale Manager sign-in page after OAuth and cannot receive the emailed login
 code, so give them a password-only account (requirement 4.5.4):
 
 ```bash
@@ -102,7 +102,7 @@ Webhook path (already HMAC-verified): `{APP_URL}/api/v1/webhooks/shopify`
 
 Stats API (auth required): `GET /api/v1/meta-capi/stores/{store_id}/stats`
 
-**Theme (required for best match quality):** publish the PHX theme updates (`meta-capi-attribution` snippet/JS), then in Theme settings → **Meta CAPI (App Manager)** paste the browser event token from Server-Side Tracking settings. This captures `fbp`/`fbc`/`fbclid`, sends ViewContent/AddToCart, and passes IDs into Phoenix checkout. See `docs/META_CAPI.md`.
+**Theme (required for best match quality):** publish the PHX theme updates (`meta-capi-attribution` snippet/JS), then in Theme settings → **Meta CAPI (SkyScale Manager)** paste the browser event token from Server-Side Tracking settings. This captures `fbp`/`fbc`/`fbclid`, sends ViewContent/AddToCart, and passes IDs into Phoenix checkout. See `docs/META_CAPI.md`.
 
 Reconnect the store (or re-register webhooks) so `checkouts/create` is subscribed for InitiateCheckout.
 
@@ -142,7 +142,7 @@ This VPS hosts **two sites**. Treat them as separate nginx files:
 | `d4technology.ca` | whatever is already in `sites-enabled` for that domain | **No — leave it** |
 | `appmanager.store` | `/etc/nginx/sites-available/appmanager.store` | Yes, this one only |
 
-App Manager needs its **own** `server_name appmanager.store` blocks on ports 80 and 443. If the 443 block is missing, browsers get the `d4technology.ca` certificate and HTTPS looks down. That does **not** mean d4technology is broken.
+SkyScale Manager needs its **own** `server_name appmanager.store` blocks on ports 80 and 443. If the 443 block is missing, browsers get the `d4technology.ca` certificate and HTTPS looks down. That does **not** mean d4technology is broken.
 
 Repo files:
 
@@ -152,9 +152,9 @@ Repo files:
 ### Do not
 
 - Edit the d4technology.ca site file
-- Add `default_server` to App Manager
+- Add `default_server` to SkyScale Manager
 - Run `certbot --nginx` with no `-d` (that can rewrite other sites)
-- Put App Manager `location` / `ssl_certificate` lines inside the d4technology server block
+- Put SkyScale Manager `location` / `ssl_certificate` lines inside the d4technology server block
 
 ### API process
 
@@ -163,12 +163,12 @@ sudo cp /var/www/appmanager/deploy/appmanager.service /etc/systemd/system/appman
 sudo systemctl daemon-reload
 sudo systemctl enable --now appmanager
 curl -s http://127.0.0.1:8001/health
-# must print: {"status":"ok","app":"App Manager"}
+# must print: {"status":"ok","app":"SkyScale Manager"}
 ```
 
 `.env` belongs at `/var/www/appmanager/backend/.env` (not in git).
 
-### nginx — App Manager file only
+### nginx — SkyScale Manager file only
 
 ```bash
 # Confirm d4technology is its own file (do not change these)
@@ -198,4 +198,4 @@ curl -s https://appmanager.store/health
 curl -s https://appmanager.store/api/v1/auth/google/authorize
 ```
 
-`d4technology.ca` should still be 200. App Manager `/health` and `/api/...` must return JSON, not HTML. The HTTPS cert for `appmanager.store` must be for that hostname, not `d4technology.ca`.
+`d4technology.ca` should still be 200. SkyScale Manager `/health` and `/api/...` must return JSON, not HTML. The HTTPS cert for `appmanager.store` must be for that hostname, not `d4technology.ca`.

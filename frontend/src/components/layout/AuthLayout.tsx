@@ -20,7 +20,7 @@ export function AuthLayout({
         <div className="relative z-10 flex flex-col justify-between p-12 text-white">
           <Link to="/" className="flex items-center gap-3">
             <BrandLogo size="md" />
-            <span className="text-lg font-semibold tracking-tight">App Manager</span>
+            <span className="text-lg font-semibold tracking-tight">SkyScale Manager</span>
           </Link>
           <div className="max-w-md">
             <h2 className="text-3xl font-bold tracking-tight leading-tight">
@@ -39,7 +39,7 @@ export function AuthLayout({
         <div className="lg:hidden mb-8">
           <Link to="/" className="inline-flex items-center gap-2.5">
             <BrandLogo size="sm" />
-            <span className="font-semibold text-content">App Manager</span>
+            <span className="font-semibold text-content">SkyScale Manager</span>
           </Link>
         </div>
         <motion.div

@@ -86,7 +86,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
 
 function buildShopifySnippet(storeId: string, apiBase: string) {
   const apiUrl = apiBase.replace(/\/$/, "");
-  return `{% comment %} App Manager — Track Your Order {% endcomment %}
+  return `{% comment %} SkyScale Manager — Track Your Order {% endcomment %}
 <div id="track-order-app" style="max-width:560px;margin:2rem auto;font-family:inherit;">
   <form id="track-order-form" style="display:grid;gap:1rem;">
     <label>Order number<input type="text" name="order_number" required placeholder="#1001" style="width:100%;padding:0.6rem;box-sizing:border-box;"></label>

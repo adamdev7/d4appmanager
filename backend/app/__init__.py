@@ -1,1 +1,1 @@
-"""App Manager — scalable automation platform for Shopify stores."""
+"""SkyScale Manager — scalable automation platform for Shopify stores."""

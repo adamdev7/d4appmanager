@@ -1,4 +1,4 @@
-# App Manager — start FastAPI (PowerShell)
+# SkyScale Manager — start FastAPI (PowerShell)
 # Usage:  cd backend
 #         .\run.ps1
 
@@ -41,7 +41,7 @@ if (-not (Test-Path (Join-Path $Root ".venv\Scripts\uvicorn.exe"))) {
 }
 
 Write-Host ""
-Write-Host "  App Manager API" -ForegroundColor Green
+Write-Host "  SkyScale Manager API" -ForegroundColor Green
 Write-Host "  http://127.0.0.1:8000" -ForegroundColor Cyan
 Write-Host "  Docs: http://127.0.0.1:8000/docs" -ForegroundColor Cyan
 Write-Host "  Press Ctrl+C to stop" -ForegroundColor DarkGray

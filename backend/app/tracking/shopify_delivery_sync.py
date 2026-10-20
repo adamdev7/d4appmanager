@@ -107,7 +107,7 @@ async def sync_delivered_to_shopify(
             await client.create_fulfillment_event(
                 fid,
                 status="delivered",
-                message="Delivered (synced from carrier tracking via App Manager)",
+                message="Delivered (synced from carrier tracking via SkyScale Manager)",
                 order_id=order_id,
             )
             synced_ids.add(fid)

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from app.config import settings
 from app.routes import integration
 
-app = FastAPI(title="App Manager integration API", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="SkyScale Manager integration API", docs_url=None, redoc_url=None, openapi_url=None)
 app.include_router(integration.router, prefix=f"{settings.api_prefix}/integration")
 
 

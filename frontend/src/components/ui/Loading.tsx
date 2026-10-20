@@ -25,7 +25,7 @@ const brandLoaderSize = {
 } as const;
 
 /**
- * Brand loader — green spinning ring with the App Manager logo centered.
+ * Brand loader — green spinning ring with the SkyScale Manager logo centered.
  * Use for page loads and soft-refresh overlays.
  */
 export function BrandLoader({
@@ -53,7 +53,7 @@ export function BrandLoader({
         />
         <span className="absolute inset-0 flex items-center justify-center">
           <img
-            src="/app-manager-logo.png"
+            src="/skyscale-manager-logo.png"
             alt=""
             className={cn("object-contain rounded-md", s.logo)}
           />

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "App Manager"
+    app_name: str = "SkyScale Manager"
     debug: bool = True
     api_prefix: str = "/api/v1"
 
@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from: str = ""
-    smtp_from_name: str = "App Manager"
+    smtp_from_name: str = "SkyScale Manager"
     smtp_use_tls: bool = True
 
     @field_validator("smtp_password", mode="before")

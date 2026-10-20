@@ -121,7 +121,7 @@ def mask_whatsapp_phone(raw: str | None) -> str:
 def format_connection_test_message() -> str:
     """Short WhatsApp-formatted test ping (bold + newlines per CallMeBot docs)."""
     return (
-        "*App Manager*\n"
+        "*SkyScale Manager*\n"
         "WhatsApp alerts are connected.\n"
         "Turn on alerts in AI Email Assistant or AI Ads when you want them."
     )
@@ -241,7 +241,7 @@ def format_weekly_ads_recap(
         lines.append(f"{failed_count} creative(s) failed.")
     if error and status_key == "FAILED":
         lines.append(f"Error: {error.strip()[:180]}")
-    lines.append("Nothing was published. Open App Manager → AI Ads → Library.")
+    lines.append("Nothing was published. Open SkyScale Manager → AI Ads → Library.")
     return "\n".join(lines)
 
 

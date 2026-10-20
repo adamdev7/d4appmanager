@@ -90,7 +90,7 @@ def test_format_connection_test_message():
     from app.notifications.whatsapp import format_connection_test_message
 
     text = format_connection_test_message()
-    assert text.startswith("*App Manager*")
+    assert text.startswith("*SkyScale Manager*")
     assert "\n" in text
     assert "AI Email Assistant" in text or "AI Ads" in text
 
@@ -180,7 +180,7 @@ def test_format_callmebot_error_prefers_clear_reason():
     from app.notifications.whatsapp import format_callmebot_error
 
     echo = (
-        "Message to: +4382256262 Text to send: *App Manager*%0AHello. "
+        "Message to: +4382256262 Text to send: *SkyScale Manager*%0AHello. "
         "APIKey is invalid"
     )
     msg = format_callmebot_error(200, echo)

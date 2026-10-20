@@ -22,7 +22,7 @@ export function SiteFooter({
         className
       )}
     >
-      <p>© {year} App Manager · D4TECH</p>
+      <p>© {year} SkyScale Manager · D4TECH</p>
       <nav className="flex items-center gap-4">
         <Link
           to="/privacy"

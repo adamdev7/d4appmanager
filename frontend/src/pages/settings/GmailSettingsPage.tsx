@@ -86,7 +86,7 @@ export function GmailSettingsPage() {
 
   const handleDelete = async (account: GmailAccount) => {
     const ok = window.confirm(
-      `Remove ${account.email} from App Manager? You can connect it again later with Google.`
+      `Remove ${account.email} from SkyScale Manager? You can connect it again later with Google.`
     );
     if (!ok) return;
     setError("");
@@ -145,7 +145,7 @@ export function GmailSettingsPage() {
           <div className="flex-1">
             <CardTitle>Connect Gmail with Google</CardTitle>
             <CardDescription>
-              App Manager uses Google OAuth so it can send and manage business email from
+              SkyScale Manager uses Google OAuth so it can send and manage business email from
               your Gmail account for Email Automation and the AI Email Assistant. You will
               be redirected to Google to review and approve access.
             </CardDescription>

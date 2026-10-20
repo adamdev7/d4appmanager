@@ -7,9 +7,9 @@ export function PrivacyPage() {
       <section className="space-y-3">
         <h2>1. Who we are</h2>
         <p>
-          App Manager is a multi-store Shopify automation platform operated by D4TECH
+          SkyScale Manager is a multi-store Shopify automation platform operated by D4TECH
           (“we”, “us”, or “our”). This Privacy Policy explains how we collect, use,
-          store, and share information when you use App Manager, including our website,
+          store, and share information when you use SkyScale Manager, including our website,
           dashboard, and related services (the “Service”).
         </p>
       </section>
@@ -58,7 +58,7 @@ export function PrivacyPage() {
         <h2>3. How we use information</h2>
         <p>We use information to:</p>
         <ul>
-          <li>Provide, operate, and improve App Manager and its modules</li>
+          <li>Provide, operate, and improve SkyScale Manager and its modules</li>
           <li>
             Run Email Automation (order-triggered and transactional emails via your
             connected Gmail accounts)
@@ -81,7 +81,7 @@ export function PrivacyPage() {
       <section className="space-y-3">
         <h2>4. Google user data</h2>
         <p>
-          App Manager’s use of information received from Google APIs adheres to the{" "}
+          SkyScale Manager’s use of information received from Google APIs adheres to the{" "}
           <a
             href="https://developers.google.com/terms/api-services-user-data-policy"
             target="_blank"
@@ -92,7 +92,7 @@ export function PrivacyPage() {
           , including the Limited Use requirements.
         </p>
         <p>
-          When you authorize Google access, App Manager may request scopes that allow us
+          When you authorize Google access, SkyScale Manager may request scopes that allow us
           to:
         </p>
         <ul>
@@ -109,15 +109,15 @@ export function PrivacyPage() {
         </ul>
         <p>
           We access, use, store, and share Google user data only to provide and improve
-          user-facing features of App Manager that you enable (Email Automation and AI
+          user-facing features of SkyScale Manager that you enable (Email Automation and AI
           Email Assistant). We do not sell Google user data. We do not use Google user
           data for serving advertisements. We do not allow humans to read Google user data
           unless you give us permission, it is necessary for security/compliance, or we
           are required to by law — and then only with limited access controls.
         </p>
         <p>
-          You can revoke App Manager’s access at any time in your Google Account
-          permissions and/or by disconnecting Gmail in App Manager Settings.
+          You can revoke SkyScale Manager’s access at any time in your Google Account
+          permissions and/or by disconnecting Gmail in SkyScale Manager Settings.
         </p>
       </section>
 
@@ -196,7 +196,7 @@ export function PrivacyPage() {
         </ul>
         <p>
           To exercise these rights, contact us using the details below. If you are a
-          merchant using App Manager, requests from your customers about their data should
+          merchant using SkyScale Manager, requests from your customers about their data should
           generally be handled by you; we will assist where we act as your processor.
         </p>
       </section>
@@ -213,7 +213,7 @@ export function PrivacyPage() {
       <section className="space-y-3">
         <h2>11. Children’s privacy</h2>
         <p>
-          App Manager is intended for business users. We do not knowingly collect personal
+          SkyScale Manager is intended for business users. We do not knowingly collect personal
           information from children under 16.
         </p>
       </section>
@@ -231,7 +231,7 @@ export function PrivacyPage() {
       <section className="space-y-3">
         <h2>13. Contact</h2>
         <p>
-          For privacy questions or requests, contact D4TECH regarding App Manager. You can
+          For privacy questions or requests, contact D4TECH regarding SkyScale Manager. You can
           also reach us through your account settings or the support channels provided in
           the Service.
         </p>

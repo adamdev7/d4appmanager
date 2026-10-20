@@ -371,7 +371,7 @@ export function TrackingSettingsPanel({ storeId, settings, onSaved }: Props) {
             Test 17TRACK / carrier lookup
           </p>
           <p className="text-xs text-content-muted">
-            Paste a real tracking number (e.g. from order #1005) to see exactly what App Manager
+            Paste a real tracking number (e.g. from order #1005) to see exactly what SkyScale Manager
             gets back from 17TRACK — status, carrier, and timeline events.
           </p>
           <Input

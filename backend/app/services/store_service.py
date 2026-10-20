@@ -254,7 +254,7 @@ class StoreService:
                 db.commit()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This Shopify install link has expired. Open App Manager from your Shopify admin again.",
+                detail="This Shopify install link has expired. Open SkyScale Manager from your Shopify admin again.",
             )
 
         shop_domain = row.shop_domain

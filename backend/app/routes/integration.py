@@ -68,19 +68,19 @@ def integration_owner(
     if not email:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Set INTEGRATION_OWNER_EMAIL to the App Manager account whose stores Central AI may read.",
+            detail="Set INTEGRATION_OWNER_EMAIL to the SkyScale Manager account whose stores Central AI may read.",
         )
     user = db.scalar(select(User).where(User.email == email))
     if user is None or not user.is_active or not user.is_verified:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="INTEGRATION_OWNER_EMAIL does not match an active, verified App Manager account.",
+            detail="INTEGRATION_OWNER_EMAIL does not match an active, verified SkyScale Manager account.",
         )
     return user
 
 
 def dashboard_range(period: Period, store: Store) -> dict[str, Any]:
-    """Map Central AI periods onto App Manager's dashboard presets."""
+    """Map Central AI periods onto SkyScale Manager's dashboard presets."""
     if period == "today":
         today = today_in_zone(store.timezone or settings.ai_ad_weekly_default_timezone).isoformat()
         return {"period": "custom", "custom_since": today, "custom_until": today}
@@ -365,7 +365,7 @@ async def _ads_section(db: Session, user: User, store: Store, problems: list) ->
         _problem(problems, "high", "Couldn't load ads", str(getattr(exc, "detail", exc))[:200], "ads")
         return {"title": title, "items": []}
     if not data.get("meta_configured"):
-        return {"title": title, "items": [{"title": "Meta ads aren't connected", "detail": "Connect Meta in App Manager settings.", "status": "off"}]}
+        return {"title": title, "items": [{"title": "Meta ads aren't connected", "detail": "Connect Meta in SkyScale Manager settings.", "status": "off"}]}
     if data.get("meta_error"):
         _problem(problems, "high", "Meta ads returned an error", str(data["meta_error"])[:200], "ads")
     summary = data.get("summary") or {}

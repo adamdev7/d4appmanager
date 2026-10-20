@@ -219,7 +219,7 @@ class OAuthState(Base):
 
 
 class ShopifyPendingInstall(Base):
-    """Shop that finished Shopify OAuth but is not yet attached to an App Manager account."""
+    """Shop that finished Shopify OAuth but is not yet attached to a SkyScale Manager account."""
 
     __tablename__ = "shopify_pending_installs"
 

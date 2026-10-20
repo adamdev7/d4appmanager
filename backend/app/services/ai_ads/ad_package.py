@@ -598,12 +598,12 @@ def tracking_notes(inputs: AdPackageInputs, objective_label: str) -> list[str]:
         )
     if inputs.capi_enabled and inputs.pixel_configured:
         notes.append(
-            "Purchase reaches Meta from both the browser Pixel and App Manager's Conversions API, "
+            "Purchase reaches Meta from both the browser Pixel and SkyScale Manager's Conversions API, "
             "deduplicated by event_id. Optimize the ad set for Purchase."
         )
     else:
         notes.append(
-            "Server-Side Tracking (Conversions API) is not enabled in App Manager, so Purchase relies on the "
+            "Server-Side Tracking (Conversions API) is not enabled in SkyScale Manager, so Purchase relies on the "
             "browser Pixel only. Turn it on for more reliable attribution."
         )
     if inputs.capi_enabled and inputs.send_initiate_checkout:

@@ -27,8 +27,8 @@ def handle_compliance_webhook(db: Session, topic: str, shop_domain: str, payload
     store = db.scalar(select(Store).where(Store.shop_domain == shop_domain)) if shop_domain else None
 
     if topic == "customers/data_request":
-        # Customer data App Manager holds comes from the merchant's own Shopify orders and inbox;
-        # the merchant fulfils the request from Shopify and App Manager's Tracking / Inbox views.
+        # Customer data SkyScale Manager holds comes from the merchant's own Shopify orders and inbox;
+        # the merchant fulfils the request from Shopify and SkyScale Manager's Tracking / Inbox views.
         logger.info(
             "Shopify customer data request for %s (request %s)",
             shop_domain,
@@ -99,7 +99,7 @@ def redact_customer(
 
 
 def redact_shop(db: Session, shop_domain: str) -> None:
-    """Remove everything App Manager stores for a shop (sent 48h after uninstall)."""
+    """Remove everything SkyScale Manager stores for a shop (sent 48h after uninstall)."""
     if not shop_domain:
         return
     # Core DELETE so ON DELETE CASCADE removes the store's tracking, automation, analytics, etc.

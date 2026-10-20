@@ -1,5 +1,5 @@
 [Unit]
-Description=App Manager API
+Description=SkyScale Manager API
 After=network.target
 
 [Service]

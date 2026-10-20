@@ -7,7 +7,7 @@ export function TermsPage() {
       <section className="space-y-3">
         <h2>1. Agreement</h2>
         <p>
-          These Terms of Service (“Terms”) govern your access to and use of App Manager,
+          These Terms of Service (“Terms”) govern your access to and use of SkyScale Manager,
           a multi-store Shopify automation platform operated by D4TECH (“we”, “us”, or
           “our”). By creating an account or using the Service, you agree to these Terms
           and our <Link to="/privacy">Privacy Policy</Link>.
@@ -17,7 +17,7 @@ export function TermsPage() {
       <section className="space-y-3">
         <h2>2. The Service</h2>
         <p>
-          App Manager helps merchants automate and manage Shopify store operations from
+          SkyScale Manager helps merchants automate and manage Shopify store operations from
           one workspace. Depending on your plan and configuration, features may include:
         </p>
         <ul>
@@ -69,7 +69,7 @@ export function TermsPage() {
           By connecting an integration, you authorize us to access and process data from
           that platform as needed to provide the features you enable. You represent that
           you have all rights and permissions required to connect those accounts and to
-          process related customer and business data through App Manager.
+          process related customer and business data through SkyScale Manager.
         </p>
         <p>
           Your use of third-party platforms remains subject to their own terms and
@@ -130,7 +130,7 @@ export function TermsPage() {
       <section className="space-y-3">
         <h2>8. Our intellectual property</h2>
         <p>
-          App Manager, including its software, branding, UI, and documentation, is owned
+          SkyScale Manager, including its software, branding, UI, and documentation, is owned
           by D4TECH and its licensors. These Terms do not grant you any right to copy,
           modify, or redistribute our intellectual property except as needed to use the
           Service.
@@ -211,7 +211,7 @@ export function TermsPage() {
       <section className="space-y-3">
         <h2>16. Contact</h2>
         <p>
-          Questions about these Terms can be directed to D4TECH regarding App Manager
+          Questions about these Terms can be directed to D4TECH regarding SkyScale Manager
           through the support channels available in the Service.
         </p>
         <p>
