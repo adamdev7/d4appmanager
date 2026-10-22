@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
@@ -29,12 +29,14 @@ from app.services import store_service
 from app.services.store_service import scopes_cover
 
 SECRET = "test-shopify-secret"
+PRIVATE_SECRET = "private-shopify-secret"
+PRIVATE_ID = "private-client"
 SHOP = "luxory.myshopify.com"
 
 
-def signed(params: dict[str, str]) -> dict[str, str]:
+def signed(params: dict[str, str], secret: str = SECRET) -> dict[str, str]:
     message = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-    digest = hmac.new(SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+    digest = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
     return {**params, "hmac": digest}
 
 
@@ -42,6 +44,10 @@ def signed(params: dict[str, str]) -> dict[str, str]:
 def env(monkeypatch):
     monkeypatch.setattr(settings, "shopify_client_id", "client-123")
     monkeypatch.setattr(settings, "shopify_client_secret", SECRET)
+    monkeypatch.setattr(settings, "shopify_private_client_id", "")
+    monkeypatch.setattr(settings, "shopify_private_client_secret", "")
+    monkeypatch.setattr(settings, "shopify_private_account_emails", "")
+    monkeypatch.setattr(settings, "shopify_private_install_url", "")
     monkeypatch.setattr(settings, "shopify_public_url", "https://appmanager.store")
     monkeypatch.setattr(settings, "frontend_url", "https://appmanager.store")
     monkeypatch.setattr(store_service, "seed_store_automation_defaults", lambda db, store_id: None)
@@ -304,6 +310,139 @@ def test_reauthorize_uses_the_stores_own_domain(env):
     db.commit()
     resp = client.post(f"/api/v1/stores/{store.id}/shopify/reauthorize")
     assert urlparse(resp.json()["authorize_url"]).netloc == SHOP
+
+
+def _enable_private_app(monkeypatch, emails: str = "owner@example.com"):
+    monkeypatch.setattr(settings, "shopify_private_client_id", PRIVATE_ID)
+    monkeypatch.setattr(settings, "shopify_private_client_secret", PRIVATE_SECRET)
+    monkeypatch.setattr(settings, "shopify_private_account_emails", emails)
+    monkeypatch.setattr(
+        settings, "shopify_private_install_url", "https://admin.shopify.com/oauth/install_custom_app?client_id=private"
+    )
+
+
+def _oauth_client_id(location: str) -> str:
+    return parse_qs(urlparse(location).query)["client_id"][0]
+
+
+def test_public_launch_stays_on_public_client_when_private_app_is_configured(env, monkeypatch):
+    _enable_private_app(monkeypatch, "owner@example.com")
+    client, *_ = env
+    resp = client.get("/api/v1/stores/shopify/launch", params=launch_params())
+    assert resp.status_code == 302
+    assert _oauth_client_id(resp.headers["location"]) == "client-123"
+
+
+def test_private_app_launch_uses_private_client_for_allowlisted_account(env, monkeypatch):
+    _enable_private_app(monkeypatch)
+    client, db, user, _ = env
+    params = signed(
+        {"shop": SHOP, "timestamp": str(int(time.time())), "host": "YWRtaW4"},
+        PRIVATE_SECRET,
+    )
+    launch = client.get("/api/v1/stores/shopify/launch", params=params)
+    assert launch.status_code == 302
+    assert _oauth_client_id(launch.headers["location"]) == PRIVATE_ID
+    state = parse_qs(urlparse(launch.headers["location"]).query)["state"][0]
+
+    callback = client.get(
+        "/api/v1/stores/shopify/callback",
+        params=signed(
+            {"shop": SHOP, "code": "abc", "state": state, "timestamp": str(int(time.time()))},
+            PRIVATE_SECRET,
+        ),
+    )
+    claim = parse_qs(urlparse(callback.headers["location"]).query)["shopify_claim"][0]
+    reviewer = User(email="appreview@appmanager.store", password_hash="x", full_name="Review", is_verified=True)
+    db.add(reviewer)
+    db.commit()
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(store_service.StoreService().claim_shopify_install(db, reviewer, claim))
+    assert rejected.value.status_code == 403
+    assert db.scalar(select(Store)) is None
+
+    resp = client.post("/api/v1/stores/shopify/claim", json={"claim": claim})
+    assert resp.status_code == 200
+    store = db.scalar(select(Store))
+    assert store.owner_id == user.id
+    assert store.shopify_app == "private"
+
+
+def test_public_install_still_claims_when_private_app_is_configured(env, monkeypatch):
+    _enable_private_app(monkeypatch, "someone-else@example.com")
+    client, db, user, _ = env
+    launch = client.get("/api/v1/stores/shopify/launch", params=launch_params())
+    assert _oauth_client_id(launch.headers["location"]) == "client-123"
+    state = parse_qs(urlparse(launch.headers["location"]).query)["state"][0]
+    callback = client.get(
+        "/api/v1/stores/shopify/callback",
+        params=signed({"shop": SHOP, "code": "abc", "state": state, "timestamp": str(int(time.time()))}),
+    )
+    claim = parse_qs(urlparse(callback.headers["location"]).query)["shopify_claim"][0]
+    resp = client.post("/api/v1/stores/shopify/claim", json={"claim": claim})
+    assert resp.status_code == 200
+    store = db.scalar(select(Store))
+    assert store.owner_id == user.id
+    assert store.shopify_app == "public"
+
+
+def test_private_install_does_not_replace_another_accounts_store(env, monkeypatch):
+    _enable_private_app(monkeypatch, "owner@example.com")
+    client, db, user, _ = env
+    reviewer = User(email="appreview@appmanager.store", password_hash="x", full_name="Review", is_verified=True)
+    db.add(reviewer)
+    db.flush()
+    db.add(
+        Store(
+            owner_id=reviewer.id,
+            shop_domain=SHOP,
+            name="Review store",
+            status="connected",
+            access_token_encrypted=encrypt_value("reviewer-token"),
+            shopify_app="public",
+        )
+    )
+    db.commit()
+    launch = client.get(
+        "/api/v1/stores/shopify/launch",
+        params=signed(
+            {"shop": SHOP, "timestamp": str(int(time.time())), "host": "YWRtaW4"},
+            PRIVATE_SECRET,
+        ),
+    )
+    assert launch.status_code == 409
+    db.expire_all()
+    store = db.scalar(select(Store))
+    assert decrypt_value(store.access_token_encrypted) == "reviewer-token"
+    assert store.owner_id == reviewer.id
+    assert user.id != reviewer.id
+
+
+def test_reauthorize_private_store_uses_private_client(env, monkeypatch):
+    _enable_private_app(monkeypatch)
+    client, db, user, _ = env
+    store = Store(
+        owner_id=user.id,
+        shop_domain=SHOP,
+        name="Luxory",
+        status="connected",
+        shopify_app="private",
+        access_token_encrypted=encrypt_value("t"),
+    )
+    db.add(store)
+    db.commit()
+    resp = client.post(f"/api/v1/stores/{store.id}/shopify/reauthorize")
+    assert _oauth_client_id(resp.json()["authorize_url"]) == PRIVATE_ID
+
+
+def test_install_link_follows_the_signed_in_account(env, monkeypatch):
+    _enable_private_app(monkeypatch)
+    monkeypatch.setattr(settings, "shopify_install_url", "https://apps.shopify.com/skyscale")
+    _, db, user, _ = env
+    service = store_service.StoreService()
+    assert "install_custom_app" in service.shopify_install_link(user)
+    reviewer = User(email="appreview@appmanager.store", password_hash="x", full_name="Review", is_verified=True)
+    assert service.shopify_install_link(reviewer) == "https://apps.shopify.com/skyscale"
 
 
 def test_scopes_cover_treats_write_as_read():

@@ -36,7 +36,10 @@ def post(client, topic: str, payload: dict, *, secret: str = SECRET):
 
 @pytest.fixture
 def env(monkeypatch):
+    monkeypatch.setattr(settings, "shopify_client_id", "client-123")
     monkeypatch.setattr(settings, "shopify_client_secret", SECRET)
+    monkeypatch.setattr(settings, "shopify_private_client_id", "")
+    monkeypatch.setattr(settings, "shopify_private_client_secret", "")
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     db = sessionmaker(bind=engine)()
@@ -103,6 +106,16 @@ def test_shop_redact_removes_the_store(env):
     assert resp.status_code == 200
     db.expire_all()
     assert db.scalar(select(Store).where(Store.shop_domain == SHOP)) is None
+
+
+def test_private_app_webhook_signature_is_accepted(env, monkeypatch):
+    monkeypatch.setattr(settings, "shopify_private_client_id", "private-client")
+    monkeypatch.setattr(settings, "shopify_private_client_secret", "private-secret")
+    client, *_ = env
+    resp = post(client, "customers/data_request", {"shop_domain": SHOP}, secret="private-secret")
+    assert resp.status_code == 200
+    rejected = post(client, "customers/data_request", {"shop_domain": SHOP}, secret="wrong")
+    assert rejected.status_code == 401
 
 
 def test_compliance_webhook_for_unknown_shop_still_returns_ok(env):

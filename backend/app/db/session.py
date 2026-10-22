@@ -688,6 +688,25 @@ def _migrate_shopify_refresh_token_columns() -> None:
                 )
 
 
+def _migrate_shopify_app_column() -> None:
+    """Remember which Shopify app issued a store token so refresh uses that app's secret."""
+    insp = inspect(engine)
+    dialect = engine.dialect.name
+    tables = set(insp.get_table_names())
+    for table in ("stores", "shopify_pending_installs"):
+        if table not in tables:
+            continue
+        if "shopify_app" in {c["name"] for c in insp.get_columns(table)}:
+            continue
+        with engine.begin() as conn:
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN shopify_app VARCHAR(16)"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS shopify_app VARCHAR(16)")
+                )
+
+
 def _migrate_verification_code_attempts() -> None:
     """Track failed OTP guesses so codes can be locked after too many attempts."""
     insp = inspect(engine)
@@ -1354,6 +1373,7 @@ def init_db() -> None:
     _migrate_sync_delivered_to_shopify_column()
     _migrate_store_granted_scopes_column()
     _migrate_shopify_refresh_token_columns()
+    _migrate_shopify_app_column()
     _migrate_verification_code_attempts()
     _migrate_ai_email_null_store_scope()
     _migrate_meta_capi_enrichment_columns()

@@ -28,7 +28,7 @@ async def list_stores(
 
 @router.get("/shopify/install-link")
 async def shopify_install_link(user: User = Depends(get_verified_user)):
-    return {"url": _stores.shopify_install_link()}
+    return {"url": _stores.shopify_install_link(user)}
 
 
 @router.get("/shopify/launch")

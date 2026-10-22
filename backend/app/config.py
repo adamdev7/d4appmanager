@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     )
     shopify_api_version: str = "2026-07"
     shopify_install_url: str = ""
+    # Second app (custom distribution) used only by the accounts listed below.
+    # Leave blank to keep every install on the public app the reviewer tests.
+    shopify_private_client_id: str = ""
+    shopify_private_client_secret: str = ""
+    shopify_private_account_emails: str = ""
+    shopify_private_install_url: str = ""
 
     # Google / Gmail
     google_client_id: str = ""

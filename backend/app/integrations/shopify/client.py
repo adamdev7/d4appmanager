@@ -1,7 +1,4 @@
 import asyncio
-import base64
-import hashlib
-import hmac
 import json
 import logging
 import re
@@ -12,6 +9,12 @@ from urllib.parse import urlencode
 import httpx
 
 from app.config import settings
+from app.integrations.shopify.credentials import (
+    ShopifyAppCredentials,
+    credentials_for_query,
+    public_credentials,
+    webhook_signed_by_known_app,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -484,23 +487,34 @@ def nest_bulk_rows(rows: list[dict], children: dict[str, str]) -> list[dict]:
 
 
 class ShopifyClient:
-    def __init__(self, shop_domain: str, access_token: str | None = None) -> None:
+    def __init__(
+        self,
+        shop_domain: str,
+        access_token: str | None = None,
+        credentials: ShopifyAppCredentials | None = None,
+    ) -> None:
         self.shop_domain = shop_domain.replace("https://", "").replace("http://", "").strip("/")
         if not self.shop_domain.endswith(".myshopify.com"):
             if "." not in self.shop_domain:
                 self.shop_domain = f"{self.shop_domain}.myshopify.com"
         self.access_token = access_token
+        self.credentials = credentials
         self.api_version = settings.shopify_api_version
+
+    def _oauth_credentials(self) -> ShopifyAppCredentials:
+        creds = self.credentials or public_credentials()
+        if not creds:
+            raise ValueError("SHOPIFY_CLIENT_ID is not configured")
+        return creds
 
     @property
     def graphql_url(self) -> str:
         return f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json"
 
     def build_install_url(self, state: str) -> str:
-        if not settings.shopify_client_id:
-            raise ValueError("SHOPIFY_CLIENT_ID is not configured")
+        creds = self._oauth_credentials()
         params = {
-            "client_id": settings.shopify_client_id,
+            "client_id": creds.client_id,
             "scope": settings.shopify_scopes,
             "redirect_uri": settings.shopify_redirect_uri,
             "state": state,
@@ -508,15 +522,14 @@ class ShopifyClient:
         return f"https://{self.shop_domain}/admin/oauth/authorize?{urlencode(params)}"
 
     async def _token_request(self, data: dict[str, str]) -> dict:
-        if not settings.shopify_client_id or not settings.shopify_client_secret:
-            raise ValueError("Shopify OAuth credentials are not configured")
+        creds = self._oauth_credentials()
         url = f"https://{self.shop_domain}/admin/oauth/access_token"
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 url,
                 data={
-                    "client_id": settings.shopify_client_id,
-                    "client_secret": settings.shopify_client_secret,
+                    "client_id": creds.client_id,
+                    "client_secret": creds.client_secret,
                     **data,
                 },
                 headers={"Accept": "application/json"},
@@ -1173,35 +1186,12 @@ class ShopifyClient:
 
     @staticmethod
     def verify_webhook_hmac(body: bytes, hmac_header: str) -> bool:
-        if not settings.shopify_client_secret:
-            return False
-        digest = hmac.new(
-            settings.shopify_client_secret.encode("utf-8"),
-            body,
-            hashlib.sha256,
-        ).digest()
-        computed = base64.b64encode(digest).decode()
-        return hmac.compare_digest(computed, hmac_header)
+        return webhook_signed_by_known_app(body, hmac_header)
 
     @staticmethod
     def verify_query_hmac(params: dict[str, str]) -> bool:
         """Verify the ``hmac`` Shopify adds to app-launch and OAuth callback URLs."""
-        if not settings.shopify_client_secret:
-            return False
-        supplied = str(params.get("hmac") or "")
-        if not supplied:
-            return False
-        message = "&".join(
-            f"{key}={value}"
-            for key, value in sorted(params.items())
-            if key not in ("hmac", "signature")
-        )
-        computed = hmac.new(
-            settings.shopify_client_secret.encode("utf-8"),
-            message.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        return hmac.compare_digest(computed, supplied)
+        return credentials_for_query(params) is not None
 
     @staticmethod
     def is_valid_shop_domain(shop: str | None) -> bool:

@@ -124,6 +124,8 @@ class Store(Base):
     access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     granted_scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "private" when the token came from the account-limited app. Null is the public app.
+    shopify_app: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default=StoreStatus.PENDING.value)
     plan: Mapped[str] = mapped_column(String(64), default="Basic")
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
@@ -229,6 +231,7 @@ class ShopifyPendingInstall(Base):
     access_token_encrypted: Mapped[str] = mapped_column(Text)
     refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     granted_scopes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    shopify_app: Mapped[str | None] = mapped_column(String(16), nullable=True)
     shop_json: Mapped[str] = mapped_column(Text, default="{}")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
