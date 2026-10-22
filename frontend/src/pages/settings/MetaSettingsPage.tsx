@@ -107,8 +107,7 @@ export function MetaSettingsPage() {
       <div>
         <h1 className="text-2xl font-bold text-content tracking-tight">Meta</h1>
         <p className="text-sm text-content-muted mt-1 leading-relaxed">
-          One connection for this store. Analytics, Ads, and AI Ads read it. Server-Side Tracking
-          uses the same token unless that option has its own override.
+          One connection for this store. Analytics, Ads, AI Ads, and Server-Side Tracking use it.
         </p>
       </div>
 

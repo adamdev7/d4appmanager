@@ -102,12 +102,7 @@ export function MetaCapiPage() {
   const statsRef = useRef<MetaCapiStats | null>(null);
   statsRef.current = stats;
   const [enabled, setEnabled] = useState(false);
-  const [pixelId, setPixelId] = useState("");
-  const [token, setToken] = useState("");
   const [testCode, setTestCode] = useState("");
-  const [eventIdScheme, setEventIdScheme] = useState("order_id");
-  const [triggerTopic, setTriggerTopic] = useState("orders/paid");
-  const [apiVersion, setApiVersion] = useState("v25.0");
   const [sendInitiateCheckout, setSendInitiateCheckout] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -162,13 +157,8 @@ export function MetaCapiPage() {
       setStats(s);
       setSettings(s.settings);
       setEnabled(Boolean(s.settings.enabled));
-      setPixelId(s.settings.meta_pixel_id ?? "");
       setTestCode(s.settings.test_event_code ?? "");
-      setEventIdScheme(s.settings.event_id_scheme || "order_id");
-      setTriggerTopic(s.settings.trigger_topic || "orders/paid");
-      setApiVersion(s.settings.api_version || "v25.0");
       setSendInitiateCheckout(s.settings.send_initiate_checkout !== false);
-      setToken("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
     } finally {
@@ -207,17 +197,12 @@ export function MetaCapiPage() {
     try {
       const payload: Record<string, unknown> = {
         enabled,
-        event_id_scheme: eventIdScheme,
-        trigger_topic: triggerTopic,
-        api_version: apiVersion.trim() || "v25.0",
         test_event_code: testCode.trim() || null,
         send_initiate_checkout: sendInitiateCheckout,
       };
-      if (token.trim()) payload.meta_access_token = token.trim();
       if (!testCode.trim()) payload.clear_test_event_code = true;
       const updated = await api.metaCapi.updateSettings(storeId, payload);
       setSettings(updated);
-      setToken("");
       setMessage("Settings saved.");
       await load();
     } catch (err) {
@@ -234,8 +219,7 @@ export function MetaCapiPage() {
     setMessage("");
     try {
       const res = await api.metaCapi.test(storeId, {
-        meta_pixel_id: pixelId.trim() || undefined,
-        meta_access_token: token.trim() || undefined,
+        meta_pixel_id: settings?.meta_pixel_id || undefined,
         test_event_code: testCode.trim() || undefined,
       });
       setMessage(res.message);
@@ -335,10 +319,7 @@ export function MetaCapiPage() {
             </h1>
           </div>
           <p className="mt-1 text-sm text-content-muted max-w-xl">
-            Full Meta funnel via Conversions API: PageView, ViewContent, Search, AddToCart,
-            InitiateCheckout, and Purchase — with match-quality fields (fbp/fbc/IP/UA). Theme
-            beacons + Shopify webhooks; deduplicates when <code className="text-xs">event_id</code>{" "}
-            matches the browser Pixel.
+            Sends your Shopify purchases to the Pixel saved in Settings → Meta.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -793,57 +774,49 @@ export function MetaCapiPage() {
         <div className="space-y-6 max-w-2xl">
           <Card padding="lg">
             <CardHeader>
-              <CardTitle>Server-side purchases</CardTitle>
+              <CardTitle>Purchases</CardTitle>
               <CardDescription>
-                Pixel ID and the shared Meta token live in account settings. Paste a token here
-                only when this Pixel needs a different Conversions API token.
+                Pixel and token come from Settings → Meta. Nothing else to paste here.
               </CardDescription>
             </CardHeader>
             <div className="space-y-4">
+              <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-3 space-y-1">
+                <p className="text-sm font-medium text-content">
+                  {settings?.meta_pixel_id
+                    ? `Pixel ${settings.meta_pixel_id}`
+                    : "Pixel not connected"}
+                </p>
+                <p className="text-xs text-content-muted">
+                  {settings?.meta_pixel_id &&
+                  (settings.account_token_ready || settings.has_access_token) ? (
+                    "Ready. Purchases use the Meta connection you already saved."
+                  ) : (
+                    <>
+                      Add the Pixel and token in{" "}
+                      <Link to="/settings/meta" className="text-brand-600 hover:underline font-medium">
+                        Settings → Meta
+                      </Link>
+                      .
+                    </>
+                  )}
+                </p>
+              </div>
+
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-sm font-medium text-content">Enable server-side Purchase</p>
+                  <p className="text-sm font-medium text-content">Send purchases to Meta</p>
                   <p className="text-xs text-content-muted">
-                    Fires on Shopify webhook topic below when enabled.
+                    Sends a purchase when the Shopify order is paid.
                   </p>
                 </div>
                 <Switch checked={enabled} onChange={setEnabled} />
               </div>
 
-              <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-3 space-y-1">
-                <p className="text-sm font-medium text-content">
-                  Pixel {settings?.meta_pixel_id || "not set"}
-                </p>
-                <p className="text-xs text-content-muted">
-                  {settings?.account_token_ready
-                    ? "Using the account Meta token unless you save an override below."
-                    : "Add the Meta token and Pixel under Settings → Meta."}{" "}
-                  <Link to="/settings/meta" className="text-brand-600 hover:underline font-medium">
-                    Open Meta settings
-                  </Link>
-                </p>
-              </div>
-              <Input
-                label="Override CAPI token"
-                type="password"
-                placeholder={
-                  settings?.meta_token_masked
-                    ? "Leave blank to keep current"
-                    : "Generate in Events Manager → Settings → Conversions API"
-                }
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-              />
-              {settings?.meta_token_masked && (
-                <p className="text-xs text-content-muted">Stored token {settings.meta_token_masked}</p>
-              )}
-
               <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-sm font-medium text-content">Send InitiateCheckout</p>
+                  <p className="text-sm font-medium text-content">Send checkouts to Meta</p>
                   <p className="text-xs text-content-muted">
-                    Also fire Meta InitiateCheckout on Shopify <code>checkouts/create</code> (native
-                    checkout). Phoenix checkout fires InitiateCheckout from the theme on redirect.
+                    Sends a checkout when a customer starts one.
                   </p>
                 </div>
                 <Switch checked={sendInitiateCheckout} onChange={setSendInitiateCheckout} />
@@ -851,11 +824,9 @@ export function MetaCapiPage() {
 
               {settings?.browser_event_token && (
                 <div className="rounded-lg border border-border bg-surface-muted/40 px-3 py-3 space-y-1">
-                  <p className="text-sm font-medium text-content">Theme browser event token</p>
+                  <p className="text-sm font-medium text-content">Theme token</p>
                   <p className="text-xs text-content-muted">
-                    Paste into Shopify theme settings → <strong>Meta CAPI (SkyScale Manager)</strong> →
-                    Browser event token. Required for PageView, ViewContent, Search, AddToCart, and
-                    Phoenix InitiateCheckout.
+                    Paste into the theme: Meta CAPI → Browser event token.
                   </p>
                   <code className="block text-xs break-all text-content mt-1">
                     {settings.browser_event_token}
@@ -864,49 +835,14 @@ export function MetaCapiPage() {
               )}
 
               <Input
-                label="Test event code (optional)"
-                placeholder="TEST12345"
+                label="Test event code"
+                placeholder="Leave empty for live purchases"
                 value={testCode}
                 onChange={(e) => setTestCode(e.target.value)}
               />
               <p className="text-xs text-content-muted -mt-2">
-                From Events Manager → Test Events. Clear when going live.
+                Use this only while checking Test Events in Meta. Clear it when you go live.
               </p>
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-content">
-                  Purchase event_id scheme (must match Pixel)
-                </label>
-                <select
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-content"
-                  value={eventIdScheme}
-                  onChange={(e) => setEventIdScheme(e.target.value)}
-                >
-                  <option value="order_id">Shopify order id</option>
-                  <option value="checkout_token">Checkout / cart token</option>
-                  <option value="order_name">Order name (e.g. 1042)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-content">
-                  Shopify trigger topic
-                </label>
-                <select
-                  className="w-full rounded-lg border border-border bg-surface px-3 py-2 text-sm text-content"
-                  value={triggerTopic}
-                  onChange={(e) => setTriggerTopic(e.target.value)}
-                >
-                  <option value="orders/paid">orders/paid (recommended)</option>
-                  <option value="orders/create">orders/create (COD / no capture)</option>
-                </select>
-              </div>
-
-              <Input
-                label="Graph API version"
-                value={apiVersion}
-                onChange={(e) => setApiVersion(e.target.value)}
-              />
 
               {(message || saveError) && (
                 <div
@@ -946,18 +882,6 @@ export function MetaCapiPage() {
                 </a>
               </div>
             </div>
-          </Card>
-
-          <Card padding="lg">
-            <CardHeader>
-              <CardTitle>Webhook</CardTitle>
-              <CardDescription>
-                Uses the existing Shopify app webhook at{" "}
-                <code className="text-xs">POST /api/v1/webhooks/shopify</code> (HMAC verified). Ensure{" "}
-                <code className="text-xs">orders/paid</code> (and/or create) is subscribed — already
-                registered with email automation topics.
-              </CardDescription>
-            </CardHeader>
           </Card>
         </div>
       )}
