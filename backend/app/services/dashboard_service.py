@@ -683,6 +683,14 @@ class DashboardService:
                 icon="radar",
             ),
             AppModule(
+                id="mod-md-cleaner",
+                name="MD Cleaner",
+                description="Strip AI metadata and Content Credentials from pictures before uploading to Meta.",
+                slug="md-cleaner",
+                status="active",
+                icon="eraser",
+            ),
+            AppModule(
                 id="mod-sms",
                 name="SMS Notifications",
                 description="Order updates and marketing via SMS.",

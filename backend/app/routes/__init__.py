@@ -11,6 +11,7 @@ from app.routes import (
     email_automation,
     gmail,
     integration,
+    md_cleaner,
     meta_capi,
     modules,
     notifications,
@@ -44,4 +45,5 @@ api_router.include_router(analytics.router, prefix="/analytics", tags=["analytic
 api_router.include_router(ads.router, prefix="/ads", tags=["ads"])
 api_router.include_router(ai_ads.router, prefix="/ai-ads", tags=["ai-ads"])
 api_router.include_router(meta_capi.router, prefix="/meta-capi", tags=["meta-capi"])
+api_router.include_router(md_cleaner.router, prefix="/md-cleaner", tags=["md-cleaner"])
 api_router.include_router(integration.router, prefix="/integration", tags=["integration"])

@@ -10,6 +10,7 @@ import {
   Megaphone,
   Radar,
   WandSparkles,
+  Eraser,
   ChevronRight,
 } from "lucide-react";
 import { BrandLoader } from "@/components/ui/Loading";
@@ -28,6 +29,7 @@ const ICON_MAP: Record<string, typeof Mail> = {
   megaphone: Megaphone,
   radar: Radar,
   wand: WandSparkles,
+  eraser: Eraser,
 };
 
 function moduleHref(mod: AppModule): string {

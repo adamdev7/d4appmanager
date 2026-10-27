@@ -50,6 +50,7 @@ import type {
   DirectorSuggestion,
   DirectorSuggestionEdit,
 } from "@/lib/directorTypes";
+import type { MdCleanResult, MdOutputFormat, MdScanReport } from "@/lib/mdCleanerTypes";
 import { compressProductPhoto } from "@/lib/compressImage";
 
 export type { AnalyticsSettings, AnalyticsProduct, AnalyticsPeriod, AnalyticsDashboard };
@@ -145,6 +146,19 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new ApiError(await parseError(res), res.status);
   }
   return res.json();
+}
+
+async function upload<T>(path: string, form: FormData): Promise<T> {
+  const token = localStorage.getItem("access_token");
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: form,
+  });
+  if (!res.ok) {
+    throw new ApiError(await parseError(res), res.status);
+  }
+  return res.json() as Promise<T>;
 }
 
 export type AuthUser = {
@@ -1205,6 +1219,19 @@ export const api = {
         method: "POST",
         body: JSON.stringify(data),
       }),
+  },
+  mdCleaner: {
+    clean: (file: File, outputFormat: MdOutputFormat = "auto") => {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("output_format", outputFormat);
+      return upload<MdCleanResult>("/md-cleaner/clean", form);
+    },
+    scan: (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return upload<MdScanReport>("/md-cleaner/scan", form);
+    },
   },
   aiAds: {
     getOverview: (storeId: string) =>

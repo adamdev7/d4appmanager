@@ -22,6 +22,7 @@ import { TrackingPage } from "@/pages/modules/TrackingPage";
 import { AnalyticsPage } from "@/pages/modules/AnalyticsPage";
 import { AdsPage } from "@/pages/modules/AdsPage";
 import { MetaCapiPage } from "@/pages/modules/MetaCapiPage";
+import { MdCleanerPage } from "@/pages/modules/MdCleanerPage";
 import { AIAdsLayout } from "@/pages/ai-ads/AIAdsLayout";
 import { AIAdsDashboardPage } from "@/pages/ai-ads/AIAdsDashboardPage";
 import { CreativesPage } from "@/pages/ai-ads/CreativesPage";
@@ -71,6 +72,7 @@ export default function App() {
                 <Route path="/modules/analytics" element={<AnalyticsPage />} />
                 <Route path="/modules/ads" element={<AdsPage />} />
                 <Route path="/modules/meta-capi" element={<MetaCapiPage />} />
+                <Route path="/modules/md-cleaner" element={<MdCleanerPage />} />
                 <Route path="/modules/ai-ads" element={<Navigate to="/ai-ads" replace />} />
                 <Route path="/ai-ads" element={<AIAdsLayout />}>
                   <Route index element={<AIAdsDashboardPage />} />

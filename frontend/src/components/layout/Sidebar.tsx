@@ -16,6 +16,7 @@ import {
   Megaphone,
   Radar,
   WandSparkles,
+  Eraser,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { BrandLogo } from "@/components/brand/BrandLogo";
@@ -29,6 +30,7 @@ const mainNav = [
   { to: "/modules/analytics", icon: BarChart3, label: "Analytics" },
   { to: "/modules/ads", icon: Megaphone, label: "Ads" },
   { to: "/ai-ads", icon: WandSparkles, label: "AI Ads" },
+  { to: "/modules/md-cleaner", icon: Eraser, label: "MD Cleaner" },
   { to: "/modules/meta-capi", icon: Radar, label: "Server-Side Tracking" },
   { to: "/modules/sms", icon: MessageSquare, label: "SMS" },
   { to: "/modules/support", icon: Headphones, label: "Support" },
