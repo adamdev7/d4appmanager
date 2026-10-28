@@ -885,6 +885,39 @@ def _migrate_meta_capi_enrichment_columns() -> None:
                 )
 
 
+def _migrate_meta_capi_event_visitor_columns() -> None:
+    """Visitor context on CAPI event logs so the UI can group events per shopper."""
+    insp = inspect(engine)
+    table = "meta_capi_event_logs"
+    if table not in insp.get_table_names():
+        return
+    cols = {c["name"] for c in insp.get_columns(table)}
+    dialect = engine.dialect.name
+    additions: list[tuple[str, str]] = [
+        ("visitor_key", "VARCHAR(191)"),
+        ("client_ip", "VARCHAR(64)"),
+        ("user_agent", "VARCHAR(512)"),
+        ("page_url", "VARCHAR(1024)"),
+        ("content_name", "VARCHAR(255)"),
+    ]
+    with engine.begin() as conn:
+        for name, col_type in additions:
+            if name in cols:
+                continue
+            if dialect == "sqlite":
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}"))
+            elif dialect == "postgresql":
+                conn.execute(
+                    text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {col_type}")
+                )
+        if dialect in ("sqlite", "postgresql"):
+            conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS ix_{table}_visitor_key ON {table} (visitor_key)"
+                )
+            )
+
+
 def _migrate_ai_ads_job_progress_columns() -> None:
     """Live generation progress log for the AI Ads studio."""
     insp = inspect(engine)
@@ -1377,6 +1410,7 @@ def init_db() -> None:
     _migrate_verification_code_attempts()
     _migrate_ai_email_null_store_scope()
     _migrate_meta_capi_enrichment_columns()
+    _migrate_meta_capi_event_visitor_columns()
     _migrate_ai_ads_job_progress_columns()
     _migrate_ai_ads_owner_columns()
     _migrate_ai_ads_catalog_columns()

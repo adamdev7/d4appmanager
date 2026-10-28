@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
   ExternalLink,
   Filter,
   Info,
@@ -14,6 +15,7 @@ import {
   TestTube2,
   Activity,
   Upload,
+  Users,
 } from "lucide-react";
 import { useStore } from "@/context/StoreContext";
 import {
@@ -23,6 +25,12 @@ import {
   type MetaCapiStats,
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import {
+  FUNNEL_EVENT_ORDER,
+  groupEventsByVisitor,
+  pageLabel,
+  type VisitorSession,
+} from "@/lib/metaCapiGrouping";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
@@ -43,15 +51,7 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Radar }> = [
   { id: "settings", label: "Settings", icon: Settings2 },
 ];
 
-const FUNNEL_EVENT_ORDER = [
-  "PageView",
-  "ViewContent",
-  "Search",
-  "AddToCart",
-  "InitiateCheckout",
-  "AddPaymentInfo",
-  "Purchase",
-] as const;
+type EventsView = "visitors" | "events";
 
 function formatTs(iso: string | null | undefined) {
   if (!iso) return "—";
@@ -84,6 +84,136 @@ function formatEntity(ev: MetaCapiEvent) {
   return raw || "—";
 }
 
+function formatTime(ms: number) {
+  return ms ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+}
+
+function formatDuration(ms: number) {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.round(sec / 60);
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+function VisitorSessionRow({ session }: { session: VisitorSession }) {
+  const [open, setOpen] = useState(false);
+  const day = session.end ? new Date(session.end).toLocaleDateString() : "";
+  const duration = session.end - session.start;
+
+  return (
+    <div className="rounded-lg border border-border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 px-3 py-2.5 text-left hover:bg-surface-muted/40 transition-colors"
+      >
+        <ChevronRight
+          className={cn("h-4 w-4 shrink-0 text-content-subtle transition-transform", open && "rotate-90")}
+        />
+        <div className="min-w-[150px]">
+          <p className="text-sm font-medium text-content">{session.visitorLabel}</p>
+          <p className="text-xs text-content-subtle" title={session.identifiedBy}>
+            {[session.device, session.ip].filter(Boolean).join(" · ") || session.identifiedBy}
+          </p>
+        </div>
+        <div className="min-w-[140px] text-xs text-content-muted">
+          <p>
+            {day} {formatTime(session.start)}
+            {duration > 0 ? ` – ${formatTime(session.end)}` : ""}
+          </p>
+          <p className="text-content-subtle">
+            {session.events.length} event{session.events.length === 1 ? "" : "s"}
+            {duration > 0 ? ` · ${formatDuration(duration)}` : ""}
+          </p>
+        </div>
+        <div className="flex flex-1 flex-wrap items-center gap-1.5">
+          {session.countsByType.map(([name, count]) => (
+            <Badge key={name} variant={eventBadgeVariant(name)}>
+              {name}
+              {count > 1 ? ` ×${count}` : ""}
+            </Badge>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          {session.failed > 0 && <Badge variant="warning">{session.failed} failed</Badge>}
+          <Badge variant={session.outcome.variant}>{session.outcome.label}</Badge>
+          <span className="min-w-[80px] text-right text-sm font-medium text-content">
+            {session.purchaseValue ?? session.topValue ?? "—"}
+          </span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-border px-3 pb-2 overflow-x-auto">
+          {session.landingPage && (
+            <p className="pt-2 text-xs text-content-muted">
+              Landed on <span className="text-content">{session.landingPage}</span> · identified by{" "}
+              {session.identifiedBy}
+            </p>
+          )}
+          <table className="mt-1 w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-wider text-content-subtle">
+                <th className="py-2 pr-3 font-medium">Time</th>
+                <th className="py-2 pr-3 font-medium">Type</th>
+                <th className="py-2 pr-3 font-medium">Page / item</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 pr-3 font-medium">Value</th>
+                <th className="py-2 font-medium">Meta</th>
+              </tr>
+            </thead>
+            <tbody>
+              {session.events.map((ev) => (
+                <tr key={ev.id} className="border-t border-border/60">
+                  <td className="py-2 pr-3 text-content-muted whitespace-nowrap">
+                    {formatTime(Date.parse(ev.sent_at || ev.created_at || ""))}
+                  </td>
+                  <td className="py-2 pr-3">
+                    <Badge variant={eventBadgeVariant(ev.event_name || "Purchase")}>
+                      {ev.event_name || "Purchase"}
+                    </Badge>
+                  </td>
+                  <td className="py-2 pr-3 max-w-[280px]">
+                    <p className="truncate text-content" title={ev.page_url ?? undefined}>
+                      {pageLabel(ev) ?? "—"}
+                    </p>
+                    <p
+                      className="truncate font-mono text-[11px] text-content-subtle"
+                      title={`Event ID: ${ev.event_id}`}
+                    >
+                      {ev.topic === "browser/funnel" ? ev.event_id : `${ev.topic} · ${formatEntity(ev)}`}
+                    </p>
+                  </td>
+                  <td className="py-2 pr-3">
+                    <Badge variant={statusVariant(ev.status)}>{ev.status}</Badge>
+                  </td>
+                  <td className="py-2 pr-3 whitespace-nowrap">
+                    {ev.order_value != null && ev.order_value !== ""
+                      ? `${ev.currency ?? ""} ${ev.order_value}`.trim()
+                      : "—"}
+                  </td>
+                  <td className="py-2 text-xs text-content-muted max-w-[220px]">
+                    {ev.error_message ? (
+                      <span className="text-red-600 dark:text-red-400" title={ev.error_message}>
+                        {ev.error_message.slice(0, 100)}
+                      </span>
+                    ) : (
+                      <span title={ev.meta_fbtrace_id ?? undefined}>
+                        recv={ev.meta_events_received ?? "—"}
+                        {ev.attempts > 1 ? ` · try ${ev.attempts}` : ""}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function MetaCapiPage() {
   const { activeStore, stores } = useStore();
   const storeId = activeStore?.id ?? stores[0]?.id ?? null;
@@ -95,6 +225,7 @@ export function MetaCapiPage() {
   const [eventTypeCounts, setEventTypeCounts] = useState<Record<string, number>>({});
   const [eventNameFilter, setEventNameFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [eventsView, setEventsView] = useState<EventsView>("visitors");
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const [eventsLoading, setEventsLoading] = useState(false);
@@ -123,7 +254,8 @@ export function MetaCapiPage() {
     setEventsLoading(true);
     try {
       const e = await api.metaCapi.events(storeId, {
-        limit: 150,
+        // Larger window when grouping so sessions aren't cut off mid-visit
+        limit: eventsView === "visitors" ? 400 : 150,
         event_name: eventNameFilter,
         status: statusFilter,
       });
@@ -134,7 +266,7 @@ export function MetaCapiPage() {
     } finally {
       setEventsLoading(false);
     }
-  }, [storeId, eventNameFilter, statusFilter]);
+  }, [storeId, eventNameFilter, statusFilter, eventsView]);
 
   const load = useCallback(async () => {
     if (!storeId) {
@@ -188,6 +320,27 @@ export function MetaCapiPage() {
     () => Object.values(eventTypeCounts).reduce((a, b) => a + b, 0),
     [eventTypeCounts]
   );
+
+  const sessions = useMemo(() => groupEventsByVisitor(events), [events]);
+
+  const visitorLabelByEvent = useMemo(() => {
+    const map = new Map<string, string>();
+    sessions.forEach((s) => s.events.forEach((ev) => map.set(ev.id, s.visitorLabel)));
+    return map;
+  }, [sessions]);
+
+  const sessionSummary = useMemo(() => {
+    const visitors = new Set(sessions.map((s) => s.visitorKey ?? `anon:${s.id}`));
+    const reached = (stages: string[]) =>
+      sessions.filter((s) => s.furthestStage && stages.includes(s.furthestStage)).length;
+    return {
+      visitors: visitors.size,
+      sessions: sessions.length,
+      carts: reached(["AddToCart", "InitiateCheckout", "AddPaymentInfo", "Purchase"]),
+      checkouts: reached(["InitiateCheckout", "AddPaymentInfo", "Purchase"]),
+      purchases: reached(["Purchase"]),
+    };
+  }, [sessions]);
 
   const save = async () => {
     if (!storeId) return;
@@ -626,17 +779,44 @@ export function MetaCapiPage() {
                   <CardTitle>Event log</CardTitle>
                   <CardDescription>
                     All Meta CAPI events SkyScale Manager sent or tried to send ({totalLogged} logged).
+                    {eventsView === "visitors" &&
+                      " Grouped by visitor session for reading only; each event is still sent to Meta individually."}
                   </CardDescription>
                 </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => void loadEvents()}
-                  disabled={eventsLoading}
-                >
-                  <RefreshCw className={cn("h-4 w-4", eventsLoading && "animate-spin")} />
-                  Refresh
-                </Button>
+                <div className="flex items-center gap-2">
+                  <div className="flex rounded-lg border border-border p-0.5">
+                    {(
+                      [
+                        { id: "visitors", label: "By visitor", icon: Users },
+                        { id: "events", label: "All events", icon: List },
+                      ] as const
+                    ).map(({ id, label, icon: Icon }) => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setEventsView(id)}
+                        className={cn(
+                          "flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                          eventsView === id
+                            ? "bg-brand-50 text-brand-800 dark:bg-brand-950/40 dark:text-brand-200"
+                            : "text-content-muted hover:text-content"
+                        )}
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void loadEvents()}
+                    disabled={eventsLoading}
+                  >
+                    <RefreshCw className={cn("h-4 w-4", eventsLoading && "animate-spin")} />
+                    Refresh
+                  </Button>
+                </div>
               </div>
             </CardHeader>
 
@@ -699,12 +879,41 @@ export function MetaCapiPage() {
               <p className="text-sm text-content-muted">
                 No events match this filter. Try All, or confirm the theme browser token is set.
               </p>
+            ) : eventsView === "visitors" ? (
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-content-muted">
+                  <span>
+                    <span className="font-semibold text-content">{sessionSummary.visitors}</span> visitors
+                  </span>
+                  <span>
+                    <span className="font-semibold text-content">{sessionSummary.sessions}</span> sessions
+                  </span>
+                  <span>
+                    <span className="font-semibold text-content">{sessionSummary.carts}</span> reached cart
+                  </span>
+                  <span>
+                    <span className="font-semibold text-content">{sessionSummary.checkouts}</span> started checkout
+                  </span>
+                  <span>
+                    <span className="font-semibold text-content">{sessionSummary.purchases}</span> purchased
+                  </span>
+                  <span className="text-content-subtle">
+                    from the latest {events.length} events · new session after 30 min idle
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {sessions.map((s) => (
+                    <VisitorSessionRow key={s.id} session={s} />
+                  ))}
+                </div>
+              </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-content-subtle">
                       <th className="py-2 pr-3 font-medium">When</th>
+                      <th className="py-2 pr-3 font-medium">Visitor</th>
                       <th className="py-2 pr-3 font-medium">Type</th>
                       <th className="py-2 pr-3 font-medium">Source</th>
                       <th className="py-2 pr-3 font-medium">Ref</th>
@@ -719,6 +928,9 @@ export function MetaCapiPage() {
                       <tr key={ev.id} className="border-b border-border/60">
                         <td className="py-2.5 pr-3 text-content-muted whitespace-nowrap">
                           {formatTs(ev.sent_at || ev.created_at)}
+                        </td>
+                        <td className="py-2.5 pr-3 text-xs text-content-muted whitespace-nowrap">
+                          {visitorLabelByEvent.get(ev.id) ?? "—"}
                         </td>
                         <td className="py-2.5 pr-3">
                           <Badge variant={eventBadgeVariant(ev.event_name || "Purchase")}>

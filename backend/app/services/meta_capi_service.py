@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -38,6 +39,50 @@ logger = logging.getLogger(__name__)
 
 _VALID_EVENT_ID_SCHEMES = frozenset({"order_id", "checkout_token", "order_name"})
 _VALID_TRIGGER_TOPICS = frozenset({"orders/paid", "orders/create"})
+
+
+def _short_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def visitor_key_from_event(event: dict[str, Any]) -> str | None:
+    """Stable per-shopper grouping key: Meta browser cookie, else IP + device, else external id."""
+    user_data = event.get("user_data") or {}
+    fbp = str(user_data.get("fbp") or "").strip()
+    if fbp:
+        return f"fbp:{_short_hash(fbp)}"
+    ip = str(user_data.get("client_ip_address") or "").strip()
+    if ip:
+        ua = str(user_data.get("client_user_agent") or "").strip()
+        return f"ip:{_short_hash(f'{ip}|{ua}')}"
+    ext = user_data.get("external_id")
+    if isinstance(ext, list):
+        ext = ext[0] if ext else None
+    ext = str(ext or "").strip()
+    if ext:
+        return f"ext:{_short_hash(ext)}"
+    return None
+
+
+def apply_event_context(log_row: MetaCapiEventLog, event: dict[str, Any]) -> None:
+    """Copy visitor/page context from the outgoing event onto the log row (display only)."""
+    user_data = event.get("user_data") or {}
+    custom = event.get("custom_data") or {}
+    key = visitor_key_from_event(event)
+    if key:
+        log_row.visitor_key = key
+    ip = str(user_data.get("client_ip_address") or "").strip()
+    if ip:
+        log_row.client_ip = ip[:64]
+    ua = str(user_data.get("client_user_agent") or "").strip()
+    if ua:
+        log_row.user_agent = ua[:512]
+    url = str(event.get("event_source_url") or "").strip()
+    if url:
+        log_row.page_url = url[:1024]
+    name = str(custom.get("content_name") or custom.get("search_string") or "").strip()
+    if name:
+        log_row.content_name = name[:255]
 
 
 class MetaCapiService:
@@ -402,6 +447,11 @@ class MetaCapiService:
                 "error_message": r.error_message,
                 "order_value": r.order_value,
                 "currency": r.currency,
+                "visitor_key": r.visitor_key,
+                "client_ip": r.client_ip,
+                "user_agent": r.user_agent,
+                "page_url": r.page_url,
+                "content_name": r.content_name,
                 "sent_at": r.sent_at.isoformat() if r.sent_at else None,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             }
@@ -698,6 +748,7 @@ class MetaCapiService:
             api_version=settings.api_version or DEFAULT_API_VERSION,
             test_event_code=settings.test_event_code,
         )
+        apply_event_context(log_row, event)
         log_row.attempts = (log_row.attempts or 0) + 1
         db.commit()
         try:
@@ -842,6 +893,7 @@ class MetaCapiService:
             api_version=settings.api_version or DEFAULT_API_VERSION,
             test_event_code=settings.test_event_code,
         )
+        apply_event_context(log_row, event)
         log_row.attempts = (log_row.attempts or 0) + 1
         db.commit()
 
@@ -978,6 +1030,7 @@ class MetaCapiService:
             api_version=settings.api_version or DEFAULT_API_VERSION,
             test_event_code=settings.test_event_code,
         )
+        apply_event_context(log_row, event)
         log_row.attempts = (log_row.attempts or 0) + 1
         db.commit()
 
@@ -1357,6 +1410,7 @@ class MetaCapiService:
             api_version=settings.api_version or DEFAULT_API_VERSION,
             test_event_code=settings.test_event_code,
         )
+        apply_event_context(log_row, event)
         log_row.status = MetaCapiEventStatus.PENDING.value
         log_row.attempts = (log_row.attempts or 0) + 1
         db.commit()
@@ -1568,6 +1622,7 @@ async def _send_capi_event_background(
             test_event_code=settings.test_event_code,
         )
 
+        apply_event_context(log_row, event)
         log_row.attempts = (log_row.attempts or 0) + 1
         db.commit()
 

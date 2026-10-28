@@ -41,6 +41,11 @@ export type MetaCapiEvent = {
   error_message: string | null;
   order_value: string | null;
   currency: string | null;
+  visitor_key?: string | null;
+  client_ip?: string | null;
+  user_agent?: string | null;
+  page_url?: string | null;
+  content_name?: string | null;
   sent_at: string | null;
   created_at: string | null;
 };
